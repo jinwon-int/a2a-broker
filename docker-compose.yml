@@ -1,0 +1,22 @@
+services:
+  a2a-broker:
+    build: .
+    container_name: ${SERVICE_NAME:-a2a-broker}
+    hostname: ${SERVICE_NAME:-a2a-broker}
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      - "127.0.0.1:8787:8787"
+    networks:
+      - a2a
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8787/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+
+networks:
+  a2a:
+    name: ${SERVICE_NAME:-a2a-broker}-net

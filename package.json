@@ -1,0 +1,24 @@
+{
+  "name": "a2a-broker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Minimal standalone A2A broker scaffold",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "npm run build && node --test dist/*.test.js dist/core/*.test.js",
+    "test:worker": "npm run build && node --test dist/worker.test.js",
+    "start": "node dist/server.js",
+    "start:worker": "node dist/worker.js",
+    "smoke:restart-recovery": "node scripts/restart-recovery-smoke.mjs",
+    "dev": "node --watch --enable-source-maps src/server.ts",
+    "dev:worker": "node --watch --enable-source-maps src/worker.ts"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "devDependencies": {
+    "@types/node": "^24.6.0",
+    "typescript": "^5.9.3"
+  }
+}

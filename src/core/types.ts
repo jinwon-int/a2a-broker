@@ -1,0 +1,462 @@
+export type A2APartyKind = "session" | "node" | "user" | "service";
+export type A2APartyRole =
+  | "hub"
+  | "live-trader"
+  | "researcher"
+  | "analyst"
+  | "operator";
+
+export type A2AExchangeIntent =
+  | "chat"
+  | "analyze"
+  | "backfill"
+  | "propose_patch"
+  | "propose_params"
+  | "validate_change"
+  | "apply_local_change"
+  | "promote_to_live"
+  | "rollback_live";
+
+export type A2AExchangeStatus = "queued" | "running" | "completed" | "failed";
+export type A2AExchangeMessageKind = "root" | "thread";
+export type A2AExchangeDecision =
+  | "accepted"
+  | "partially_accepted"
+  | "needs_clarification"
+  | "declined";
+export type ProposalKind = "patch" | "params" | "hybrid";
+export type ProposalStatus =
+  | "draft"
+  | "submitted"
+  | "validated"
+  | "approved"
+  | "rejected"
+  | "applied"
+  | "rolled_back";
+export type ValidationKind = "backfill" | "paper" | "replay" | "smoke";
+export type ValidationVerdict = "pass" | "fail" | "warn";
+export type TaskKind = A2AExchangeIntent;
+export type TaskStatus =
+  | "queued"
+  | "claimed"
+  | "running"
+  | "succeeded"
+  | "failed"
+  | "canceled";
+export type AuditAction =
+  | "proposal.created"
+  | "artifact.attached"
+  | "validation.submitted"
+  | "proposal.approved"
+  | "proposal.rejected"
+  | "proposal.applied"
+  | "exchange.message.added"
+  | "task.created"
+  | "task.claimed"
+  | "task.started"
+  | "task.reassigned"
+  | "task.requeued"
+  | "task.succeeded"
+  | "task.failed"
+  | "task.canceled"
+  | "worker.registered"
+  | "worker.heartbeat";
+export type A2AWorkerEnvironment = "research" | "staging" | "live";
+export type WorkerStatus = "online" | "stale";
+
+export interface A2APartyRef {
+  id: string;
+  kind?: A2APartyKind;
+  role?: A2APartyRole;
+}
+
+export interface A2AExchangeVia {
+  transport?: string;
+  channel?: string;
+  nodeId?: string;
+  sessionId?: string;
+  traceId?: string;
+}
+
+export interface WorkspaceRef {
+  nodeId: string;
+  workspaceId: string;
+  pathHint?: string;
+  branch?: string;
+  strategyId?: string;
+}
+
+export interface A2AExchangeRequest {
+  requester: A2APartyRef;
+  target: A2APartyRef;
+  message: string;
+  maxTurns?: number;
+  intent?: A2AExchangeIntent;
+  via?: A2AExchangeVia;
+}
+
+export interface A2AExchangeMessageRecord {
+  id: string;
+  exchangeId: string;
+  kind: A2AExchangeMessageKind;
+  message: string;
+  requester?: A2APartyRef;
+  actor?: A2APartyRef;
+  via?: A2AExchangeVia;
+  decision?: A2AExchangeDecision;
+  targetNodeId?: string;
+  assignedWorkerId?: string;
+  parentMessageId?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface A2AExchangeMessageRequest {
+  actor: A2APartyRef;
+  message: string;
+  via?: A2AExchangeVia;
+  decision?: A2AExchangeDecision;
+  targetNodeId?: string;
+  assignedWorkerId?: string;
+  parentMessageId?: string;
+}
+
+export interface A2AExchangeState {
+  id: string;
+  requester: A2APartyRef;
+  target: A2APartyRef;
+  targetNodeId: string;
+  assignedWorkerId?: string;
+  message: string;
+  maxTurns: number;
+  intent: A2AExchangeIntent;
+  status: A2AExchangeStatus;
+  currentDecision?: A2AExchangeDecision;
+  rootMessageId: string;
+  latestMessageId: string;
+  messageCount: number;
+  lastMessageAt: string;
+  activeTaskId?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface A2ATaskRequest {
+  id: string;
+  exchangeId?: string;
+  intent: A2AExchangeIntent;
+  requester: A2APartyRef;
+  target: A2APartyRef;
+  workspace?: WorkspaceRef;
+  message?: string;
+  proposalId?: string;
+  artifactIds?: string[];
+  assignedWorkerId?: string;
+  via?: A2AExchangeVia;
+  policyContext?: {
+    requiresApproval?: boolean;
+    liveImpact?: boolean;
+    targetEnvironment?: A2AWorkerEnvironment;
+  };
+  createdAt: string;
+}
+
+export interface CreateTaskRequest extends Omit<A2ATaskRequest, "id" | "createdAt"> {
+  id?: string;
+  createdAt?: string;
+  payload?: Record<string, unknown>;
+}
+
+export interface TaskValidationPayload {
+  nodeId?: string;
+  kind: ValidationKind;
+  verdict: ValidationVerdict;
+  metrics?: Record<string, number | string | boolean>;
+  artifactIds?: string[];
+  note?: string;
+}
+
+export interface TaskApplyPayload {
+  workspace?: WorkspaceRef;
+  artifactIds?: string[];
+  note?: string;
+}
+
+export interface TaskResult {
+  summary?: string;
+  note?: string;
+  artifactIds?: string[];
+  output?: Record<string, unknown>;
+  validation?: TaskValidationPayload;
+  apply?: TaskApplyPayload;
+}
+
+export interface TaskError {
+  code?: string;
+  message: string;
+  details?: Record<string, unknown>;
+}
+
+export interface TaskRecord extends A2ATaskRequest {
+  intent: TaskKind;
+  status: TaskStatus;
+  targetNodeId: string;
+  payload: Record<string, unknown>;
+  updatedAt: string;
+  claimedAt?: string;
+  completedAt?: string;
+  claimedBy?: string;
+  result?: TaskResult;
+  error?: TaskError;
+}
+
+export interface TaskClaimRequest {
+  workerId: string;
+}
+
+export interface TaskStartRequest extends TaskClaimRequest {}
+
+export interface TaskCompleteRequest extends TaskClaimRequest {
+  result?: TaskResult;
+}
+
+export interface TaskFailRequest extends TaskClaimRequest {
+  error?: TaskError;
+}
+
+export interface TaskCancelRequest {
+  actor: A2APartyRef;
+  reason?: string;
+}
+
+export interface TaskReassignRequest {
+  actor: A2APartyRef;
+  targetNodeId?: string;
+  assignedWorkerId?: string;
+  note?: string;
+}
+
+export interface TaskListFilters {
+  exchangeId?: string;
+  status?: TaskStatus;
+  targetNodeId?: string;
+  proposalId?: string;
+  intent?: TaskKind;
+  claimedBy?: string;
+  assignedWorkerId?: string;
+}
+
+export interface ChangeProposal {
+  id: string;
+  source: A2APartyRef;
+  target: A2APartyRef;
+  sourceNodeId: string;
+  targetNodeId: string;
+  kind: ProposalKind;
+  summary: string;
+  rationale?: string;
+  workspace: WorkspaceRef;
+  patchText?: string;
+  parameterPayload?: Record<string, unknown>;
+  artifactIds: string[];
+  status: ProposalStatus;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ArtifactRecord {
+  id: string;
+  proposalId: string;
+  kind: string;
+  uri: string;
+  contentType?: string;
+  sizeBytes?: number;
+  summary?: string;
+  createdAt: string;
+}
+
+export interface ValidationResult {
+  id: string;
+  proposalId: string;
+  nodeId: string;
+  kind: ValidationKind;
+  verdict: ValidationVerdict;
+  metrics: Record<string, number | string | boolean>;
+  artifactIds: string[];
+  note?: string;
+  createdAt: string;
+}
+
+export interface AuditEvent {
+  id: string;
+  actorId: string;
+  action: AuditAction;
+  targetType: "proposal" | "artifact" | "validation" | "worker" | "task" | "exchange" | "exchange-message";
+  targetId: string;
+  proposalId?: string;
+  note?: string;
+  createdAt: string;
+}
+
+export interface WorkerCapabilities {
+  canAnalyze: boolean;
+  canBackfill: boolean;
+  canPatchWorkspace: boolean;
+  canPromoteLive: boolean;
+  workspaceIds: string[];
+  environments: A2AWorkerEnvironment[];
+}
+
+export interface WorkerRecord {
+  nodeId: string;
+  role: A2APartyRole;
+  displayName?: string;
+  brokerUrl?: string;
+  capabilities: WorkerCapabilities;
+  metadata?: Record<string, string>;
+  createdAt: string;
+  updatedAt: string;
+  lastSeenAt: string;
+}
+
+export interface RegisterWorkerRequest {
+  nodeId: string;
+  role: A2APartyRole;
+  displayName?: string;
+  brokerUrl?: string;
+  capabilities: WorkerCapabilities;
+  metadata?: Record<string, string>;
+}
+
+export interface WorkerHeartbeatRequest {
+  displayName?: string;
+  brokerUrl?: string;
+  capabilities?: WorkerCapabilities;
+  metadata?: Record<string, string>;
+}
+
+export interface WorkerListFilters {
+  role?: A2APartyRole;
+  environment?: A2AWorkerEnvironment;
+  workspaceId?: string;
+}
+
+export interface WorkerView extends WorkerRecord {
+  status: WorkerStatus;
+}
+
+export interface CreateProposalRequest {
+  source: A2APartyRef;
+  target: A2APartyRef;
+  kind: ProposalKind;
+  summary: string;
+  rationale?: string;
+  workspace: WorkspaceRef;
+  patchText?: string;
+  parameterPayload?: Record<string, unknown>;
+  artifactIds?: string[];
+}
+
+export interface AttachArtifactRequest {
+  kind: string;
+  uri: string;
+  contentType?: string;
+  sizeBytes?: number;
+  summary?: string;
+}
+
+export interface SubmitValidationRequest {
+  nodeId: string;
+  kind: ValidationKind;
+  verdict: ValidationVerdict;
+  metrics?: Record<string, number | string | boolean>;
+  artifactIds?: string[];
+  note?: string;
+}
+
+export interface ProposalActorRequest {
+  actor: A2APartyRef;
+  note?: string;
+}
+
+export interface ApplyProposalRequest extends ProposalActorRequest {
+  workspace: WorkspaceRef;
+}
+
+export interface ProposalDetails {
+  proposal: ChangeProposal;
+  artifacts: ArtifactRecord[];
+  validations: ValidationResult[];
+  audit: AuditEvent[];
+}
+
+export interface ProposalListFilters {
+  status?: ProposalStatus;
+  sourceNodeId?: string;
+  targetNodeId?: string;
+  kind?: ProposalKind;
+}
+
+export interface AuditListFilters {
+  proposalId?: string;
+  actorId?: string;
+  action?: AuditAction;
+  targetId?: string;
+}
+
+/** Dashboard: aggregated summary of broker state for operator visibility. */
+export interface BrokerDashboard {
+  /** When this summary was computed. */
+  generatedAt: string;
+  /** Task queue overview. */
+  queue: TaskQueueSummary;
+  /** Recent task execution history (last N completed/failed). */
+  history: TaskHistorySummary;
+  /** Proposal pipeline state. */
+  proposals: ProposalPipelineSummary;
+  /** Worker fleet status. */
+  workers: WorkerFleetSummary;
+}
+
+export interface TaskQueueSummary {
+  total: number;
+  byStatus: Record<TaskStatus, number>;
+  byIntent: Record<string, number>;
+  /** Tasks waiting longest (queued or claimed, sorted by createdAt asc). */
+  oldestPending: Array<Pick<TaskRecord, 'id' | 'intent' | 'status' | 'targetNodeId' | 'assignedWorkerId' | 'createdAt'>>;
+}
+
+export interface TaskHistorySummary {
+  /** Number of tasks completed in the last hour. */
+  completedLastHour: number;
+  /** Number of tasks failed in the last hour. */
+  failedLastHour: number;
+  /** Total completed (all time). */
+  totalCompleted: number;
+  /** Total failed (all time). */
+  totalFailed: number;
+  /** Most recent N task outcomes (succeeded/failed), newest first. */
+  recent: Array<Pick<TaskRecord, 'id' | 'intent' | 'status' | 'targetNodeId' | 'completedAt' | 'result' | 'error'>>;
+}
+
+export interface ProposalPipelineSummary {
+  total: number;
+  byStatus: Record<ProposalStatus, number>;
+  /** Proposals awaiting validation or approval action. */
+  pendingAction: Array<Pick<ChangeProposal, 'id' | 'kind' | 'summary' | 'status' | 'sourceNodeId' | 'targetNodeId' | 'updatedAt'>>;
+}
+
+export interface WorkerFleetSummary {
+  total: number;
+  online: number;
+  stale: number;
+  /** Per-worker status snapshot. */
+  byNode: Array<{
+    nodeId: string;
+    role: string;
+    displayName: string | undefined;
+    status: 'online' | 'stale';
+    activeTaskCount: number;
+    lastSeenAt: string;
+  }>;
+}

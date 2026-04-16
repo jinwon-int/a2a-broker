@@ -1,0 +1,14 @@
+node_modules/
+dist/
+dist-runtime/
+.tmp-targeted/
+.codex-backup/
+coverage/
+
+.env
+.env.bak_*
+*.log
+*.pid
+*.tmp
+*.bak_*
+.DS_Store

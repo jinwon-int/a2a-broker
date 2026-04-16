@@ -1,0 +1,80 @@
+version: "3.9"
+
+services:
+  a2a-broker:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    container_name: a2a-broker
+    restart: unless-stopped
+    env_file:
+      - ../.env
+    environment:
+      HOST: 0.0.0.0
+      PORT: 8787
+      SERVICE_NAME: a2a-broker
+      PUBLIC_BASE_URL: http://a2a-broker:8787
+      STATE_FILE: /var/lib/a2a-broker/state.json
+      WORKER_OFFLINE_AFTER_SEC: 90
+      RATE_LIMIT_WINDOW_SEC: 60
+      RATE_LIMIT_MAX_REQUESTS: 10
+      ENFORCE_REQUESTER_IDENTITY: 1
+    ports:
+      - "8787:8787"
+    volumes:
+      - broker-artifacts:/artifacts
+      - broker-state:/var/lib/a2a-broker
+    networks:
+      - a2a-net
+
+  bangtong-worker:
+    image: node:22-bookworm-slim
+    container_name: bangtong-worker
+    restart: unless-stopped
+    working_dir: /app
+    command: ["bash", "-lc", "echo bangtong worker placeholder && tail -f /dev/null"]
+    environment:
+      NODE_ID: bangtong
+      NODE_ROLE: live-trader
+      BROKER_URL: http://a2a-broker:8787
+      WORKSPACE_ROOT: /workspace/live
+      ARTIFACT_ROOT: /artifacts
+      CONFIG_ROOT: /config
+    volumes:
+      - /srv/trading/bangtong/live:/workspace/live:rw
+      - /srv/trading/bangtong/config:/config:ro
+      - /srv/trading/bangtong/artifacts:/artifacts:rw
+    depends_on:
+      - a2a-broker
+    networks:
+      - a2a-net
+
+  dengae-worker:
+    image: node:22-bookworm-slim
+    container_name: dengae-worker
+    restart: unless-stopped
+    working_dir: /app
+    command: ["bash", "-lc", "echo dengae worker placeholder && tail -f /dev/null"]
+    environment:
+      NODE_ID: dengae
+      NODE_ROLE: researcher
+      BROKER_URL: http://a2a-broker:8787
+      WORKSPACE_ROOT: /workspace/research
+      DATASET_ROOT: /datasets
+      ARTIFACT_ROOT: /artifacts
+    volumes:
+      - /srv/trading/dengae/research:/workspace/research:rw
+      - /srv/trading/dengae/datasets:/datasets:ro
+      - /srv/trading/dengae/artifacts:/artifacts:rw
+    depends_on:
+      - a2a-broker
+    networks:
+      - a2a-net
+
+volumes:
+  broker-artifacts:
+  broker-state:
+
+networks:
+  a2a-net:
+    driver: bridge
