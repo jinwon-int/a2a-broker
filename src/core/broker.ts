@@ -69,6 +69,32 @@ export class BrokerError extends Error {
   }
 }
 
+export interface BrokerRetentionPolicy {
+  terminalRetentionMs: number;
+  maxTerminalExchanges: number;
+  maxTerminalTasks: number;
+  maxTerminalProposals: number;
+  inactiveWorkerRetentionMs: number;
+  maxInactiveWorkers: number;
+  auditRetentionMs: number;
+  maxAuditEvents: number;
+}
+
+export interface InMemoryA2ABrokerOptions {
+  retention?: Partial<BrokerRetentionPolicy>;
+}
+
+export const DEFAULT_BROKER_RETENTION_POLICY: BrokerRetentionPolicy = {
+  terminalRetentionMs: 7 * 24 * 60 * 60 * 1000,
+  maxTerminalExchanges: 1_000,
+  maxTerminalTasks: 2_000,
+  maxTerminalProposals: 1_000,
+  inactiveWorkerRetentionMs: 14 * 24 * 60 * 60 * 1000,
+  maxInactiveWorkers: 500,
+  auditRetentionMs: 7 * 24 * 60 * 60 * 1000,
+  maxAuditEvents: 5_000,
+};
+
 export class InMemoryA2ABroker {
   private readonly exchanges = new Map<string, A2AExchangeState>();
   private readonly exchangeMessages = new Map<string, A2AExchangeMessageRecord>();
@@ -82,11 +108,16 @@ export class InMemoryA2ABroker {
   constructor(
     private readonly stateStore?: BrokerStateStore,
     snapshot?: BrokerSnapshot,
+    options: InMemoryA2ABrokerOptions = {},
   ) {
+    this.retentionPolicy = normalizeBrokerRetentionPolicy(options.retention);
     if (snapshot) {
       this.loadSnapshot(snapshot);
     }
+    this.applyRetentionPolicy();
   }
+
+  private readonly retentionPolicy: BrokerRetentionPolicy;
 
   startExchange(request: A2AExchangeRequest): A2AExchangeState {
     const now = isoNow();
@@ -130,7 +161,7 @@ export class InMemoryA2ABroker {
   }
 
   listExchanges(): A2AExchangeState[] {
-    return [...this.exchanges.values()].sort(sortNewestFirst);
+    return sortedCopy(this.exchanges.values(), sortNewestFirst);
   }
 
   listExchangeMessages(
@@ -141,9 +172,10 @@ export class InMemoryA2ABroker {
     },
   ): A2AExchangeMessageRecord[] {
     const exchange = this.requireExchange(exchangeId);
-    const items = [...this.exchangeMessages.values()]
-      .filter((message) => message.exchangeId === exchangeId)
-      .sort(sortExchangeMessages);
+    const items = sortedCopy(
+      [...this.exchangeMessages.values()].filter((message) => message.exchangeId === exchangeId),
+      sortExchangeMessages,
+    );
 
     if (!filters?.parentMessageId) {
       return items;
@@ -272,8 +304,8 @@ export class InMemoryA2ABroker {
   }
 
   listWorkers(filters?: WorkerListFilters): WorkerRecord[] {
-    return [...this.workers.values()]
-      .filter((worker) => {
+    return sortedCopy(
+      [...this.workers.values()].filter((worker) => {
         if (filters?.role && worker.role !== filters.role) {
           return false;
         }
@@ -290,8 +322,9 @@ export class InMemoryA2ABroker {
           return false;
         }
         return true;
-      })
-      .sort(sortWorkersNewestFirst);
+      }),
+      sortWorkersNewestFirst,
+    );
   }
 
   listWorkerViews(offlineAfterMs: number, filters?: WorkerListFilters): WorkerView[] {
@@ -359,8 +392,8 @@ export class InMemoryA2ABroker {
   }
 
   listProposals(filters?: ProposalListFilters): ChangeProposal[] {
-    return [...this.proposals.values()]
-      .filter((proposal) => {
+    return sortedCopy(
+      [...this.proposals.values()].filter((proposal) => {
         if (filters?.status && proposal.status !== filters.status) {
           return false;
         }
@@ -374,8 +407,9 @@ export class InMemoryA2ABroker {
           return false;
         }
         return true;
-      })
-      .sort(sortNewestFirst);
+      }),
+      sortNewestFirst,
+    );
   }
 
   getProposalDetails(id: string): ProposalDetails | null {
@@ -608,8 +642,8 @@ export class InMemoryA2ABroker {
   }
 
   listTasks(filters?: TaskListFilters): TaskRecord[] {
-    return [...this.tasks.values()]
-      .filter((task) => {
+    return sortedCopy(
+      [...this.tasks.values()].filter((task) => {
         if (filters?.exchangeId && task.exchangeId !== filters.exchangeId) {
           return false;
         }
@@ -632,8 +666,9 @@ export class InMemoryA2ABroker {
           return false;
         }
         return true;
-      })
-      .sort(sortNewestFirst);
+      }),
+      sortNewestFirst,
+    );
   }
 
   reassignTask(taskId: string, request: TaskReassignRequest): TaskRecord {
@@ -883,20 +918,22 @@ export class InMemoryA2ABroker {
   }
 
   listArtifactsForProposal(proposalId: string): ArtifactRecord[] {
-    return [...this.artifacts.values()]
-      .filter((artifact) => artifact.proposalId === proposalId)
-      .sort(sortNewestFirst);
+    return sortedCopy(
+      [...this.artifacts.values()].filter((artifact) => artifact.proposalId === proposalId),
+      sortNewestFirst,
+    );
   }
 
   listValidationsForProposal(proposalId: string): ValidationResult[] {
-    return [...this.validations.values()]
-      .filter((validation) => validation.proposalId === proposalId)
-      .sort(sortNewestFirst);
+    return sortedCopy(
+      [...this.validations.values()].filter((validation) => validation.proposalId === proposalId),
+      sortNewestFirst,
+    );
   }
 
   listAuditEvents(filters?: AuditListFilters): AuditEvent[] {
-    return [...this.auditEvents.values()]
-      .filter((event) => {
+    return sortedCopy(
+      [...this.auditEvents.values()].filter((event) => {
         if (filters?.proposalId && event.proposalId !== filters.proposalId) {
           return false;
         }
@@ -910,8 +947,9 @@ export class InMemoryA2ABroker {
           return false;
         }
         return true;
-      })
-      .sort(sortNewestFirst);
+      }),
+      sortNewestFirst,
+    );
   }
 
 
@@ -940,9 +978,10 @@ export class InMemoryA2ABroker {
       total: pendingTasks.length,
       byStatus: this.countBy(allTasks, (t) => t.status) as Record<TaskStatus, number>,
       byIntent: this.countBy(allTasks, (t) => t.intent),
-      oldestPending: pendingTasks
-        .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
-        .slice(0, oldestPendingLimit)
+      oldestPending: sortedCopy(
+        pendingTasks,
+        (a, b) => a.createdAt.localeCompare(b.createdAt),
+      ).slice(0, oldestPendingLimit)
         .map((t) => ({
           id: t.id,
           intent: t.intent,
@@ -961,16 +1000,20 @@ export class InMemoryA2ABroker {
     const failedTasks = allTasks.filter(
       (t) => t.status === "failed" && t.completedAt && Date.parse(t.completedAt) >= oneHourAgoMs,
     );
-    const recentOutcomes = allTasks
-      .filter((t) => (t.status === "succeeded" || t.status === "failed") && t.completedAt)
-      .sort((a, b) => {
-      const cmp = (b.completedAt ?? "").localeCompare(a.completedAt ?? "");
-      if (cmp !== 0) return cmp;
-      const cmp2 = b.createdAt.localeCompare(a.createdAt);
-      if (cmp2 !== 0) return cmp2;
-      return b.id.localeCompare(a.id);
-    })
-      .slice(0, recentHistoryLimit);
+    const recentOutcomes = sortedCopy(
+      allTasks.filter((t) => (t.status === "succeeded" || t.status === "failed") && t.completedAt),
+      (a, b) => {
+        const cmp = (b.completedAt ?? "").localeCompare(a.completedAt ?? "");
+        if (cmp !== 0) {
+          return cmp;
+        }
+        const cmp2 = b.createdAt.localeCompare(a.createdAt);
+        if (cmp2 !== 0) {
+          return cmp2;
+        }
+        return b.id.localeCompare(a.id);
+      },
+    ).slice(0, recentHistoryLimit);
     const history: TaskHistorySummary = {
       completedLastHour: completedTasks.length,
       failedLastHour: failedTasks.length,
@@ -988,11 +1031,11 @@ export class InMemoryA2ABroker {
     };
 
     // --- Proposals ---
-    const actionableStatuses: ProposalStatus[] = ["submitted", "validated", "approved"];
-    const pendingAction = allProposals
-      .filter((p) => actionableStatuses.includes(p.status))
-      .sort((a, b) => a.updatedAt.localeCompare(b.updatedAt))
-      .slice(0, pendingActionLimit)
+    const actionableStatuses = new Set<ProposalStatus>(["submitted", "validated", "approved"]);
+    const pendingAction = sortedCopy(
+      allProposals.filter((p) => actionableStatuses.has(p.status)),
+      (a, b) => a.updatedAt.localeCompare(b.updatedAt),
+    ).slice(0, pendingActionLimit)
       .map((p) => ({
         id: p.id,
         kind: p.kind,
@@ -1013,6 +1056,7 @@ export class InMemoryA2ABroker {
     let staleCount = 0;
     const byNode = allWorkers.map((w) => {
       const isStale = isWorkerStale(w.lastSeenAt, offlineAfterMs, nowMs);
+      const status: WorkerFleetSummary["byNode"][number]["status"] = isStale ? "stale" : "online";
       if (isStale) {
         staleCount++;
       } else {
@@ -1022,7 +1066,7 @@ export class InMemoryA2ABroker {
         nodeId: w.nodeId,
         role: w.role,
         displayName: w.displayName,
-        status: (isStale ? "stale" : "online") as "online" | "stale",
+        status,
         activeTaskCount: allTasks.filter(
           (t) =>
             t.status === "claimed" || t.status === "running"
@@ -1069,6 +1113,211 @@ export class InMemoryA2ABroker {
       workers: [...this.workers.values()],
       tasks: [...this.tasks.values()],
     };
+  }
+
+  private applyRetentionPolicy(nowMs = Date.now()): void {
+    const retainedExchangeIds = selectRetainedTerminalRecordIds({
+      records: [...this.exchanges.values()],
+      isTerminal: (exchange) => isTerminalExchangeStatus(exchange.status),
+      getId: (exchange) => exchange.id,
+      getTimestamp: (exchange) => exchange.updatedAt,
+      nowMs,
+      retentionMs: this.retentionPolicy.terminalRetentionMs,
+      maxTerminalRecords: this.retentionPolicy.maxTerminalExchanges,
+    });
+
+    const protectedTaskIds = new Set<string>();
+    for (const exchangeId of retainedExchangeIds) {
+      const activeTaskId = this.exchanges.get(exchangeId)?.activeTaskId;
+      if (activeTaskId) {
+        protectedTaskIds.add(activeTaskId);
+      }
+    }
+
+    const retainedTaskIds = selectRetainedTerminalRecordIds({
+      records: [...this.tasks.values()],
+      isTerminal: (task) => isTerminalTaskStatus(task.status),
+      getId: (task) => task.id,
+      getTimestamp: (task) => task.completedAt ?? task.updatedAt,
+      nowMs,
+      retentionMs: this.retentionPolicy.terminalRetentionMs,
+      maxTerminalRecords: this.retentionPolicy.maxTerminalTasks,
+      protectedIds: protectedTaskIds,
+    });
+
+    for (const taskId of retainedTaskIds) {
+      const exchangeId = this.tasks.get(taskId)?.exchangeId;
+      if (exchangeId) {
+        retainedExchangeIds.add(exchangeId);
+      }
+    }
+
+    const protectedProposalIds = new Set<string>();
+    for (const taskId of retainedTaskIds) {
+      const proposalId = this.tasks.get(taskId)?.proposalId;
+      if (proposalId) {
+        protectedProposalIds.add(proposalId);
+      }
+    }
+
+    const retainedProposalIds = selectRetainedTerminalRecordIds({
+      records: [...this.proposals.values()],
+      isTerminal: (proposal) => isTerminalProposalStatus(proposal.status),
+      getId: (proposal) => proposal.id,
+      getTimestamp: (proposal) => proposal.updatedAt,
+      nowMs,
+      retentionMs: this.retentionPolicy.terminalRetentionMs,
+      maxTerminalRecords: this.retentionPolicy.maxTerminalProposals,
+      protectedIds: protectedProposalIds,
+    });
+
+    const retainedArtifactIds = this.collectRetainedArtifactIds({
+      retainedTaskIds,
+      retainedProposalIds,
+    });
+    const retainedValidationIds = this.collectRetainedValidationIds(retainedProposalIds);
+    const retainedMessageIds = this.collectRetainedExchangeMessageIds(retainedExchangeIds);
+
+    const retainedWorkerIds = selectRetainedWorkerIds({
+      workers: [...this.workers.values()],
+      nowMs,
+      inactiveWorkerRetentionMs: this.retentionPolicy.inactiveWorkerRetentionMs,
+      maxInactiveWorkers: this.retentionPolicy.maxInactiveWorkers,
+      protectedIds: this.collectProtectedWorkerIds({
+        retainedExchangeIds,
+        retainedTaskIds,
+        retainedProposalIds,
+      }),
+    });
+
+    const retainedAuditEventIds = selectRetainedAuditEventIds({
+      auditEvents: [...this.auditEvents.values()],
+      nowMs,
+      auditRetentionMs: this.retentionPolicy.auditRetentionMs,
+      maxAuditEvents: this.retentionPolicy.maxAuditEvents,
+      retainedProposalIds,
+      retainedTaskIds,
+      retainedExchangeIds,
+      retainedMessageIds,
+      retainedArtifactIds,
+      retainedValidationIds,
+      retainedWorkerIds,
+    });
+
+    pruneMapEntries(this.exchanges, retainedExchangeIds);
+    pruneMapEntries(this.exchangeMessages, retainedMessageIds);
+    pruneMapEntries(this.tasks, retainedTaskIds);
+    pruneMapEntries(this.proposals, retainedProposalIds);
+    pruneMapEntries(this.artifacts, retainedArtifactIds);
+    pruneMapEntries(this.validations, retainedValidationIds);
+    pruneMapEntries(this.workers, retainedWorkerIds);
+    pruneMapEntries(this.auditEvents, retainedAuditEventIds);
+  }
+
+  private collectRetainedExchangeMessageIds(retainedExchangeIds: Set<string>): Set<string> {
+    const retainedMessageIds = new Set<string>();
+    for (const message of this.exchangeMessages.values()) {
+      if (retainedExchangeIds.has(message.exchangeId)) {
+        retainedMessageIds.add(message.id);
+      }
+    }
+    return retainedMessageIds;
+  }
+
+  private collectRetainedArtifactIds(params: {
+    retainedTaskIds: Set<string>;
+    retainedProposalIds: Set<string>;
+  }): Set<string> {
+    const retainedArtifactIds = new Set<string>();
+
+    for (const proposalId of params.retainedProposalIds) {
+      const proposal = this.proposals.get(proposalId);
+      for (const artifactId of proposal?.artifactIds ?? []) {
+        retainedArtifactIds.add(artifactId);
+      }
+    }
+
+    for (const artifact of this.artifacts.values()) {
+      if (params.retainedProposalIds.has(artifact.proposalId)) {
+        retainedArtifactIds.add(artifact.id);
+      }
+    }
+
+    for (const taskId of params.retainedTaskIds) {
+      const task = this.tasks.get(taskId);
+      for (const artifactId of task?.artifactIds ?? []) {
+        retainedArtifactIds.add(artifactId);
+      }
+      for (const artifactId of task?.result?.artifactIds ?? []) {
+        retainedArtifactIds.add(artifactId);
+      }
+      for (const artifactId of task?.result?.validation?.artifactIds ?? []) {
+        retainedArtifactIds.add(artifactId);
+      }
+      for (const artifactId of task?.result?.apply?.artifactIds ?? []) {
+        retainedArtifactIds.add(artifactId);
+      }
+    }
+
+    return retainedArtifactIds;
+  }
+
+  private collectRetainedValidationIds(retainedProposalIds: Set<string>): Set<string> {
+    const retainedValidationIds = new Set<string>();
+    for (const validation of this.validations.values()) {
+      if (retainedProposalIds.has(validation.proposalId)) {
+        retainedValidationIds.add(validation.id);
+      }
+    }
+    return retainedValidationIds;
+  }
+
+  private collectProtectedWorkerIds(params: {
+    retainedExchangeIds: Set<string>;
+    retainedTaskIds: Set<string>;
+    retainedProposalIds: Set<string>;
+  }): Set<string> {
+    const retainedWorkerIds = new Set<string>();
+
+    for (const exchangeId of params.retainedExchangeIds) {
+      const exchange = this.exchanges.get(exchangeId);
+      if (!exchange) {
+        continue;
+      }
+      retainedWorkerIds.add(exchange.targetNodeId);
+      if (exchange.assignedWorkerId) {
+        retainedWorkerIds.add(exchange.assignedWorkerId);
+      }
+      retainedWorkerIds.add(exchange.target.id);
+    }
+
+    for (const taskId of params.retainedTaskIds) {
+      const task = this.tasks.get(taskId);
+      if (!task) {
+        continue;
+      }
+      retainedWorkerIds.add(task.targetNodeId);
+      retainedWorkerIds.add(task.target.id);
+      if (task.assignedWorkerId) {
+        retainedWorkerIds.add(task.assignedWorkerId);
+      }
+      if (task.claimedBy) {
+        retainedWorkerIds.add(task.claimedBy);
+      }
+    }
+
+    for (const proposalId of params.retainedProposalIds) {
+      const proposal = this.proposals.get(proposalId);
+      if (!proposal) {
+        continue;
+      }
+      retainedWorkerIds.add(proposal.sourceNodeId);
+      retainedWorkerIds.add(proposal.targetNodeId);
+      retainedWorkerIds.add(proposal.source.id);
+      retainedWorkerIds.add(proposal.target.id);
+    }
+
+    return retainedWorkerIds;
   }
 
   private loadSnapshot(snapshot: BrokerSnapshot): void {
@@ -1120,9 +1369,12 @@ export class InMemoryA2ABroker {
     for (const task of snapshot.tasks ?? []) {
       this.tasks.set(task.id, normalizeTaskRecord(task));
     }
+
+    this.applyRetentionPolicy();
   }
 
   private persistState(): void {
+    this.applyRetentionPolicy();
     this.stateStore?.save(this.exportSnapshot());
   }
 
@@ -1590,6 +1842,12 @@ function uniqueIds(values: string[]): string[] {
   return [...new Set(values)];
 }
 
+function sortedCopy<T>(values: Iterable<T>, compare: (a: T, b: T) => number): T[] {
+  const items = [...values];
+  items.sort(compare);
+  return items;
+}
+
 function sortNewestFirst<T extends { createdAt: string }>(a: T, b: T): number {
   return a.createdAt < b.createdAt ? 1 : -1;
 }
@@ -1673,10 +1931,10 @@ function normalizeCapabilities(
   capabilities: WorkerRecord["capabilities"],
 ): WorkerRecord["capabilities"] {
   return {
-    canAnalyze: Boolean(capabilities.canAnalyze),
-    canBackfill: Boolean(capabilities.canBackfill),
-    canPatchWorkspace: Boolean(capabilities.canPatchWorkspace),
-    canPromoteLive: Boolean(capabilities.canPromoteLive),
+    canAnalyze: capabilities.canAnalyze,
+    canBackfill: capabilities.canBackfill,
+    canPatchWorkspace: capabilities.canPatchWorkspace,
+    canPromoteLive: capabilities.canPromoteLive,
     workspaceIds: [...new Set(capabilities.workspaceIds ?? [])],
     environments: [...new Set(capabilities.environments ?? [])],
   };
@@ -1732,6 +1990,230 @@ function normalizeTaskResult(result: TaskResult | undefined): TaskResult {
         }
       : undefined,
   };
+}
+
+function normalizeBrokerRetentionPolicy(
+  overrides?: Partial<BrokerRetentionPolicy>,
+): BrokerRetentionPolicy {
+  return {
+    terminalRetentionMs: normalizeNonNegativeInteger(
+      overrides?.terminalRetentionMs,
+      DEFAULT_BROKER_RETENTION_POLICY.terminalRetentionMs,
+    ),
+    maxTerminalExchanges: normalizeNonNegativeInteger(
+      overrides?.maxTerminalExchanges,
+      DEFAULT_BROKER_RETENTION_POLICY.maxTerminalExchanges,
+    ),
+    maxTerminalTasks: normalizeNonNegativeInteger(
+      overrides?.maxTerminalTasks,
+      DEFAULT_BROKER_RETENTION_POLICY.maxTerminalTasks,
+    ),
+    maxTerminalProposals: normalizeNonNegativeInteger(
+      overrides?.maxTerminalProposals,
+      DEFAULT_BROKER_RETENTION_POLICY.maxTerminalProposals,
+    ),
+    inactiveWorkerRetentionMs: normalizeNonNegativeInteger(
+      overrides?.inactiveWorkerRetentionMs,
+      DEFAULT_BROKER_RETENTION_POLICY.inactiveWorkerRetentionMs,
+    ),
+    maxInactiveWorkers: normalizeNonNegativeInteger(
+      overrides?.maxInactiveWorkers,
+      DEFAULT_BROKER_RETENTION_POLICY.maxInactiveWorkers,
+    ),
+    auditRetentionMs: normalizeNonNegativeInteger(
+      overrides?.auditRetentionMs,
+      DEFAULT_BROKER_RETENTION_POLICY.auditRetentionMs,
+    ),
+    maxAuditEvents: normalizeNonNegativeInteger(
+      overrides?.maxAuditEvents,
+      DEFAULT_BROKER_RETENTION_POLICY.maxAuditEvents,
+    ),
+  };
+}
+
+function normalizeNonNegativeInteger(value: number | undefined, fallback: number): number {
+  if (!Number.isFinite(value)) {
+    return fallback;
+  }
+  const normalized = value ?? fallback;
+  return Math.max(0, Math.trunc(normalized));
+}
+
+function isTerminalExchangeStatus(status: A2AExchangeState["status"]): boolean {
+  return status === "completed" || status === "failed";
+}
+
+function isTerminalTaskStatus(status: TaskRecord["status"]): boolean {
+  return status === "succeeded" || status === "failed" || status === "canceled";
+}
+
+function isTerminalProposalStatus(status: ChangeProposal["status"]): boolean {
+  return status === "rejected" || status === "applied" || status === "rolled_back";
+}
+
+function parseRetentionTimestamp(value: string | undefined): number | null {
+  if (!value) {
+    return null;
+  }
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function selectRetainedTerminalRecordIds<T>(params: {
+  records: T[];
+  isTerminal: (record: T) => boolean;
+  getId: (record: T) => string;
+  getTimestamp: (record: T) => string | undefined;
+  nowMs: number;
+  retentionMs: number;
+  maxTerminalRecords: number;
+  protectedIds?: Set<string>;
+}): Set<string> {
+  const retainedIds = new Set<string>(params.protectedIds ?? []);
+  const terminalCandidates: Array<{ id: string; timestampMs: number }> = [];
+  const cutoffMs = params.nowMs - params.retentionMs;
+
+  for (const record of params.records) {
+    const id = params.getId(record);
+    if (!params.isTerminal(record) || retainedIds.has(id)) {
+      retainedIds.add(id);
+      continue;
+    }
+
+    const timestampMs = parseRetentionTimestamp(params.getTimestamp(record));
+    if (timestampMs === null || timestampMs >= cutoffMs) {
+      retainedIds.add(id);
+      continue;
+    }
+
+    terminalCandidates.push({ id, timestampMs });
+  }
+
+  sortedCopy(
+    terminalCandidates,
+    (a, b) => b.timestampMs - a.timestampMs || a.id.localeCompare(b.id),
+  )
+    .slice(0, params.maxTerminalRecords)
+    .forEach((entry) => retainedIds.add(entry.id));
+
+  return retainedIds;
+}
+
+function selectRetainedWorkerIds(params: {
+  workers: WorkerRecord[];
+  nowMs: number;
+  inactiveWorkerRetentionMs: number;
+  maxInactiveWorkers: number;
+  protectedIds: Set<string>;
+}): Set<string> {
+  const retainedIds = new Set<string>(params.protectedIds);
+  const staleCandidates: Array<{ id: string; timestampMs: number }> = [];
+  const cutoffMs = params.nowMs - params.inactiveWorkerRetentionMs;
+
+  for (const worker of params.workers) {
+    if (retainedIds.has(worker.nodeId)) {
+      continue;
+    }
+    const lastSeenMs = parseRetentionTimestamp(worker.lastSeenAt);
+    if (lastSeenMs === null || lastSeenMs >= cutoffMs) {
+      retainedIds.add(worker.nodeId);
+      continue;
+    }
+    staleCandidates.push({ id: worker.nodeId, timestampMs: lastSeenMs });
+  }
+
+  sortedCopy(
+    staleCandidates,
+    (a, b) => b.timestampMs - a.timestampMs || a.id.localeCompare(b.id),
+  )
+    .slice(0, params.maxInactiveWorkers)
+    .forEach((entry) => retainedIds.add(entry.id));
+
+  return retainedIds;
+}
+
+function selectRetainedAuditEventIds(params: {
+  auditEvents: AuditEvent[];
+  nowMs: number;
+  auditRetentionMs: number;
+  maxAuditEvents: number;
+  retainedProposalIds: Set<string>;
+  retainedTaskIds: Set<string>;
+  retainedExchangeIds: Set<string>;
+  retainedMessageIds: Set<string>;
+  retainedArtifactIds: Set<string>;
+  retainedValidationIds: Set<string>;
+  retainedWorkerIds: Set<string>;
+}): Set<string> {
+  const retainedIds = new Set<string>();
+  const olderCandidates: Array<{ id: string; timestampMs: number }> = [];
+  const cutoffMs = params.nowMs - params.auditRetentionMs;
+
+  for (const event of params.auditEvents) {
+    const timestampMs = parseRetentionTimestamp(event.createdAt);
+    if (
+      isAuditEventRetained(event, params) ||
+      timestampMs === null ||
+      timestampMs >= cutoffMs
+    ) {
+      retainedIds.add(event.id);
+      continue;
+    }
+    olderCandidates.push({ id: event.id, timestampMs });
+  }
+
+  sortedCopy(
+    olderCandidates,
+    (a, b) => b.timestampMs - a.timestampMs || a.id.localeCompare(b.id),
+  )
+    .slice(0, params.maxAuditEvents)
+    .forEach((entry) => retainedIds.add(entry.id));
+
+  return retainedIds;
+}
+
+function isAuditEventRetained(
+  event: AuditEvent,
+  params: {
+    retainedProposalIds: Set<string>;
+    retainedTaskIds: Set<string>;
+    retainedExchangeIds: Set<string>;
+    retainedMessageIds: Set<string>;
+    retainedArtifactIds: Set<string>;
+    retainedValidationIds: Set<string>;
+    retainedWorkerIds: Set<string>;
+  },
+): boolean {
+  if (event.proposalId && params.retainedProposalIds.has(event.proposalId)) {
+    return true;
+  }
+
+  switch (event.targetType) {
+    case "proposal":
+      return params.retainedProposalIds.has(event.targetId);
+    case "artifact":
+      return params.retainedArtifactIds.has(event.targetId);
+    case "validation":
+      return params.retainedValidationIds.has(event.targetId);
+    case "worker":
+      return params.retainedWorkerIds.has(event.targetId);
+    case "task":
+      return params.retainedTaskIds.has(event.targetId);
+    case "exchange":
+      return params.retainedExchangeIds.has(event.targetId);
+    case "exchange-message":
+      return params.retainedMessageIds.has(event.targetId);
+    default:
+      return false;
+  }
+}
+
+function pruneMapEntries<T>(items: Map<string, T>, retainedIds: Set<string>): void {
+  for (const key of items.keys()) {
+    if (!retainedIds.has(key)) {
+      items.delete(key);
+    }
+  }
 }
 
 function normalizeTaskError(error: TaskError | undefined): TaskError {

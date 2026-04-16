@@ -1,6 +1,6 @@
 import { BrokerError, type InMemoryA2ABroker } from "../core/broker.js";
 import type { RequesterIdentity } from "../core/request-security.js";
-import type { A2AExchangeVia, TaskKind, TaskListFilters } from "../core/types.js";
+import type { A2AExchangeVia, TaskListFilters } from "../core/types.js";
 import type { AgentCard } from "./agent-card.js";
 import { projectBrokerTask } from "./task-projection.js";
 
@@ -389,5 +389,7 @@ function brokerErrorCode(code: BrokerError["code"]): number {
       return -32009;
     case "rate_limited":
       return -32029;
+    default:
+      throw new Error("unhandled broker error code");
   }
 }

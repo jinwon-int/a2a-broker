@@ -5,8 +5,8 @@
  * a single monolithic handler. Falls back to a default handler for
  * unregistered intents.
  */
-import type { TaskRecord, TaskResult, TaskError } from "../core/types.js";
-import type { A2ABrokerWorker, WorkerHandlerOutcome } from "../worker.js";
+import type { TaskRecord, TaskResult } from "../core/types.js";
+import type { WorkerHandlerOutcome } from "../worker.js";
 import type { WorkerTaskHandler } from "../worker.js";
 
 export interface IntentHandlerEntry {
@@ -135,8 +135,8 @@ export function withProposalContext(
     if (task.proposalId) {
       try {
         const details = await worker.getProposalDetails(task.proposalId);
-        // Mutate payload to inject context — safe because each task is processed once
-        (task.payload as Record<string, unknown>).__proposalDetails = details;
+        // Mutate payload to inject context, safe because each task is processed once.
+        task.payload.__proposalDetails = details;
       } catch {
         // If fetch fails, the handler itself will handle the missing proposal
       }

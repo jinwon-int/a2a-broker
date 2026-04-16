@@ -73,5 +73,7 @@ function mapTaskState(status: TaskStatus): A2ATaskState {
       return "failed";
     case "canceled":
       return "canceled";
+    default:
+      throw new Error("unhandled task status");
   }
 }

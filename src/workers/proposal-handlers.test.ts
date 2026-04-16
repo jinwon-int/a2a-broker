@@ -251,7 +251,7 @@ test("validate_change: validator fail → proposal still marked validated with f
 
   try {
     await worker.register();
-    const task = await createTaskOnBroker(server.baseUrl, {
+    await createTaskOnBroker(server.baseUrl, {
       intent: "validate_change",
       requester: { id: "hub-a", kind: "node", role: "hub" },
       target: { id: "target-node", kind: "node", role: "live-trader" },
@@ -339,38 +339,11 @@ test("apply_local_change: approved proposal → status becomes applied", async (
     throw new Error(`expected approved, got ${preApply.proposal.status}`);
   }
 
-  // The applying worker must be target-node (policy: only target node or operator)
-  const apiWorkerTarget = new A2ABrokerWorker({
-    brokerUrl: server.baseUrl,
-    requesterKind: "node",
-    pollIntervalMs: 25,
-    heartbeatIntervalMs: 25,
-    handlerTimeoutMs: 2_000,
-    userAgent: "a2a-worker-test",
-    handler: async () => ({}),
-    worker: {
-      nodeId: "target-node",
-      role: "live-trader",
-      displayName: "Target Node",
-      capabilities: {
-        canAnalyze: false, canBackfill: false, canPatchWorkspace: true, canPromoteLive: true,
-        workspaceIds: ["ws-test"], environments: ["live", "staging"],
-      },
-    },
-  });
-
   const applier: ProposalApplier = {
     async apply(task) {
       return { note: `applied to ${task.workspace?.workspaceId}` };
     },
   };
-
-  const worker = createWorkerWithHandler(server.baseUrl, createIntentRouter({
-    handlers: [{
-      intent: "apply_local_change",
-      handler: createApplyProposalHandler(applier),
-    }],
-  }));
 
   // Override worker ID to target-node for policy compliance
   const targetWorker = new A2ABrokerWorker({

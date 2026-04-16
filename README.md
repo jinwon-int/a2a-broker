@@ -35,9 +35,42 @@ Override with:
 STATE_FILE=/your/path/state.json
 ```
 
+`PUBLIC_BASE_URL` is now required at boot and must be a real absolute `http` or
+`https` URL. Leaving the masked placeholder in place will fail fast during
+startup so the broker does not publish unusable discovery metadata.
+
 The file store uses atomic temp-file writes plus rename, so it is good enough for phase 1 without bringing in a database yet.
 
-Current state schema version: `2`
+Current state schema version: `5`
+
+The broker now also applies in-memory retention before each snapshot save so
+terminal exchanges, tasks, proposals, audit events, and long-stale workers do
+not grow without bound.
+
+Default retention policy:
+
+- terminal exchanges: newest `1000` plus anything newer than `7d`
+- terminal tasks: newest `2000` plus anything newer than `7d`
+- terminal proposals: newest `1000` plus anything newer than `7d`
+- audit events: newest `5000` plus anything newer than `7d`
+- inactive workers: newest `500` plus anything seen within `14d`
+
+Snapshot loads now reject malformed JSON and files larger than `50 MiB` by
+default instead of accepting partial or poisoned state.
+
+Retention / snapshot env vars:
+
+```bash
+BROKER_TERMINAL_RETENTION_MS=
+BROKER_MAX_TERMINAL_EXCHANGES=
+BROKER_MAX_TERMINAL_TASKS=
+BROKER_MAX_TERMINAL_PROPOSALS=
+BROKER_INACTIVE_WORKER_RETENTION_MS=
+BROKER_MAX_INACTIVE_WORKERS=
+BROKER_AUDIT_RETENTION_MS=
+BROKER_MAX_AUDIT_EVENTS=
+STATE_FILE_MAX_BYTES=
+```
 
 ## Request identity and rate limits
 
@@ -59,6 +92,10 @@ Worker lifecycle traffic uses a separate bucket by default so register,
 heartbeat, and claim/start/complete/fail requests do not consume the same limit
 as general exchange, proposal, and audit traffic.
 
+`x-forwarded-for` is ignored by default. Set `TRUSTED_PROXY=1` only when the
+broker sits behind a reverse proxy you control and want rate limiting keyed off
+the forwarded client IP instead of the direct socket peer.
+
 Related env vars:
 
 ```bash
@@ -67,6 +104,7 @@ RATE_LIMIT_MAX_REQUESTS=10
 WORKER_RATE_LIMIT_WINDOW_SEC=60
 WORKER_RATE_LIMIT_MAX_REQUESTS=60
 ENFORCE_REQUESTER_IDENTITY=1
+TRUSTED_PROXY=0
 EDGE_SECRET=
 ```
 
@@ -90,7 +128,7 @@ Operational note:
 ```bash
 cd a2a-broker
 cp .env.example .env
-# keep external hostnames and public endpoints masked in .env
+# replace PUBLIC_BASE_URL with the real reverse-proxy or public broker URL
 npm install
 npm run build
 npm start

@@ -1,7 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { InMemoryA2ABroker } from "../core/broker.js";
 import { createIntentRouter, assertProposalTask, assertWorkspaceTask, assertPayloadField, withProposalContext, TaskAssertionError } from "./intent-router.js";
 import type { TaskRecord } from "../core/types.js";
 
@@ -126,10 +125,10 @@ test("assertProposalTask throws on intent mismatch", () => {
   try {
     assertProposalTask(task, "validate_change");
     assert.fail("should have thrown");
-  } catch (error: any) {
-    assert.ok(error instanceof Error);
+  } catch (error: unknown) {
+    assert.ok(error instanceof TaskAssertionError);
     assert.ok(error.message.length > 0);
-    assert.equal((error as any).outcome.error.code, "intent_mismatch");
+    assert.equal(error.outcome.error?.code, "intent_mismatch");
   }
 });
 
@@ -138,10 +137,10 @@ test("assertProposalTask throws on missing proposalId", () => {
   try {
     assertProposalTask(task);
     assert.fail("should have thrown");
-  } catch (error: any) {
-    assert.ok(error instanceof Error);
+  } catch (error: unknown) {
+    assert.ok(error instanceof TaskAssertionError);
     assert.ok(error.message.length > 0);
-    assert.equal((error as any).outcome.error.code, "missing_proposal_id");
+    assert.equal(error.outcome.error?.code, "missing_proposal_id");
   }
 });
 
@@ -150,10 +149,10 @@ test("assertWorkspaceTask throws on missing workspace", () => {
   try {
     assertWorkspaceTask(task);
     assert.fail("should have thrown");
-  } catch (error: any) {
-    assert.ok(error instanceof Error);
+  } catch (error: unknown) {
+    assert.ok(error instanceof TaskAssertionError);
     assert.ok(error.message.length > 0);
-    assert.equal((error as any).outcome.error.code, "missing_workspace");
+    assert.equal(error.outcome.error?.code, "missing_workspace");
   }
 });
 
@@ -175,10 +174,10 @@ test("assertPayloadField throws on missing field", () => {
   try {
     assertPayloadField(task, "threshold");
     assert.fail("should have thrown");
-  } catch (error: any) {
-    assert.ok(error instanceof Error);
+  } catch (error: unknown) {
+    assert.ok(error instanceof TaskAssertionError);
     assert.ok(error.message.length > 0);
-    assert.equal((error as any).outcome.error.code, "missing_payload_field");
+    assert.equal(error.outcome.error?.code, "missing_payload_field");
   }
 });
 
@@ -186,7 +185,9 @@ test("withProposalContext loads proposal details into task payload", async () =>
   const mockDetails = { proposal: { id: "p1", status: "submitted" }, validations: [] };
   const mockWorker = {
     async getProposalDetails(id: string) {
-      if (id === "p1") return mockDetails;
+      if (id === "p1") {
+        return mockDetails;
+      }
       throw new Error("not found");
     },
   };

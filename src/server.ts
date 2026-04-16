@@ -2,7 +2,12 @@ import { createServer, type IncomingMessage, type RequestListener, type Server, 
 
 import { createBrokerAgentCard, type AgentCard } from "./a2a/agent-card.js";
 import { executeA2AJsonRpc } from "./a2a/json-rpc.js";
-import { BrokerError, InMemoryA2ABroker } from "./core/broker.js";
+import {
+  BrokerError,
+  DEFAULT_BROKER_RETENTION_POLICY,
+  InMemoryA2ABroker,
+  type BrokerRetentionPolicy,
+} from "./core/broker.js";
 import {
   applyRateLimitHeaders,
   assertEdgeSecret,
@@ -13,19 +18,36 @@ import {
   extractRequesterIdentity,
   InMemoryRateLimiter,
   rateLimitKey,
+  type RequesterIdentity,
 } from "./core/request-security.js";
 import {
   CURRENT_BROKER_STATE_VERSION,
+  DEFAULT_BROKER_STATE_MAX_BYTES,
   JsonFileBrokerStateStore,
   type BrokerStateStore,
 } from "./core/store.js";
 import type {
   A2AExchangeMessageRecord,
+  A2AExchangeMessageRequest,
+  A2AExchangeRequest,
   AuditAction,
+  ApplyProposalRequest,
+  AttachArtifactRequest,
+  CreateProposalRequest,
+  CreateTaskRequest,
+  ProposalActorRequest,
   ProposalKind,
   ProposalStatus,
+  RegisterWorkerRequest,
+  SubmitValidationRequest,
+  TaskCancelRequest,
+  TaskClaimRequest,
+  TaskCompleteRequest,
+  TaskFailRequest,
   TaskKind,
+  TaskReassignRequest,
   TaskStatus,
+  WorkerHeartbeatRequest,
   WorkerListFilters,
   A2AWorkerEnvironment,
   A2APartyRole,
@@ -51,6 +73,9 @@ export interface BrokerServerOptions {
   agentCard?: AgentCard;
   stateStore?: BrokerStateStore;
   broker?: InMemoryA2ABroker;
+  retentionPolicy?: Partial<BrokerRetentionPolicy>;
+  maxSnapshotBytes?: number;
+  trustedProxy?: boolean;
 }
 
 export interface BrokerServerRuntime {
@@ -70,6 +95,9 @@ export interface BrokerServerRuntime {
     workerRateLimitMaxRequests: number;
     enforceRequesterIdentity: boolean;
     edgeSecret?: string;
+    retentionPolicy: BrokerRetentionPolicy;
+    maxSnapshotBytes: number;
+    trustedProxy: boolean;
   };
 }
 
@@ -77,8 +105,7 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
   const host = options.host ?? process.env.HOST ?? "0.0.0.0";
   const port = options.port ?? Number(process.env.PORT ?? 8787);
   const serviceName = options.serviceName ?? process.env.SERVICE_NAME ?? "a2a-broker";
-  const publicBaseUrl =
-    options.publicBaseUrl ?? process.env.PUBLIC_BASE_URL ?? "http://<masked-host>:8787";
+  const publicBaseUrl = resolvePublicBaseUrl(options.publicBaseUrl ?? process.env.PUBLIC_BASE_URL);
   const stateFile = options.stateFile ?? process.env.STATE_FILE ?? "/var/lib/a2a-broker/state.json";
   const workerOfflineAfterSec = options.workerOfflineAfterSec ?? Number(process.env.WORKER_OFFLINE_AFTER_SEC ?? 90);
   const rateLimitWindowSec = options.rateLimitWindowSec ?? Number(process.env.RATE_LIMIT_WINDOW_SEC ?? 60);
@@ -90,11 +117,17 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
   const enforceRequesterIdentity =
     options.enforceRequesterIdentity ?? process.env.ENFORCE_REQUESTER_IDENTITY !== "0";
   const edgeSecret = options.edgeSecret ?? process.env.EDGE_SECRET ?? process.env.A2A_EDGE_SECRET;
+  const trustedProxy = options.trustedProxy ?? process.env.TRUSTED_PROXY === "1";
+  const retentionPolicy = resolveBrokerRetentionPolicy(options.retentionPolicy);
+  const maxSnapshotBytes = Math.max(
+    1,
+    options.maxSnapshotBytes ?? Number(process.env.STATE_FILE_MAX_BYTES ?? DEFAULT_BROKER_STATE_MAX_BYTES),
+  );
 
   const stateStore =
-    options.stateStore ?? new JsonFileBrokerStateStore(stateFile);
+    options.stateStore ?? new JsonFileBrokerStateStore(stateFile, { maxBytes: maxSnapshotBytes });
   const broker =
-    options.broker ?? new InMemoryA2ABroker(stateStore, stateStore.load());
+    options.broker ?? new InMemoryA2ABroker(stateStore, stateStore.load(), { retention: retentionPolicy });
   const rateLimiter = new InMemoryRateLimiter(
     Math.max(1, rateLimitMaxRequests),
     Math.max(1, rateLimitWindowSec) * 1000,
@@ -116,16 +149,21 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
     const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
     const path = url.pathname;
     const segments = path.split("/").filter(Boolean);
-    const requesterIdentity = extractRequesterIdentity(req);
+    let requesterIdentity: RequesterIdentity | null = null;
 
     try {
+      requesterIdentity = extractRequesterIdentity(req);
       const isPublicDiscoveryRoute = req.method === "GET" && path === "/.well-known/agent-card.json";
       if (path !== "/health" && !isPublicDiscoveryRoute) {
         assertEdgeSecret(req, edgeSecret);
 
         const bucket = classifyRateLimitBucket(req, url);
         const limiter = bucket === "worker" ? workerRateLimiter : rateLimiter;
-        const decision = limiter.check(rateLimitKey(req, requesterIdentity));
+        const decision = limiter.check(
+          rateLimitKey(req, requesterIdentity, {
+            trustedProxy,
+          }),
+        );
         applyRateLimitHeaders(res, decision, bucket);
         if (!decision.allowed) {
           res.setHeader("retry-after", String(decision.retryAfterSec));
@@ -154,7 +192,10 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
             rateLimitMaxRequests,
             workerRateLimitWindowSec,
             workerRateLimitMaxRequests,
+            trustedProxy,
           },
+          retentionPolicy,
+          maxSnapshotBytes,
         });
       }
 
@@ -195,7 +236,7 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
       }
 
       if (req.method === "POST" && path === "/workers/register") {
-        const body = await readJson(req);
+        const body = await readJson<RegisterWorkerRequest>(req);
         if (!body) {
           throw new BrokerError("bad_request", "request body is required");
         }
@@ -219,7 +260,7 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
       }
 
       if (req.method === "POST" && segments[0] === "workers" && segments[1] && segments[2] === "heartbeat") {
-        const body = await readJson(req);
+        const body = await readJson<WorkerHeartbeatRequest>(req);
         if (enforceRequesterIdentity) {
           const existingWorker = broker.getWorker(segments[1]);
           assertRequesterMatchesParty(
@@ -237,7 +278,7 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
       }
 
       if (req.method === "POST" && path === "/exchanges") {
-        const body = await readJson(req);
+        const body = await readJson<A2AExchangeRequest>(req);
         if (!body?.requester?.id || !body?.target?.id || !body?.message) {
           throw new BrokerError("bad_request", "requester.id, target.id, and message are required");
         }
@@ -266,7 +307,7 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
       }
 
       if (req.method === "POST" && segments[0] === "exchanges" && segments[1] && segments[2] === "messages") {
-        const body = await readJson(req);
+        const body = await readJson<A2AExchangeMessageRequest>(req);
         if (!body?.actor?.id || !body?.message) {
           throw new BrokerError("bad_request", "actor.id and message are required");
         }
@@ -304,7 +345,7 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
       }
 
       if (req.method === "POST" && path === "/proposals") {
-        const body = await readJson(req);
+        const body = await readJson<CreateProposalRequest>(req);
         if (!body) {
           throw new BrokerError("bad_request", "request body is required");
         }
@@ -328,7 +369,7 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
       }
 
       if (req.method === "POST" && segments[0] === "proposals" && segments[1] && segments[2] === "artifacts") {
-        const body = await readJson(req);
+        const body = await readJson<AttachArtifactRequest>(req);
         if (!body) {
           throw new BrokerError("bad_request", "request body is required");
         }
@@ -344,7 +385,7 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
       }
 
       if (req.method === "POST" && segments[0] === "proposals" && segments[1] && segments[2] === "validate") {
-        const body = await readJson(req);
+        const body = await readJson<SubmitValidationRequest>(req);
         if (!body) {
           throw new BrokerError("bad_request", "request body is required");
         }
@@ -356,7 +397,7 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
       }
 
       if (req.method === "POST" && segments[0] === "proposals" && segments[1] && segments[2] === "approve") {
-        const body = await readJson(req);
+        const body = await readJson<ProposalActorRequest>(req);
         if (!body?.actor?.id) {
           throw new BrokerError("bad_request", "actor.id is required");
         }
@@ -377,7 +418,7 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
       }
 
       if (req.method === "POST" && segments[0] === "proposals" && segments[1] && segments[2] === "reject") {
-        const body = await readJson(req);
+        const body = await readJson<ProposalActorRequest>(req);
         if (!body?.actor?.id) {
           throw new BrokerError("bad_request", "actor.id is required");
         }
@@ -398,7 +439,7 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
       }
 
       if (req.method === "POST" && segments[0] === "proposals" && segments[1] && segments[2] === "apply") {
-        const body = await readJson(req);
+        const body = await readJson<ApplyProposalRequest>(req);
         if (!body?.actor?.id || !body.workspace?.nodeId || !body.workspace?.workspaceId) {
           throw new BrokerError("bad_request", "actor.id, workspace.nodeId, and workspace.workspaceId are required");
         }
@@ -424,7 +465,7 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
       }
 
       if (req.method === "POST" && path === "/tasks") {
-        const body = await readJson(req);
+        const body = await readJson<CreateTaskRequest>(req);
         if (!body) {
           throw new BrokerError("bad_request", "request body is required");
         }
@@ -473,7 +514,7 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
       }
 
       if (req.method === "POST" && segments[0] === "tasks" && segments[1] && segments[2] === "claim") {
-        const body = await readJson(req);
+        const body = await readJson<TaskClaimRequest>(req);
         if (!body?.workerId) {
           throw new BrokerError("bad_request", "workerId is required");
         }
@@ -485,7 +526,7 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
       }
 
       if (req.method === "POST" && segments[0] === "tasks" && segments[1] && segments[2] === "start") {
-        const body = await readJson(req);
+        const body = await readJson<TaskClaimRequest>(req);
         if (!body?.workerId) {
           throw new BrokerError("bad_request", "workerId is required");
         }
@@ -497,7 +538,7 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
       }
 
       if (req.method === "POST" && segments[0] === "tasks" && segments[1] && segments[2] === "complete") {
-        const body = await readJson(req);
+        const body = await readJson<TaskCompleteRequest>(req);
         if (!body?.workerId) {
           throw new BrokerError("bad_request", "workerId is required");
         }
@@ -509,7 +550,7 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
       }
 
       if (req.method === "POST" && segments[0] === "tasks" && segments[1] && segments[2] === "fail") {
-        const body = await readJson(req);
+        const body = await readJson<TaskFailRequest>(req);
         if (!body?.workerId) {
           throw new BrokerError("bad_request", "workerId is required");
         }
@@ -521,7 +562,7 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
       }
 
       if (req.method === "POST" && segments[0] === "tasks" && segments[1] && segments[2] === "cancel") {
-        const body = await readJson(req);
+        const body = await readJson<TaskCancelRequest>(req);
         if (!body?.actor?.id) {
           throw new BrokerError("bad_request", "actor.id is required");
         }
@@ -537,7 +578,7 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
       }
 
       if (req.method === "POST" && segments[0] === "tasks" && segments[1] && segments[2] === "reassign") {
-        const body = await readJson(req);
+        const body = await readJson<TaskReassignRequest>(req);
         if (!body?.actor?.id) {
           throw new BrokerError("bad_request", "actor.id is required");
         }
@@ -583,8 +624,102 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
       workerRateLimitMaxRequests,
       enforceRequesterIdentity,
       edgeSecret,
+      retentionPolicy,
+      maxSnapshotBytes,
+      trustedProxy,
     },
   };
+}
+
+function resolveBrokerRetentionPolicy(
+  overrides?: Partial<BrokerRetentionPolicy>,
+): BrokerRetentionPolicy {
+  return {
+    terminalRetentionMs: resolvePolicyNumber(
+      overrides?.terminalRetentionMs,
+      process.env.BROKER_TERMINAL_RETENTION_MS,
+      DEFAULT_BROKER_RETENTION_POLICY.terminalRetentionMs,
+    ),
+    maxTerminalExchanges: resolvePolicyNumber(
+      overrides?.maxTerminalExchanges,
+      process.env.BROKER_MAX_TERMINAL_EXCHANGES,
+      DEFAULT_BROKER_RETENTION_POLICY.maxTerminalExchanges,
+    ),
+    maxTerminalTasks: resolvePolicyNumber(
+      overrides?.maxTerminalTasks,
+      process.env.BROKER_MAX_TERMINAL_TASKS,
+      DEFAULT_BROKER_RETENTION_POLICY.maxTerminalTasks,
+    ),
+    maxTerminalProposals: resolvePolicyNumber(
+      overrides?.maxTerminalProposals,
+      process.env.BROKER_MAX_TERMINAL_PROPOSALS,
+      DEFAULT_BROKER_RETENTION_POLICY.maxTerminalProposals,
+    ),
+    inactiveWorkerRetentionMs: resolvePolicyNumber(
+      overrides?.inactiveWorkerRetentionMs,
+      process.env.BROKER_INACTIVE_WORKER_RETENTION_MS,
+      DEFAULT_BROKER_RETENTION_POLICY.inactiveWorkerRetentionMs,
+    ),
+    maxInactiveWorkers: resolvePolicyNumber(
+      overrides?.maxInactiveWorkers,
+      process.env.BROKER_MAX_INACTIVE_WORKERS,
+      DEFAULT_BROKER_RETENTION_POLICY.maxInactiveWorkers,
+    ),
+    auditRetentionMs: resolvePolicyNumber(
+      overrides?.auditRetentionMs,
+      process.env.BROKER_AUDIT_RETENTION_MS,
+      DEFAULT_BROKER_RETENTION_POLICY.auditRetentionMs,
+    ),
+    maxAuditEvents: resolvePolicyNumber(
+      overrides?.maxAuditEvents,
+      process.env.BROKER_MAX_AUDIT_EVENTS,
+      DEFAULT_BROKER_RETENTION_POLICY.maxAuditEvents,
+    ),
+  };
+}
+
+function resolvePolicyNumber(
+  explicit: number | undefined,
+  fromEnv: string | undefined,
+  fallback: number,
+): number {
+  if (typeof explicit === "number" && Number.isFinite(explicit)) {
+    return Math.max(0, Math.trunc(explicit));
+  }
+  const parsed = Number(fromEnv);
+  if (Number.isFinite(parsed)) {
+    return Math.max(0, Math.trunc(parsed));
+  }
+  return fallback;
+}
+
+function resolvePublicBaseUrl(value: string | undefined): string {
+  const trimmed = value?.trim();
+  if (!trimmed) {
+    throw new Error(
+      "PUBLIC_BASE_URL is required. Set a real public base URL instead of relying on the masked placeholder.",
+    );
+  }
+
+  const normalized = trimmed.toLowerCase();
+  if (normalized.includes("<masked-host>")) {
+    throw new Error(
+      "PUBLIC_BASE_URL must not use the placeholder http://<masked-host>:8787. Set the real public base URL before starting the broker.",
+    );
+  }
+
+  let parsed: URL;
+  try {
+    parsed = new URL(trimmed);
+  } catch {
+    throw new Error(`PUBLIC_BASE_URL must be a valid absolute URL: ${trimmed}`);
+  }
+
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    throw new Error(`PUBLIC_BASE_URL must use http or https: ${trimmed}`);
+  }
+
+  return parsed.toString();
 }
 
 export function startBrokerServer(options: BrokerServerOptions = {}): BrokerServerRuntime {
@@ -599,7 +734,7 @@ if (import.meta.url === new URL(process.argv[1] ?? "", "file://").href) {
   startBrokerServer();
 }
 
-async function readJson(req: IncomingMessage): Promise<any | null> {
+async function readJson<T = unknown>(req: IncomingMessage): Promise<T | null> {
   const chunks: Buffer[] = [];
   for await (const chunk of req) {
     chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
@@ -611,7 +746,7 @@ async function readJson(req: IncomingMessage): Promise<any | null> {
 
   const raw = Buffer.concat(chunks).toString("utf8");
   try {
-    return JSON.parse(raw);
+    return JSON.parse(raw) as T;
   } catch {
     throw new BrokerError("bad_request", "invalid JSON body");
   }
@@ -823,6 +958,8 @@ function statusCodeFor(code: BrokerError["code"]): number {
       return 409;
     case "rate_limited":
       return 429;
+    default:
+      throw new Error("unhandled broker error code");
   }
 }
 

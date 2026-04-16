@@ -1,8 +1,12 @@
 import { timingSafeEqual } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { z } from "zod";
 
 import { BrokerError } from "./broker.js";
 import type { A2APartyKind, A2APartyRole, ChangeProposal } from "./types.js";
+
+const requesterKindSchema = z.enum(["session", "node", "user", "service"]);
+const requesterRoleSchema = z.enum(["hub", "live-trader", "researcher", "analyst", "operator"]);
 
 export interface RequesterIdentity {
   id: string;
@@ -57,23 +61,43 @@ export class InMemoryRateLimiter {
 
 export function extractRequesterIdentity(req: IncomingMessage): RequesterIdentity | null {
   const id = headerValue(req, "x-a2a-requester-id");
+  const rawKind = headerValue(req, "x-a2a-requester-kind");
+  const rawRole = headerValue(req, "x-a2a-requester-role");
+
   if (!id) {
+    if (rawKind || rawRole) {
+      throw new BrokerError(
+        "bad_request",
+        "x-a2a-requester-id is required when requester kind or role headers are present",
+      );
+    }
     return null;
   }
 
+  const kind = parseRequesterKind(rawKind);
+  const role = parseRequesterRole(rawRole);
+
   return {
     id,
-    kind: headerValue(req, "x-a2a-requester-kind") as A2APartyKind | undefined,
-    role: headerValue(req, "x-a2a-requester-role") as A2APartyRole | undefined,
+    kind,
+    role,
   };
 }
 
-export function rateLimitKey(req: IncomingMessage, identity: RequesterIdentity | null): string {
+export interface RateLimitKeyOptions {
+  trustedProxy?: boolean;
+}
+
+export function rateLimitKey(
+  req: IncomingMessage,
+  identity: RequesterIdentity | null,
+  options: RateLimitKeyOptions = {},
+): string {
   if (identity?.id) {
     return `requester:${identity.id}`;
   }
 
-  const forwarded = headerValue(req, "x-forwarded-for");
+  const forwarded = options.trustedProxy ? headerValue(req, "x-forwarded-for") : undefined;
   const remoteAddress = forwarded?.split(",")[0]?.trim() || req.socket.remoteAddress || "unknown";
   return `ip:${remoteAddress}`;
 }
@@ -242,4 +266,34 @@ function headerValue(req: IncomingMessage, name: string): string | undefined {
     return value.trim() || undefined;
   }
   return undefined;
+}
+
+function parseRequesterKind(value: string | undefined): A2APartyKind | undefined {
+  if (!value) {
+    return undefined;
+  }
+
+  const parsed = requesterKindSchema.safeParse(value);
+  if (!parsed.success) {
+    throw new BrokerError(
+      "bad_request",
+      `x-a2a-requester-kind must be one of: ${requesterKindSchema.options.join(", ")}`,
+    );
+  }
+  return parsed.data;
+}
+
+function parseRequesterRole(value: string | undefined): A2APartyRole | undefined {
+  if (!value) {
+    return undefined;
+  }
+
+  const parsed = requesterRoleSchema.safeParse(value);
+  if (!parsed.success) {
+    throw new BrokerError(
+      "bad_request",
+      `x-a2a-requester-role must be one of: ${requesterRoleSchema.options.join(", ")}`,
+    );
+  }
+  return parsed.data;
 }

@@ -25,6 +25,7 @@ async function startTestServer(options: Partial<BrokerServerOptions> = {}) {
   const runtime = createBrokerServer({
     host: "127.0.0.1",
     port: 0,
+    publicBaseUrl: "https://broker.test/",
     stateStore: createInMemoryStateStore(),
     enforceRequesterIdentity: true,
     rateLimitMaxRequests: 100,
@@ -142,12 +143,12 @@ test("worker registers, heartbeats, polls queued work, and completes tasks", asy
 
     const auditResponse = await fetch(`${server.baseUrl}/audit`);
     const audit = await auditResponse.json();
-    const actions = audit.items.map((item: { action: string }) => item.action);
-    assert.ok(actions.includes("worker.registered"));
-    assert.ok(actions.includes("worker.heartbeat"));
-    assert.ok(actions.includes("task.claimed"));
-    assert.ok(actions.includes("task.started"));
-    assert.ok(actions.includes("task.succeeded"));
+    const actions = new Set(audit.items.map((item: { action: string }) => item.action));
+    assert.ok(actions.has("worker.registered"));
+    assert.ok(actions.has("worker.heartbeat"));
+    assert.ok(actions.has("task.claimed"));
+    assert.ok(actions.has("task.started"));
+    assert.ok(actions.has("task.succeeded"));
   } finally {
     await worker.stop();
     await server.close();
@@ -304,7 +305,7 @@ test("worker proposal APIs: createProposal, getProposalDetails, submitValidation
     assert.equal(details.validations.length, 0);
 
     // Submit validation
-    const validation = await worker.submitValidation(proposal.id, {
+    await worker.submitValidation(proposal.id, {
       nodeId: "worker-a",
       kind: "backfill",
       verdict: "pass",

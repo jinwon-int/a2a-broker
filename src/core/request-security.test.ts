@@ -1,31 +1,49 @@
 import assert from "node:assert/strict";
-import type { IncomingMessage } from "node:http";
 import test from "node:test";
+import type { IncomingMessage } from "node:http";
 
-import { classifyRateLimitBucket } from "./request-security.js";
+import { rateLimitKey } from "./request-security.js";
 
-function createRequest(method: string, headers: Record<string, string> = {}): IncomingMessage {
+function createRequest(params: {
+  headers?: Record<string, string>;
+  remoteAddress?: string;
+} = {}): IncomingMessage {
   return {
-    method,
-    headers,
-    socket: { remoteAddress: "127.0.0.1" },
+    headers: params.headers ?? {},
+    socket: {
+      remoteAddress: params.remoteAddress ?? "127.0.0.1",
+    },
   } as IncomingMessage;
 }
 
-test("matching assignedWorkerId task polls use the worker rate limit bucket", () => {
-  const bucket = classifyRateLimitBucket(
-    createRequest("GET", { "x-a2a-requester-id": "worker-a" }),
-    new URL("http://broker.test/tasks?assignedWorkerId=worker-a&status=queued"),
-  );
+test("rateLimitKey ignores x-forwarded-for unless trusted proxy mode is enabled", () => {
+  const request = createRequest({
+    headers: {
+      "x-forwarded-for": "203.0.113.10, 10.0.0.2",
+    },
+    remoteAddress: "10.0.0.2",
+  });
 
-  assert.equal(bucket, "worker");
+  assert.equal(rateLimitKey(request, null), "ip:10.0.0.2");
+  assert.equal(rateLimitKey(request, null, { trustedProxy: true }), "ip:203.0.113.10");
 });
 
-test("mismatched assignedWorkerId task polls stay on the general rate limit bucket", () => {
-  const bucket = classifyRateLimitBucket(
-    createRequest("GET", { "x-a2a-requester-id": "hub-a" }),
-    new URL("http://broker.test/tasks?assignedWorkerId=worker-a&status=queued"),
-  );
+test("rateLimitKey always prefers requester identity over proxy headers", () => {
+  const request = createRequest({
+    headers: {
+      "x-forwarded-for": "203.0.113.10",
+    },
+    remoteAddress: "10.0.0.2",
+  });
 
-  assert.equal(bucket, "general");
+  assert.equal(
+    rateLimitKey(
+      request,
+      {
+        id: "worker-a",
+      },
+      { trustedProxy: true },
+    ),
+    "requester:worker-a",
+  );
 });

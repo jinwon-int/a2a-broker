@@ -2,6 +2,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { InMemoryA2ABroker } from "./broker.js";
+import { CURRENT_BROKER_STATE_VERSION, type BrokerSnapshot } from "./store.js";
+import type { WorkerRecord } from "./types.js";
 
 function registerWorker(broker: InMemoryA2ABroker, nodeId: string): void {
   broker.registerWorker({
@@ -377,8 +379,8 @@ test("getDashboard history tracks completed and failed tasks", () => {
   assert.equal(dashboard.history.totalCompleted, 1);
   assert.equal(dashboard.history.totalFailed, 1);
   assert.equal(dashboard.history.recent.length, 2);
-  const statuses = dashboard.history.recent.map((r) => r.status);
-  assert.ok(statuses.includes("succeeded") && statuses.includes("failed"));
+  const statuses = new Set(dashboard.history.recent.map((r) => r.status));
+  assert.ok(statuses.has("succeeded") && statuses.has("failed"));
   const succeeded = dashboard.history.recent.find((r) => r.status === "succeeded")!;
   const failed = dashboard.history.recent.find((r) => r.status === "failed")!;
   assert.ok(succeeded.result?.summary === "done");
@@ -448,4 +450,264 @@ test("getDashboard workers shows active task counts", () => {
   const w1 = dashboard.workers.byNode.find((w) => w.nodeId === "w1")!;
   assert.equal(w1.activeTaskCount, 1);
   assert.equal(w1.role, "analyst");
+});
+
+test("retention prunes stale terminal state but preserves the newest referenced graph", () => {
+  const oldIso = "2020-01-01T00:00:00.000Z";
+  const newerOldIso = "2020-01-02T00:00:00.000Z";
+  const workerCapabilities: WorkerRecord["capabilities"] = {
+    canAnalyze: true,
+    canBackfill: false,
+    canPatchWorkspace: false,
+    canPromoteLive: false,
+    workspaceIds: ["test"],
+    environments: ["research"],
+  };
+  const hub = { id: "hub-a", kind: "node" as const, role: "hub" as const };
+  const retainedWorker = {
+    id: "worker-ref",
+    kind: "node" as const,
+    role: "analyst" as const,
+  };
+  const prunedWorker = {
+    id: "worker-pruned",
+    kind: "node" as const,
+    role: "analyst" as const,
+  };
+
+  const snapshot: BrokerSnapshot = {
+    version: CURRENT_BROKER_STATE_VERSION,
+    exchanges: [
+      {
+        id: "exchange-retained",
+        requester: hub,
+        target: retainedWorker,
+        targetNodeId: retainedWorker.id,
+        assignedWorkerId: retainedWorker.id,
+        message: "keep me",
+        maxTurns: 1,
+        intent: "analyze",
+        status: "completed",
+        rootMessageId: "message-retained",
+        latestMessageId: "message-retained",
+        messageCount: 1,
+        lastMessageAt: newerOldIso,
+        activeTaskId: "task-retained",
+        createdAt: oldIso,
+        updatedAt: newerOldIso,
+      },
+      {
+        id: "exchange-pruned",
+        requester: hub,
+        target: prunedWorker,
+        targetNodeId: prunedWorker.id,
+        assignedWorkerId: prunedWorker.id,
+        message: "prune me",
+        maxTurns: 1,
+        intent: "analyze",
+        status: "completed",
+        rootMessageId: "message-pruned",
+        latestMessageId: "message-pruned",
+        messageCount: 1,
+        lastMessageAt: oldIso,
+        activeTaskId: "task-pruned",
+        createdAt: oldIso,
+        updatedAt: oldIso,
+      },
+    ],
+    exchangeMessages: [
+      {
+        id: "message-retained",
+        exchangeId: "exchange-retained",
+        kind: "root",
+        message: "keep me",
+        requester: hub,
+        targetNodeId: retainedWorker.id,
+        createdAt: newerOldIso,
+        updatedAt: newerOldIso,
+      },
+      {
+        id: "message-pruned",
+        exchangeId: "exchange-pruned",
+        kind: "root",
+        message: "prune me",
+        requester: hub,
+        targetNodeId: prunedWorker.id,
+        createdAt: oldIso,
+        updatedAt: oldIso,
+      },
+    ],
+    proposals: [
+      {
+        id: "proposal-retained",
+        source: retainedWorker,
+        target: retainedWorker,
+        sourceNodeId: retainedWorker.id,
+        targetNodeId: retainedWorker.id,
+        kind: "patch",
+        summary: "keep me",
+        workspace: { nodeId: retainedWorker.id, workspaceId: "ws-1" },
+        artifactIds: ["artifact-retained"],
+        status: "applied",
+        createdAt: oldIso,
+        updatedAt: oldIso,
+      },
+      {
+        id: "proposal-pruned",
+        source: prunedWorker,
+        target: prunedWorker,
+        sourceNodeId: prunedWorker.id,
+        targetNodeId: prunedWorker.id,
+        kind: "patch",
+        summary: "prune me",
+        workspace: { nodeId: prunedWorker.id, workspaceId: "ws-2" },
+        artifactIds: ["artifact-pruned"],
+        status: "applied",
+        createdAt: oldIso,
+        updatedAt: oldIso,
+      },
+    ],
+    artifacts: [
+      {
+        id: "artifact-retained",
+        proposalId: "proposal-retained",
+        kind: "diff",
+        uri: "file:///retained.patch",
+        createdAt: oldIso,
+      },
+      {
+        id: "artifact-pruned",
+        proposalId: "proposal-pruned",
+        kind: "diff",
+        uri: "file:///pruned.patch",
+        createdAt: oldIso,
+      },
+    ],
+    validations: [
+      {
+        id: "validation-retained",
+        proposalId: "proposal-retained",
+        nodeId: retainedWorker.id,
+        kind: "smoke",
+        verdict: "pass",
+        metrics: {},
+        artifactIds: ["artifact-retained"],
+        createdAt: oldIso,
+      },
+      {
+        id: "validation-pruned",
+        proposalId: "proposal-pruned",
+        nodeId: prunedWorker.id,
+        kind: "smoke",
+        verdict: "pass",
+        metrics: {},
+        artifactIds: ["artifact-pruned"],
+        createdAt: oldIso,
+      },
+    ],
+    auditEvents: [
+      {
+        id: "audit-retained",
+        actorId: retainedWorker.id,
+        action: "task.succeeded",
+        targetType: "task",
+        targetId: "task-retained",
+        proposalId: "proposal-retained",
+        createdAt: oldIso,
+      },
+      {
+        id: "audit-pruned",
+        actorId: prunedWorker.id,
+        action: "task.succeeded",
+        targetType: "task",
+        targetId: "task-pruned",
+        proposalId: "proposal-pruned",
+        createdAt: oldIso,
+      },
+    ],
+    workers: [
+      {
+        nodeId: retainedWorker.id,
+        role: retainedWorker.role,
+        capabilities: workerCapabilities,
+        createdAt: oldIso,
+        updatedAt: oldIso,
+        lastSeenAt: oldIso,
+      },
+      {
+        nodeId: prunedWorker.id,
+        role: prunedWorker.role,
+        capabilities: workerCapabilities,
+        createdAt: oldIso,
+        updatedAt: oldIso,
+        lastSeenAt: oldIso,
+      },
+    ],
+    tasks: [
+      {
+        id: "task-retained",
+        exchangeId: "exchange-retained",
+        intent: "analyze",
+        requester: hub,
+        target: retainedWorker,
+        message: "keep me",
+        proposalId: "proposal-retained",
+        artifactIds: ["artifact-retained"],
+        assignedWorkerId: retainedWorker.id,
+        createdAt: oldIso,
+        status: "succeeded",
+        targetNodeId: retainedWorker.id,
+        payload: {},
+        updatedAt: newerOldIso,
+        completedAt: newerOldIso,
+        claimedBy: retainedWorker.id,
+        result: {
+          summary: "done",
+          artifactIds: ["artifact-retained"],
+        },
+      },
+      {
+        id: "task-pruned",
+        exchangeId: "exchange-pruned",
+        intent: "analyze",
+        requester: hub,
+        target: prunedWorker,
+        message: "prune me",
+        proposalId: "proposal-pruned",
+        artifactIds: ["artifact-pruned"],
+        assignedWorkerId: prunedWorker.id,
+        createdAt: oldIso,
+        status: "succeeded",
+        targetNodeId: prunedWorker.id,
+        payload: {},
+        updatedAt: oldIso,
+        completedAt: oldIso,
+        claimedBy: prunedWorker.id,
+      },
+    ],
+  };
+
+  const broker = new InMemoryA2ABroker(undefined, snapshot, {
+    retention: {
+      terminalRetentionMs: 0,
+      maxTerminalExchanges: 0,
+      maxTerminalTasks: 1,
+      maxTerminalProposals: 0,
+      inactiveWorkerRetentionMs: 0,
+      maxInactiveWorkers: 0,
+      auditRetentionMs: 0,
+      maxAuditEvents: 0,
+    },
+  });
+
+  const retained = broker.exportSnapshot();
+
+  assert.deepEqual(retained.exchanges.map((exchange) => exchange.id), ["exchange-retained"]);
+  assert.deepEqual(retained.exchangeMessages.map((message) => message.id), ["message-retained"]);
+  assert.deepEqual(retained.tasks.map((task) => task.id), ["task-retained"]);
+  assert.deepEqual(retained.proposals.map((proposal) => proposal.id), ["proposal-retained"]);
+  assert.deepEqual(retained.artifacts.map((artifact) => artifact.id), ["artifact-retained"]);
+  assert.deepEqual(retained.validations.map((validation) => validation.id), ["validation-retained"]);
+  assert.deepEqual(retained.auditEvents.map((event) => event.id), ["audit-retained"]);
+  assert.deepEqual(retained.workers.map((worker) => worker.nodeId), [retainedWorker.id]);
 });

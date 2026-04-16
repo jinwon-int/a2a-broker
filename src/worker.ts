@@ -4,7 +4,6 @@ import { setTimeout as delay } from "node:timers/promises";
 import type {
   A2APartyKind,
   A2APartyRole,
-  WorkerCapabilities,
   WorkerView,
   RegisterWorkerRequest,
   SubmitValidationRequest,
@@ -84,8 +83,8 @@ export class A2ABrokerWorker {
   private readonly config: BrokerWorkerConfig;
   private running = false;
   private stopping = false;
-  private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
-  private loopAbortController: AbortController | null = null;
+  private stopHeartbeatLoop: (() => void) | null = null;
+  private loopAbort: (() => void) | null = null;
 
   constructor(config: BrokerWorkerConfig, options?: { fetchImpl?: FetchLike }) {
     this.config = config;
@@ -157,7 +156,8 @@ export class A2ABrokerWorker {
 
     this.running = true;
     this.stopping = false;
-    this.loopAbortController = new AbortController();
+    const loopAbortController = new AbortController();
+    this.loopAbort = () => loopAbortController.abort();
     this.startHeartbeatTimer();
 
     try {
@@ -172,7 +172,7 @@ export class A2ABrokerWorker {
         }
 
         await delay(this.config.pollIntervalMs, undefined, {
-          signal: this.loopAbortController.signal,
+          signal: loopAbortController.signal,
         }).catch((error: unknown) => {
           if (this.running) {
             throw error;
@@ -182,7 +182,7 @@ export class A2ABrokerWorker {
     } finally {
       this.running = false;
       this.stopHeartbeatTimer();
-      this.loopAbortController = null;
+      this.loopAbort = null;
     }
   }
 
@@ -190,7 +190,7 @@ export class A2ABrokerWorker {
     this.stopping = true;
     this.running = false;
     this.stopHeartbeatTimer();
-    this.loopAbortController?.abort();
+    this.loopAbort?.();
   }
 
   private async processTask(task: TaskRecord): Promise<boolean> {
@@ -316,7 +316,7 @@ export class A2ABrokerWorker {
       fetch: this.fetchImpl,
       brokerUrl: this.brokerUrl,
       workerId: this.workerId,
-      role: this.config.worker.role as A2APartyRole,
+      role: this.config.worker.role,
       edgeSecret: this.config.edgeSecret,
       userAgent: this.config.userAgent,
       requestJson: <T>(path: string, init?: { method?: string; body?: unknown }): Promise<T> =>
@@ -326,20 +326,23 @@ export class A2ABrokerWorker {
 
   private startHeartbeatTimer(): void {
     this.stopHeartbeatTimer();
-    this.heartbeatTimer = setInterval(() => {
+    const heartbeatTimer = setInterval(() => {
       void this.safeHeartbeat();
     }, this.config.heartbeatIntervalMs);
-    if (typeof this.heartbeatTimer.unref === "function") {
-      this.heartbeatTimer.unref();
+    this.stopHeartbeatLoop = () => {
+      clearInterval(heartbeatTimer);
+    };
+    if (typeof heartbeatTimer.unref === "function") {
+      heartbeatTimer.unref();
     }
   }
 
   private stopHeartbeatTimer(): void {
-    if (!this.heartbeatTimer) {
+    if (!this.stopHeartbeatLoop) {
       return;
     }
-    clearInterval(this.heartbeatTimer);
-    this.heartbeatTimer = null;
+    this.stopHeartbeatLoop();
+    this.stopHeartbeatLoop = null;
   }
 
   private async safeHeartbeat(): Promise<void> {
@@ -420,6 +423,8 @@ export function createBuiltinWorkerHandler(kind: BuiltinWorkerHandlerKind): Work
           },
         },
       });
+    default:
+      throw new Error("unhandled built-in worker handler kind");
   }
 }
 
@@ -611,7 +616,7 @@ async function runExternalHandler(options: {
   stdout: string;
   stderr: string;
   code: number | null;
-  signal: NodeJS.Signals | null;
+  signal: string | null;
   timedOut: boolean;
 }> {
   return new Promise((resolve, reject) => {
@@ -703,11 +708,15 @@ function normalizeWorkerHandlerOutcome(value: WorkerHandlerOutcome | TaskResult 
     throw new Error("worker handler must return an object");
   }
 
-  if ("result" in value || "error" in value) {
-    return value as WorkerHandlerOutcome;
+  if (isWorkerHandlerOutcome(value)) {
+    return value;
   }
 
-  return { result: value as TaskResult };
+  return { result: value };
+}
+
+function isWorkerHandlerOutcome(value: TaskResult | WorkerHandlerOutcome): value is WorkerHandlerOutcome {
+  return "result" in value || "error" in value;
 }
 
 function isSkippableClaimError(error: unknown): boolean {
@@ -801,6 +810,7 @@ function parseStringArrayEnv(value: string | undefined): string[] {
   } catch (error) {
     throw new Error(
       `expected JSON string array but received ${value}: ${error instanceof Error ? error.message : String(error)}`,
+      { cause: error },
     );
   }
 
@@ -831,6 +841,7 @@ function parseMetadataEnv(value: string | undefined): Record<string, string> | u
   } catch (error) {
     throw new Error(
       `expected metadata JSON object but received ${value}: ${error instanceof Error ? error.message : String(error)}`,
+      { cause: error },
     );
   }
 
@@ -881,6 +892,7 @@ function parseWorkerCapabilities(
     } catch (error) {
       throw new Error(
         `WORKER_CAPABILITIES_JSON must be valid JSON: ${error instanceof Error ? error.message : String(error)}`,
+        { cause: error },
       );
     }
 

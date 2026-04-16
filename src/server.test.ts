@@ -21,6 +21,7 @@ async function startTestServer(options: Partial<BrokerServerOptions> = {}) {
   const runtime = createBrokerServer({
     host: "127.0.0.1",
     port: 0,
+    publicBaseUrl: "https://broker.test/",
     stateStore: createInMemoryStateStore(),
     enforceRequesterIdentity: true,
     ...options,
@@ -46,6 +47,56 @@ function jsonHeaders(headers: Record<string, string> = {}): Record<string, strin
     ...headers,
   };
 }
+
+test("server requires a real PUBLIC_BASE_URL", () => {
+  assert.throws(
+    () =>
+      createBrokerServer({
+        host: "127.0.0.1",
+        port: 0,
+        publicBaseUrl: "http://<masked-host>:8787",
+        stateStore: createInMemoryStateStore(),
+      }),
+    /PUBLIC_BASE_URL must not use the placeholder/,
+  );
+
+  assert.throws(
+    () =>
+      createBrokerServer({
+        host: "127.0.0.1",
+        port: 0,
+        publicBaseUrl: "",
+        stateStore: createInMemoryStateStore(),
+      }),
+    /PUBLIC_BASE_URL is required/,
+  );
+});
+
+test("server rejects invalid requester identity headers with 400", async () => {
+  const server = await startTestServer();
+  try {
+    const invalidRoleRes = await fetch(`${server.baseUrl}/dashboard`, {
+      headers: {
+        "x-a2a-requester-id": "worker-a",
+        "x-a2a-requester-role": "invalid-role",
+      },
+    });
+    assert.equal(invalidRoleRes.status, 400);
+    const invalidRoleBody = await invalidRoleRes.json();
+    assert.match(invalidRoleBody.error.message, /x-a2a-requester-role must be one of/);
+
+    const missingIdRes = await fetch(`${server.baseUrl}/dashboard`, {
+      headers: {
+        "x-a2a-requester-kind": "node",
+      },
+    });
+    assert.equal(missingIdRes.status, 400);
+    const missingIdBody = await missingIdRes.json();
+    assert.match(missingIdBody.error.message, /x-a2a-requester-id is required/);
+  } finally {
+    await server.close();
+  }
+});
 
 test("server rejects unauthorized reassign with 401", async () => {
   const server = await startTestServer();

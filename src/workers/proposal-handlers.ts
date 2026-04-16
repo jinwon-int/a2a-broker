@@ -78,10 +78,9 @@ export function createValidateProposalHandler(
     assertProposalTask(task, "validate_change");
 
     // Optionally preload proposal details via worker API
-    let proposalDetails;
     try {
-      proposalDetails = await worker.getProposalDetails(task.proposalId!);
-    } catch (error) {
+      await worker.getProposalDetails(task.proposalId!);
+    } catch {
       return {
         error: {
           code: "proposal_not_found",
@@ -190,8 +189,8 @@ export function createProposePatchHandler(
     try {
       const targetNodeId = String(assertPayloadField(task, "targetNodeId"));
       const summary = String(assertPayloadField(task, "summary"));
-      const patchText = task.payload.patchText ? String(task.payload.patchText) : undefined;
-      const rationale = task.payload.rationale ? String(task.payload.rationale) : undefined;
+      const patchText = readOptionalPayloadText(task.payload.patchText, "patchText");
+      const rationale = readOptionalPayloadText(task.payload.rationale, "rationale");
 
       const proposal = await worker.createProposal({
         source: { id: worker.workerId, kind: "node", role: worker.brokerClient.role },
@@ -244,7 +243,7 @@ export function createProposeParamsHandler(
       const targetNodeId = String(assertPayloadField(task, "targetNodeId"));
       const summary = String(assertPayloadField(task, "summary"));
       const parameterPayload = assertPayloadField(task, "parameterPayload");
-      const rationale = task.payload.rationale ? String(task.payload.rationale) : undefined;
+      const rationale = readOptionalPayloadText(task.payload.rationale, "rationale");
 
       if (!parameterPayload || typeof parameterPayload !== "object" || Array.isArray(parameterPayload)) {
         return {
@@ -285,4 +284,20 @@ export function createProposeParamsHandler(
       };
     }
   };
+}
+
+function readOptionalPayloadText(value: unknown, field: string): string | undefined {
+  if (value === undefined || value === null) {
+    return undefined;
+  }
+  if (
+    typeof value === "string" ||
+    typeof value === "number" ||
+    typeof value === "boolean" ||
+    typeof value === "bigint"
+  ) {
+    return String(value);
+  }
+
+  throw new Error(`${field} must be a string-compatible value`);
 }
