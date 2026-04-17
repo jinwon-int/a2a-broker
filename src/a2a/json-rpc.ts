@@ -32,6 +32,11 @@ export interface JsonRpcFailure {
 export interface ExecuteJsonRpcOptions {
   broker: InMemoryA2ABroker;
   agentCard: AgentCard;
+  /**
+   * Public base URL for the broker. Used to advertise the SSE subscription URL in
+   * `SubscribeToTask` responses.
+   */
+  publicBaseUrl?: string;
   requesterIdentity: RequesterIdentity | null;
   enforceRequesterIdentity: boolean;
 }
@@ -76,6 +81,26 @@ export function executeA2AJsonRpc(
         const reason = optionalStringField(params, "reason");
         const task = options.broker.cancelTask(taskId, { actor, reason });
         return success(id, { task: projectBrokerTask(task) });
+      }
+
+      case "SubscribeToTask": {
+        // Returns the current task snapshot plus the SSE URL clients should connect to for
+        // live updates. Actual streaming happens over HTTP SSE at `/a2a/tasks/:id/events`
+        // because JSON-RPC over a single POST cannot carry a multi-event stream.
+        const taskId = requireString(params, "taskId");
+        const task = options.broker.getTask(taskId);
+        if (!task) {
+          throw new BrokerError("not_found", "task not found");
+        }
+        const subscribeUrl = buildSubscribeUrl(options.publicBaseUrl, taskId);
+        return success(id, {
+          task: projectBrokerTask(task),
+          subscription: {
+            transport: "sse",
+            url: subscribeUrl,
+            eventTypes: ["task-snapshot", "task-status-update"],
+          },
+        });
       }
 
       case "GetExtendedAgentCard": {
@@ -373,6 +398,14 @@ function failure(id: JsonRpcId, code: number, message: string, data?: unknown): 
       data,
     },
   };
+}
+
+function buildSubscribeUrl(publicBaseUrl: string | undefined, taskId: string): string | undefined {
+  if (!publicBaseUrl) {
+    return undefined;
+  }
+  const trimmed = publicBaseUrl.endsWith("/") ? publicBaseUrl.slice(0, -1) : publicBaseUrl;
+  return `${trimmed}/a2a/tasks/${encodeURIComponent(taskId)}/events`;
 }
 
 function brokerErrorCode(code: BrokerError["code"]): number {

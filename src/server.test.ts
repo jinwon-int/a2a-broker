@@ -24,6 +24,9 @@ async function startTestServer(options: Partial<BrokerServerOptions> = {}) {
     publicBaseUrl: "https://broker.test/",
     stateStore: createInMemoryStateStore(),
     enforceRequesterIdentity: true,
+    // Default tests off unless explicitly enabled so periodic sweeps don't race with
+    // assertions about idle broker state.
+    staleReaperEnabled: options.staleReaperEnabled ?? false,
     ...options,
   });
   runtime.server.listen(0, "127.0.0.1");
@@ -34,6 +37,7 @@ async function startTestServer(options: Partial<BrokerServerOptions> = {}) {
   }
   return {
     baseUrl: `http://127.0.0.1:${address.port}`,
+    runtime,
     close: async () => {
       runtime.server.close();
       await once(runtime.server, "close");
@@ -297,7 +301,7 @@ test("server exposes a public agent card on the well-known path", async () => {
     assert.equal(card.name, "seoseo-broker");
     assert.equal(card.url, "https://broker.example.com/a2a/jsonrpc");
     assert.equal(card.protocolVersion, "1.0");
-    assert.equal(card.capabilities.streaming, false);
+    assert.equal(card.capabilities.streaming, true);
     assert.equal(card.capabilities.pushNotifications, false);
     assert.ok(Array.isArray(card.skills));
     assert.ok(card.skills.some((skill: { id: string }) => skill.id === "propose_patch"));
@@ -1112,6 +1116,630 @@ test("GET /dashboard respects query parameters for limits", async () => {
       headers: { "x-a2a-edge-secret": "s" },
     })).json();
     assert.equal(limitedDash.queue.oldestPending.length, 2);
+  } finally {
+    await server.close();
+  }
+});
+
+test("stale reaper sweep requeues a claimed task with a dead worker without operator action", async () => {
+  const server = await startTestServer({
+    edgeSecret: "s",
+    // Disable the periodic timer so the test drives sweeps deterministically.
+    staleReaperEnabled: false,
+    staleReaperOlderThanSec: 0,
+    workerOfflineAfterSec: 1,
+  });
+  try {
+    const h = (extra: Record<string, string> = {}) => ({
+      "content-type": "application/json",
+      "x-a2a-edge-secret": "s",
+      ...extra,
+    });
+
+    await fetch(`${server.baseUrl}/workers/register`, {
+      method: "POST",
+      headers: h({ "x-a2a-requester-id": "w1", "x-a2a-requester-role": "analyst" }),
+      body: JSON.stringify({
+        nodeId: "w1",
+        role: "analyst",
+        capabilities: {
+          canAnalyze: true,
+          canBackfill: false,
+          canPatchWorkspace: false,
+          canPromoteLive: false,
+          workspaceIds: ["ws"],
+          environments: ["research"],
+        },
+      }),
+    });
+
+    const taskRes = await fetch(`${server.baseUrl}/tasks`, {
+      method: "POST",
+      headers: h({ "x-a2a-requester-id": "hub-1", "x-a2a-requester-role": "hub" }),
+      body: JSON.stringify({
+        intent: "analyze",
+        requester: { id: "hub-1", kind: "node", role: "hub" },
+        target: { id: "w1", kind: "node", role: "analyst" },
+        assignedWorkerId: "w1",
+        message: "analyze payload",
+      }),
+    });
+    const task = await taskRes.json();
+
+    await fetch(`${server.baseUrl}/tasks/${task.id}/claim`, {
+      method: "POST",
+      headers: h({ "x-a2a-requester-id": "w1", "x-a2a-requester-role": "analyst" }),
+      body: JSON.stringify({ workerId: "w1" }),
+    });
+
+    const requeuedCount = server.runtime.runStaleReaperSweep();
+    assert.equal(requeuedCount, 1);
+
+    const taskAfter = await (await fetch(`${server.baseUrl}/tasks/${task.id}`, {
+      headers: h({ "x-a2a-requester-id": "hub-1", "x-a2a-requester-role": "hub" }),
+    })).json();
+    assert.equal(taskAfter.status, "queued");
+    assert.equal(taskAfter.assignedWorkerId, "w1");
+
+    const status = server.runtime.getStaleReaperStatus();
+    assert.equal(status.runCount, 1);
+    assert.equal(status.lastRequeued, 1);
+    assert.equal(status.lastError, undefined);
+    assert.ok(status.lastRunAt);
+  } finally {
+    await server.close();
+  }
+});
+
+test("stale reaper surfaces config and last-run status via /health", async () => {
+  const server = await startTestServer({
+    staleReaperEnabled: true,
+    staleReaperIntervalSec: 120,
+    staleReaperOlderThanSec: 240,
+  });
+  try {
+    const health = await (await fetch(`${server.baseUrl}/health`)).json();
+    assert.ok(health.staleReaper);
+    assert.equal(health.staleReaper.enabled, true);
+    assert.equal(health.staleReaper.intervalSec, 120);
+    assert.equal(health.staleReaper.olderThanSec, 240);
+    assert.equal(health.staleReaper.runCount, 0);
+
+    assert.equal(server.runtime.config.staleReaperEnabled, true);
+    assert.equal(server.runtime.config.staleReaperIntervalSec, 120);
+    assert.equal(server.runtime.config.staleReaperOlderThanSec, 240);
+  } finally {
+    await server.close();
+  }
+});
+
+test("stopStaleReaper is idempotent and safe after server close", async () => {
+  const server = await startTestServer({ staleReaperEnabled: true, staleReaperIntervalSec: 3600 });
+  const { runtime } = server;
+  await server.close();
+  // server.close fires the "close" event which already stopped the reaper; extra calls
+  // must not throw.
+  runtime.stopStaleReaper();
+  runtime.stopStaleReaper();
+});
+
+test("stale reaper dead-letters tasks exceeding maxRequeueAttempts and exposes the cap on /health", async () => {
+  const server = await startTestServer({
+    edgeSecret: "s",
+    staleReaperEnabled: false,
+    staleReaperOlderThanSec: 0,
+    workerOfflineAfterSec: 1,
+    maxRequeueAttempts: 1,
+  });
+  try {
+    const h = (extra: Record<string, string> = {}) => ({
+      "content-type": "application/json",
+      "x-a2a-edge-secret": "s",
+      ...extra,
+    });
+
+    const health = await (await fetch(`${server.baseUrl}/health`)).json();
+    assert.equal(health.staleReaper.maxRequeueAttempts, 1);
+    assert.equal(health.staleReaper.totalDeadLettered, 0);
+
+    await fetch(`${server.baseUrl}/workers/register`, {
+      method: "POST",
+      headers: h({ "x-a2a-requester-id": "w1", "x-a2a-requester-role": "analyst" }),
+      body: JSON.stringify({
+        nodeId: "w1",
+        role: "analyst",
+        capabilities: {
+          canAnalyze: true,
+          canBackfill: false,
+          canPatchWorkspace: false,
+          canPromoteLive: false,
+          workspaceIds: ["ws"],
+          environments: ["research"],
+        },
+      }),
+    });
+
+    const taskRes = await fetch(`${server.baseUrl}/tasks`, {
+      method: "POST",
+      headers: h({ "x-a2a-requester-id": "hub-1", "x-a2a-requester-role": "hub" }),
+      body: JSON.stringify({
+        intent: "analyze",
+        requester: { id: "hub-1", kind: "node", role: "hub" },
+        target: { id: "w1", kind: "node", role: "analyst" },
+        assignedWorkerId: "w1",
+        message: "analyze payload",
+      }),
+    });
+    const task = await taskRes.json();
+
+    // First cycle: claim then reap — should requeue (attempt 1).
+    await fetch(`${server.baseUrl}/tasks/${task.id}/claim`, {
+      method: "POST",
+      headers: h({ "x-a2a-requester-id": "w1", "x-a2a-requester-role": "analyst" }),
+      body: JSON.stringify({ workerId: "w1" }),
+    });
+    assert.equal(server.runtime.runStaleReaperSweep(), 1);
+
+    // Second cycle: claim then reap — should dead-letter because the cap was reached.
+    await fetch(`${server.baseUrl}/tasks/${task.id}/claim`, {
+      method: "POST",
+      headers: h({ "x-a2a-requester-id": "w1", "x-a2a-requester-role": "analyst" }),
+      body: JSON.stringify({ workerId: "w1" }),
+    });
+    assert.equal(server.runtime.runStaleReaperSweep(), 0);
+
+    const finalTask = await (await fetch(`${server.baseUrl}/tasks/${task.id}`, {
+      headers: h({ "x-a2a-requester-id": "hub-1", "x-a2a-requester-role": "hub" }),
+    })).json();
+    assert.equal(finalTask.status, "failed");
+    assert.equal(finalTask.error.code, "exceeded_requeue_limit");
+    assert.equal(finalTask.requeueCount, 1);
+
+    const status = server.runtime.getStaleReaperStatus();
+    assert.equal(status.runCount, 2);
+    assert.equal(status.lastRequeued, 0);
+    assert.equal(status.lastDeadLettered, 1);
+    assert.equal(status.totalDeadLettered, 1);
+
+    const healthAfter = await (await fetch(`${server.baseUrl}/health`)).json();
+    assert.equal(healthAfter.staleReaper.totalDeadLettered, 1);
+    assert.equal(healthAfter.staleReaper.lastDeadLettered, 1);
+  } finally {
+    await server.close();
+  }
+});
+
+test("POST /tasks/requeue_stale reports both requeued and dead-lettered counts", async () => {
+  const server = await startTestServer({
+    edgeSecret: "s",
+    staleReaperEnabled: false,
+    workerOfflineAfterSec: 1,
+    maxRequeueAttempts: 1,
+  });
+  try {
+    const h = (extra: Record<string, string> = {}) => ({
+      "content-type": "application/json",
+      "x-a2a-edge-secret": "s",
+      ...extra,
+    });
+
+    await fetch(`${server.baseUrl}/workers/register`, {
+      method: "POST",
+      headers: h({ "x-a2a-requester-id": "w1", "x-a2a-requester-role": "analyst" }),
+      body: JSON.stringify({
+        nodeId: "w1",
+        role: "analyst",
+        capabilities: {
+          canAnalyze: true,
+          canBackfill: false,
+          canPatchWorkspace: false,
+          canPromoteLive: false,
+          workspaceIds: ["ws"],
+          environments: ["research"],
+        },
+      }),
+    });
+
+    const taskRes = await fetch(`${server.baseUrl}/tasks`, {
+      method: "POST",
+      headers: h({ "x-a2a-requester-id": "hub-1", "x-a2a-requester-role": "hub" }),
+      body: JSON.stringify({
+        intent: "analyze",
+        requester: { id: "hub-1", kind: "node", role: "hub" },
+        target: { id: "w1", kind: "node", role: "analyst" },
+        assignedWorkerId: "w1",
+        message: "analyze payload",
+      }),
+    });
+    const task = await taskRes.json();
+
+    // Burn attempt #1 via the manual endpoint.
+    await fetch(`${server.baseUrl}/tasks/${task.id}/claim`, {
+      method: "POST",
+      headers: h({ "x-a2a-requester-id": "w1", "x-a2a-requester-role": "analyst" }),
+      body: JSON.stringify({ workerId: "w1" }),
+    });
+    const firstSweep = await (await fetch(
+      `${server.baseUrl}/tasks/requeue_stale?older_than_seconds=0`,
+      {
+        method: "POST",
+        headers: h({ "x-a2a-requester-id": "ops", "x-a2a-requester-role": "operator" }),
+      },
+    )).json();
+    assert.equal(firstSweep.requeued, 1);
+    assert.equal(firstSweep.deadLettered, 0);
+    assert.equal(firstSweep.maxRequeueAttempts, 1);
+    assert.equal(firstSweep.items[0].requeueCount, 1);
+
+    // Second sweep: the task is over its cap and must dead-letter.
+    await fetch(`${server.baseUrl}/tasks/${task.id}/claim`, {
+      method: "POST",
+      headers: h({ "x-a2a-requester-id": "w1", "x-a2a-requester-role": "analyst" }),
+      body: JSON.stringify({ workerId: "w1" }),
+    });
+    const secondSweep = await (await fetch(
+      `${server.baseUrl}/tasks/requeue_stale?older_than_seconds=0`,
+      {
+        method: "POST",
+        headers: h({ "x-a2a-requester-id": "ops", "x-a2a-requester-role": "operator" }),
+      },
+    )).json();
+    assert.equal(secondSweep.requeued, 0);
+    assert.equal(secondSweep.deadLettered, 1);
+    assert.equal(secondSweep.deadLetteredItems[0].id, task.id);
+    assert.equal(secondSweep.deadLetteredItems[0].error.code, "exceeded_requeue_limit");
+  } finally {
+    await server.close();
+  }
+});
+
+interface ParsedSseEvent {
+  event: string;
+  data: string;
+  id?: string;
+}
+
+async function readAllSseEvents(response: Response): Promise<ParsedSseEvent[]> {
+  const body = response.body;
+  assert.ok(body, "SSE response must have a body");
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) {
+      break;
+    }
+    buffer += decoder.decode(value, { stream: true });
+  }
+  buffer += decoder.decode();
+
+  const events: ParsedSseEvent[] = [];
+  for (const block of buffer.split(/\n\n/)) {
+    if (!block.trim()) {
+      continue;
+    }
+    let event = "message";
+    let data = "";
+    let id: string | undefined;
+    for (const line of block.split("\n")) {
+      if (!line || line.startsWith(":")) {
+        continue;
+      }
+      if (line.startsWith("event:")) {
+        event = line.slice(line.startsWith("event: ") ? "event: ".length : "event:".length).trim();
+      } else if (line.startsWith("data:")) {
+        const fragment = line.slice(line.startsWith("data: ") ? "data: ".length : "data:".length);
+        data = data ? `${data}\n${fragment}` : fragment;
+      } else if (line.startsWith("id:")) {
+        id = line.slice(line.startsWith("id: ") ? "id: ".length : "id:".length).trim();
+      }
+    }
+    events.push({ event, data, id });
+  }
+  return events;
+}
+
+test("SSE /a2a/tasks/:id/events streams snapshot plus lifecycle updates and closes on terminal", async () => {
+  const server = await startTestServer({ edgeSecret: "test-edge-secret" });
+  try {
+    await fetch(`${server.baseUrl}/workers/register`, {
+      method: "POST",
+      headers: jsonHeaders({
+        "x-a2a-edge-secret": "test-edge-secret",
+        "x-a2a-requester-id": "worker-a",
+        "x-a2a-requester-role": "analyst",
+      }),
+      body: JSON.stringify({
+        nodeId: "worker-a",
+        role: "analyst",
+        capabilities: {
+          canAnalyze: true,
+          canBackfill: false,
+          canPatchWorkspace: false,
+          canPromoteLive: false,
+          workspaceIds: ["test"],
+          environments: ["research"],
+        },
+      }),
+    });
+
+    const taskRes = await fetch(`${server.baseUrl}/tasks`, {
+      method: "POST",
+      headers: jsonHeaders({
+        "x-a2a-edge-secret": "test-edge-secret",
+        "x-a2a-requester-id": "hub-a",
+        "x-a2a-requester-role": "hub",
+      }),
+      body: JSON.stringify({
+        intent: "analyze",
+        requester: { id: "hub-a", kind: "node", role: "hub" },
+        target: { id: "worker-a", kind: "node", role: "analyst" },
+        assignedWorkerId: "worker-a",
+        message: "run analysis",
+      }),
+    });
+    const task = await taskRes.json();
+
+    const sseRes = await fetch(`${server.baseUrl}/a2a/tasks/${task.id}/events`, {
+      headers: {
+        "x-a2a-edge-secret": "test-edge-secret",
+        "x-a2a-requester-id": "hub-a",
+        "x-a2a-requester-role": "hub",
+        accept: "text/event-stream",
+      },
+    });
+    assert.equal(sseRes.status, 200);
+    assert.match(sseRes.headers.get("content-type") ?? "", /text\/event-stream/);
+    assert.equal(sseRes.headers.get("cache-control"), "no-cache, no-transform");
+
+    const workerHeaders = jsonHeaders({
+      "x-a2a-edge-secret": "test-edge-secret",
+      "x-a2a-requester-id": "worker-a",
+      "x-a2a-requester-role": "analyst",
+    });
+    await fetch(`${server.baseUrl}/tasks/${task.id}/claim`, {
+      method: "POST",
+      headers: workerHeaders,
+      body: JSON.stringify({ workerId: "worker-a" }),
+    });
+    await fetch(`${server.baseUrl}/tasks/${task.id}/start`, {
+      method: "POST",
+      headers: workerHeaders,
+      body: JSON.stringify({ workerId: "worker-a" }),
+    });
+    await fetch(`${server.baseUrl}/tasks/${task.id}/complete`, {
+      method: "POST",
+      headers: workerHeaders,
+      body: JSON.stringify({ workerId: "worker-a", result: { summary: "done" } }),
+    });
+
+    const events = await readAllSseEvents(sseRes);
+    const types = events.map((e) => e.event);
+    assert.deepEqual(types, [
+      "task-snapshot",
+      "task-status-update",
+      "task-status-update",
+      "task-status-update",
+    ]);
+
+    const snapshot = JSON.parse(events[0].data);
+    assert.equal(snapshot.task.id, task.id);
+    assert.equal(snapshot.task.status.state, "submitted");
+    assert.equal(snapshot.reason, "snapshot");
+    assert.equal(snapshot.final, false);
+
+    const reasons = events.slice(1).map((e) => JSON.parse(e.data).reason);
+    assert.deepEqual(reasons, ["claimed", "started", "succeeded"]);
+
+    const terminal = JSON.parse(events[events.length - 1].data);
+    assert.equal(terminal.final, true);
+    assert.equal(terminal.task.status.state, "completed");
+  } finally {
+    await server.close();
+  }
+});
+
+test("SSE /a2a/tasks/:id/events closes immediately for already-terminal tasks", async () => {
+  const server = await startTestServer({ edgeSecret: "test-edge-secret" });
+  try {
+    await fetch(`${server.baseUrl}/workers/register`, {
+      method: "POST",
+      headers: jsonHeaders({
+        "x-a2a-edge-secret": "test-edge-secret",
+        "x-a2a-requester-id": "worker-a",
+        "x-a2a-requester-role": "analyst",
+      }),
+      body: JSON.stringify({
+        nodeId: "worker-a",
+        role: "analyst",
+        capabilities: {
+          canAnalyze: true,
+          canBackfill: false,
+          canPatchWorkspace: false,
+          canPromoteLive: false,
+          workspaceIds: ["test"],
+          environments: ["research"],
+        },
+      }),
+    });
+    const taskRes = await fetch(`${server.baseUrl}/tasks`, {
+      method: "POST",
+      headers: jsonHeaders({
+        "x-a2a-edge-secret": "test-edge-secret",
+        "x-a2a-requester-id": "hub-a",
+        "x-a2a-requester-role": "hub",
+      }),
+      body: JSON.stringify({
+        intent: "analyze",
+        requester: { id: "hub-a", kind: "node", role: "hub" },
+        target: { id: "worker-a", kind: "node", role: "analyst" },
+        assignedWorkerId: "worker-a",
+        message: "run analysis",
+      }),
+    });
+    const task = await taskRes.json();
+
+    await fetch(`${server.baseUrl}/tasks/${task.id}/cancel`, {
+      method: "POST",
+      headers: jsonHeaders({
+        "x-a2a-edge-secret": "test-edge-secret",
+        "x-a2a-requester-id": "hub-a",
+        "x-a2a-requester-role": "hub",
+      }),
+      body: JSON.stringify({ actor: { id: "hub-a", role: "hub", kind: "node" }, reason: "stop" }),
+    });
+
+    const sseRes = await fetch(`${server.baseUrl}/a2a/tasks/${task.id}/events`, {
+      headers: {
+        "x-a2a-edge-secret": "test-edge-secret",
+        "x-a2a-requester-id": "hub-a",
+        "x-a2a-requester-role": "hub",
+      },
+    });
+    assert.equal(sseRes.status, 200);
+    const events = await readAllSseEvents(sseRes);
+    assert.equal(events.length, 1);
+    assert.equal(events[0].event, "task-snapshot");
+    const snapshot = JSON.parse(events[0].data);
+    assert.equal(snapshot.task.status.state, "canceled");
+    assert.equal(snapshot.final, true);
+  } finally {
+    await server.close();
+  }
+});
+
+test("SSE /a2a/tasks/:id/events rejects unauthorized subscribers", async () => {
+  const server = await startTestServer({ edgeSecret: "test-edge-secret" });
+  try {
+    await fetch(`${server.baseUrl}/workers/register`, {
+      method: "POST",
+      headers: jsonHeaders({
+        "x-a2a-edge-secret": "test-edge-secret",
+        "x-a2a-requester-id": "worker-a",
+        "x-a2a-requester-role": "analyst",
+      }),
+      body: JSON.stringify({
+        nodeId: "worker-a",
+        role: "analyst",
+        capabilities: {
+          canAnalyze: true,
+          canBackfill: false,
+          canPatchWorkspace: false,
+          canPromoteLive: false,
+          workspaceIds: ["test"],
+          environments: ["research"],
+        },
+      }),
+    });
+    const taskRes = await fetch(`${server.baseUrl}/tasks`, {
+      method: "POST",
+      headers: jsonHeaders({
+        "x-a2a-edge-secret": "test-edge-secret",
+        "x-a2a-requester-id": "hub-a",
+        "x-a2a-requester-role": "hub",
+      }),
+      body: JSON.stringify({
+        intent: "analyze",
+        requester: { id: "hub-a", kind: "node", role: "hub" },
+        target: { id: "worker-a", kind: "node", role: "analyst" },
+        assignedWorkerId: "worker-a",
+        message: "run analysis",
+      }),
+    });
+    const task = await taskRes.json();
+
+    const strangerRes = await fetch(`${server.baseUrl}/a2a/tasks/${task.id}/events`, {
+      headers: {
+        "x-a2a-edge-secret": "test-edge-secret",
+        "x-a2a-requester-id": "stranger",
+        "x-a2a-requester-role": "researcher",
+      },
+    });
+    assert.equal(strangerRes.status, 401);
+    await strangerRes.body?.cancel();
+
+    const missingRes = await fetch(`${server.baseUrl}/a2a/tasks/does-not-exist/events`, {
+      headers: {
+        "x-a2a-edge-secret": "test-edge-secret",
+        "x-a2a-requester-id": "hub-a",
+        "x-a2a-requester-role": "hub",
+      },
+    });
+    assert.equal(missingRes.status, 404);
+    await missingRes.body?.cancel();
+  } finally {
+    await server.close();
+  }
+});
+
+test("JSON-RPC SubscribeToTask returns current task plus SSE subscription URL", async () => {
+  const server = await startTestServer({
+    edgeSecret: "test-edge-secret",
+    publicBaseUrl: "https://broker.example.com/",
+  });
+  try {
+    await fetch(`${server.baseUrl}/workers/register`, {
+      method: "POST",
+      headers: jsonHeaders({
+        "x-a2a-edge-secret": "test-edge-secret",
+        "x-a2a-requester-id": "worker-a",
+        "x-a2a-requester-role": "analyst",
+      }),
+      body: JSON.stringify({
+        nodeId: "worker-a",
+        role: "analyst",
+        capabilities: {
+          canAnalyze: true,
+          canBackfill: false,
+          canPatchWorkspace: false,
+          canPromoteLive: false,
+          workspaceIds: ["test"],
+          environments: ["research"],
+        },
+      }),
+    });
+    const taskRes = await fetch(`${server.baseUrl}/tasks`, {
+      method: "POST",
+      headers: jsonHeaders({
+        "x-a2a-edge-secret": "test-edge-secret",
+        "x-a2a-requester-id": "hub-a",
+        "x-a2a-requester-role": "hub",
+      }),
+      body: JSON.stringify({
+        intent: "analyze",
+        requester: { id: "hub-a", kind: "node", role: "hub" },
+        target: { id: "worker-a", kind: "node", role: "analyst" },
+        assignedWorkerId: "worker-a",
+        message: "run analysis",
+      }),
+    });
+    const task = await taskRes.json();
+
+    const rpcRes = await fetch(`${server.baseUrl}/a2a/jsonrpc`, {
+      method: "POST",
+      headers: jsonHeaders({
+        "x-a2a-edge-secret": "test-edge-secret",
+        "x-a2a-requester-id": "hub-a",
+        "x-a2a-requester-role": "hub",
+      }),
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "SubscribeToTask",
+        params: { taskId: task.id },
+      }),
+    });
+    assert.equal(rpcRes.status, 200);
+    const body = await rpcRes.json();
+    assert.equal(body.result.task.id, task.id);
+    assert.equal(body.result.subscription.transport, "sse");
+    assert.equal(
+      body.result.subscription.url,
+      `https://broker.example.com/a2a/tasks/${task.id}/events`,
+    );
+    assert.ok(Array.isArray(body.result.subscription.eventTypes));
+    assert.ok(body.result.subscription.eventTypes.includes("task-status-update"));
   } finally {
     await server.close();
   }

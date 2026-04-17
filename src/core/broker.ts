@@ -82,7 +82,23 @@ export interface BrokerRetentionPolicy {
 
 export interface InMemoryA2ABrokerOptions {
   retention?: Partial<BrokerRetentionPolicy>;
+  /**
+   * Maximum number of times the stale-task reaper (or manual requeue) is allowed to recycle a
+   * single task back to `queued`. Once the cap is reached the next stale-recovery pass marks
+   * the task `failed` with a `exceeded_requeue_limit` error instead of requeuing it again, so
+   * a flapping worker or poisoned payload cannot thrash the queue forever. `0` disables the
+   * cap (unlimited requeues, legacy behavior).
+   */
+  maxRequeueAttempts?: number;
 }
+
+/**
+ * Default cap on automatic requeues for a single task. Chosen to tolerate a short burst of
+ * worker crashes or transient outages without masking a genuinely stuck task forever.
+ */
+export const DEFAULT_MAX_REQUEUE_ATTEMPTS = 5;
+
+export const REQUEUE_EXHAUSTED_ERROR_CODE = "exceeded_requeue_limit";
 
 export const DEFAULT_BROKER_RETENTION_POLICY: BrokerRetentionPolicy = {
   terminalRetentionMs: 7 * 24 * 60 * 60 * 1000,
@@ -95,6 +111,26 @@ export const DEFAULT_BROKER_RETENTION_POLICY: BrokerRetentionPolicy = {
   maxAuditEvents: 5_000,
 };
 
+export type TaskUpdateReason =
+  | "created"
+  | "claimed"
+  | "started"
+  | "succeeded"
+  | "failed"
+  | "canceled"
+  | "reassigned"
+  | "requeued"
+  | "dead_lettered";
+
+export interface TaskUpdate {
+  task: TaskRecord;
+  reason: TaskUpdateReason;
+  /** Terminal updates should be the last event a subscriber sees for this task. */
+  final: boolean;
+}
+
+export type TaskUpdateListener = (update: TaskUpdate) => void;
+
 export class InMemoryA2ABroker {
   private readonly exchanges = new Map<string, A2AExchangeState>();
   private readonly exchangeMessages = new Map<string, A2AExchangeMessageRecord>();
@@ -104,6 +140,7 @@ export class InMemoryA2ABroker {
   private readonly auditEvents = new Map<string, AuditEvent>();
   private readonly workers = new Map<string, WorkerRecord>();
   private readonly tasks = new Map<string, TaskRecord>();
+  private readonly taskListeners = new Map<string, Set<TaskUpdateListener>>();
 
   constructor(
     private readonly stateStore?: BrokerStateStore,
@@ -111,6 +148,7 @@ export class InMemoryA2ABroker {
     options: InMemoryA2ABrokerOptions = {},
   ) {
     this.retentionPolicy = normalizeBrokerRetentionPolicy(options.retention);
+    this.maxRequeueAttempts = normalizeMaxRequeueAttempts(options.maxRequeueAttempts);
     if (snapshot) {
       this.loadSnapshot(snapshot);
     }
@@ -118,6 +156,65 @@ export class InMemoryA2ABroker {
   }
 
   private readonly retentionPolicy: BrokerRetentionPolicy;
+  private readonly maxRequeueAttempts: number;
+
+  /** Returns the configured max automatic requeues per task. `0` means disabled. */
+  getMaxRequeueAttempts(): number {
+    return this.maxRequeueAttempts;
+  }
+
+  /**
+   * Subscribe to task-lifecycle updates. The listener fires once per state transition
+   * (claim, start, complete, fail, cancel, reassign, requeue, dead-letter) with the current
+   * `TaskRecord` snapshot. Returns an unsubscribe function. Listeners are not invoked with
+   * the current state on subscribe; callers that need the initial state should read it via
+   * `getTask(taskId)` before subscribing. Listener errors are caught and logged so a broken
+   * subscriber cannot stall the broker.
+   */
+  subscribeToTask(taskId: string, listener: TaskUpdateListener): () => void {
+    let listeners = this.taskListeners.get(taskId);
+    if (!listeners) {
+      listeners = new Set();
+      this.taskListeners.set(taskId, listeners);
+    }
+    listeners.add(listener);
+    return () => {
+      const current = this.taskListeners.get(taskId);
+      if (!current) {
+        return;
+      }
+      current.delete(listener);
+      if (current.size === 0) {
+        this.taskListeners.delete(taskId);
+      }
+    };
+  }
+
+  private emitTaskUpdate(task: TaskRecord, reason: TaskUpdateReason): void {
+    const listeners = this.taskListeners.get(task.id);
+    if (!listeners || listeners.size === 0) {
+      return;
+    }
+    const final = isTerminalTaskStatus(task.status);
+    // Snapshot the listener set and clone the task so a listener that mutates its copy (or
+    // the broker mutating later) can't alter what other subscribers observe.
+    const snapshot: TaskUpdate = {
+      task: structuredClone(task),
+      reason,
+      final,
+    };
+    for (const listener of [...listeners]) {
+      try {
+        listener(snapshot);
+      } catch (error) {
+        console.error(
+          `[a2a-broker] task subscriber for ${task.id} threw: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      }
+    }
+  }
 
   startExchange(request: A2AExchangeRequest): A2AExchangeState {
     const now = isoNow();
@@ -634,6 +731,7 @@ export class InMemoryA2ABroker {
       note: task.message ?? task.intent,
     });
     this.persistState();
+    this.emitTaskUpdate(task, "created");
     return task;
   }
 
@@ -704,6 +802,9 @@ export class InMemoryA2ABroker {
     task.completedAt = undefined;
     task.result = undefined;
     task.error = undefined;
+    // Operator reassignment is a fresh attempt budget: clearing `requeueCount` so the new
+    // target isn't penalized by the previous worker's flaps.
+    task.requeueCount = 0;
     task.updatedAt = now;
     this.tasks.set(task.id, task);
     this.syncExchangeStateFromTask(task, "queued");
@@ -718,6 +819,7 @@ export class InMemoryA2ABroker {
         `reassigned targetNodeId ${previousTargetNodeId} -> ${task.targetNodeId}, assignedWorkerId ${previousAssignedWorkerId} -> ${task.assignedWorkerId}`,
     });
     this.persistState();
+    this.emitTaskUpdate(task, "reassigned");
     return task;
   }
 
@@ -778,6 +880,7 @@ export class InMemoryA2ABroker {
       note: task.intent,
     });
     this.persistState();
+    this.emitTaskUpdate(task, "claimed");
     return task;
   }
 
@@ -799,6 +902,7 @@ export class InMemoryA2ABroker {
       note: task.intent,
     });
     this.persistState();
+    this.emitTaskUpdate(task, "started");
     return task;
   }
 
@@ -834,6 +938,7 @@ export class InMemoryA2ABroker {
       note: normalizedResult.note ?? normalizedResult.summary ?? task.intent,
     });
     this.persistState();
+    this.emitTaskUpdate(task, "succeeded");
     return task;
   }
 
@@ -860,6 +965,7 @@ export class InMemoryA2ABroker {
       note: normalizedError.message,
     });
     this.persistState();
+    this.emitTaskUpdate(task, "failed");
     return task;
   }
 
@@ -870,6 +976,23 @@ export class InMemoryA2ABroker {
       workerOfflineAfterMs?: number;
     },
   ): TaskRecord[] {
+    const result = this.requeueStaleTasksDetailed(olderThanMs, options);
+    return result.requeued;
+  }
+
+  /**
+   * Same as {@link requeueStaleTasks} but also surfaces the tasks that were dead-lettered to
+   * `failed` because they exceeded `maxRequeueAttempts`. Kept as a separate method so the
+   * existing public `requeueStaleTasks` signature stays backwards-compatible for the manual
+   * `POST /tasks/requeue_stale` response and the in-process stale reaper.
+   */
+  requeueStaleTasksDetailed(
+    olderThanMs: number,
+    options?: {
+      nowMs?: number;
+      workerOfflineAfterMs?: number;
+    },
+  ): { requeued: TaskRecord[]; deadLettered: TaskRecord[] } {
     const thresholdMs = Math.max(0, olderThanMs);
     const nowMs = options?.nowMs ?? Date.now();
     const nowIso = new Date(nowMs).toISOString();
@@ -878,6 +1001,7 @@ export class InMemoryA2ABroker {
         ? new Set(this.listStaleWorkerIds(options.workerOfflineAfterMs, nowMs))
         : new Set<string>();
     const requeued: TaskRecord[] = [];
+    const deadLettered: TaskRecord[] = [];
 
     for (const task of this.tasks.values()) {
       const requeueReason = getTaskRequeueReason(task, thresholdMs, staleWorkerIds, nowMs);
@@ -885,12 +1009,47 @@ export class InMemoryA2ABroker {
         continue;
       }
 
+      const currentRequeues = task.requeueCount ?? 0;
       const previousStatus = task.status;
+
+      if (this.maxRequeueAttempts > 0 && currentRequeues >= this.maxRequeueAttempts) {
+        // Dead-letter: mark failed so operators see the real state instead of an endless
+        // requeue loop. Preserve `claimedBy` and the final `requeueCount` for forensics.
+        task.status = "failed";
+        task.updatedAt = nowIso;
+        task.completedAt = nowIso;
+        task.error = {
+          code: REQUEUE_EXHAUSTED_ERROR_CODE,
+          message: `dead-lettered after ${currentRequeues} automatic requeue${
+            currentRequeues === 1 ? "" : "s"
+          }: ${requeueReason}`,
+          details: {
+            requeueCount: currentRequeues,
+            maxRequeueAttempts: this.maxRequeueAttempts,
+            previousStatus,
+            lastRequeueReason: requeueReason,
+          },
+        };
+        this.tasks.set(task.id, task);
+        this.syncExchangeStateFromTask(task, "failed");
+        this.appendAuditEvent({
+          actorId: "broker",
+          action: "task.failed",
+          targetType: "task",
+          targetId: task.id,
+          proposalId: task.proposalId,
+          note: task.error.message,
+        });
+        deadLettered.push(task);
+        continue;
+      }
+
       task.status = "queued";
       task.claimedBy = undefined;
       task.claimedAt = undefined;
       task.completedAt = undefined;
       task.updatedAt = nowIso;
+      task.requeueCount = currentRequeues + 1;
       this.tasks.set(task.id, task);
       this.syncExchangeStateFromTask(task, "queued");
       this.appendAuditEvent({
@@ -899,16 +1058,23 @@ export class InMemoryA2ABroker {
         targetType: "task",
         targetId: task.id,
         proposalId: task.proposalId,
-        note: `requeued ${previousStatus} task without reassignment: ${requeueReason}`,
+        note: `requeued ${previousStatus} task without reassignment (attempt ${task.requeueCount}): ${requeueReason}`,
       });
       requeued.push(task);
     }
 
-    if (requeued.length > 0) {
+    if (requeued.length > 0 || deadLettered.length > 0) {
       this.persistState();
     }
 
-    return requeued;
+    for (const task of deadLettered) {
+      this.emitTaskUpdate(task, "dead_lettered");
+    }
+    for (const task of requeued) {
+      this.emitTaskUpdate(task, "requeued");
+    }
+
+    return { requeued, deadLettered };
   }
 
   private listStaleWorkerIds(offlineAfterMs: number, nowMs: number): string[] {
@@ -1609,6 +1775,7 @@ export class InMemoryA2ABroker {
       note: params.reason,
     });
     this.persistState();
+    this.emitTaskUpdate(task, "canceled");
     return task;
   }
 
@@ -2029,6 +2196,13 @@ function normalizeBrokerRetentionPolicy(
       DEFAULT_BROKER_RETENTION_POLICY.maxAuditEvents,
     ),
   };
+}
+
+function normalizeMaxRequeueAttempts(value: number | undefined): number {
+  if (value === undefined || !Number.isFinite(value)) {
+    return DEFAULT_MAX_REQUEUE_ATTEMPTS;
+  }
+  return Math.max(0, Math.trunc(value));
 }
 
 function normalizeNonNegativeInteger(value: number | undefined, fallback: number): number {

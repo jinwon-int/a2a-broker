@@ -30,6 +30,7 @@ async function startTestServer(options: Partial<BrokerServerOptions> = {}) {
   const runtime = createBrokerServer({
     host: "127.0.0.1",
     port: 0,
+    publicBaseUrl: "http://127.0.0.1:8787",
     stateStore: createInMemoryStateStore(),
     enforceRequesterIdentity: true,
     rateLimitMaxRequests: 100,

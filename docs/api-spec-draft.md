@@ -622,6 +622,83 @@ Response:
 }
 ```
 
+## A2A surface
+
+The broker exposes an A2A-compatible surface alongside the legacy REST routes.
+
+### `GET /.well-known/agent-card.json`
+
+Returns the agent card describing the broker for A2A clients. `capabilities.streaming`
+is `true`; clients discover the SSE subscription route via `SubscribeToTask`.
+
+### `POST /a2a/jsonrpc`
+
+JSON-RPC 2.0 endpoint. Supported methods:
+
+- `SendMessage` — create a task or append to an existing exchange.
+- `GetTask` — fetch the current task snapshot by id.
+- `ListTasks` — filter tasks by status, target, intent, etc.
+- `CancelTask` — cancel a task owned by the caller.
+- `SubscribeToTask` — return the current snapshot and the SSE URL clients should
+  connect to for live updates. The actual stream is served at
+  `GET /a2a/tasks/:id/events` because JSON-RPC over a single POST cannot carry a
+  multi-event stream.
+- `GetExtendedAgentCard` — return the full agent card.
+
+`SubscribeToTask` response shape:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": {
+    "task": { "id": "task_01", "status": "queued", "...": "..." },
+    "subscription": {
+      "transport": "sse",
+      "url": "https://broker.example.com/a2a/tasks/task_01/events",
+      "eventTypes": ["task-snapshot", "task-status-update"]
+    }
+  }
+}
+```
+
+### `GET /a2a/tasks/:id/events` (SSE)
+
+Server-Sent Events stream of task lifecycle updates.
+
+**Headers:**
+
+- `content-type: text/event-stream; charset=utf-8`
+- `cache-control: no-cache, no-transform`
+- `connection: keep-alive`
+- `x-accel-buffering: no`
+
+**Events:**
+
+- `task-snapshot` — emitted once at connect with the current task state and
+  `reason: "snapshot"`. If the task is already terminal (`succeeded`, `failed`,
+  `canceled`) the server closes the connection immediately after this event.
+- `task-status-update` — emitted on each lifecycle transition. `reason` is one of
+  `created`, `claimed`, `started`, `succeeded`, `failed`, `canceled`, `reassigned`,
+  `requeued`, `dead_lettered`. `final: true` signals a terminal state and the
+  server closes the connection.
+
+**Heartbeats:** every `TASK_SUBSCRIBE_HEARTBEAT_SEC` seconds (default `15`) the
+server writes a `:heartbeat <iso>` SSE comment to keep intermediaries from
+idling the connection. Set to `0` to disable.
+
+**Authorization:** when requester identity enforcement is enabled, subscribers
+must present `x-a2a-requester-id` matching one of: the task requester, the
+task target node, the assigned worker, or a `hub`/`operator` role.
+
+Example event block:
+
+```
+id: 2026-04-17T10:00:02.000Z
+event: task-status-update
+data: {"task":{"id":"task_01","status":"succeeded","..."},"reason":"succeeded","final":true}
+```
+
 ## Error shape
 
 Recommended shared error format:

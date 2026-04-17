@@ -166,6 +166,7 @@ const taskSchema = z
     claimedBy: z.string().min(1).optional(),
     result: taskResultSchema.optional(),
     error: taskErrorSchema.optional(),
+    requeueCount: z.number().int().nonnegative().optional(),
   })
   .passthrough();
 

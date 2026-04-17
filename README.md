@@ -123,6 +123,52 @@ Operational note:
 - Validation is limited to the proposal source or target node.
 - Local apply remains target-node or operator only, even after approval.
 
+## Stale-task reaper
+
+The broker runs a periodic in-process stale-task reaper so that restart recovery
+is self-healing after node, worker, or broker restarts. Without it, claimed or
+running tasks pointing at a dead worker stayed stuck until an operator manually
+hit `POST /tasks/requeue_stale`.
+
+Defaults:
+
+- enabled
+- sweep interval: 60s
+- stale threshold (`olderThan`): falls back to `WORKER_OFFLINE_AFTER_SEC`
+
+Env vars:
+
+```bash
+STALE_REAPER_ENABLED=1
+STALE_REAPER_INTERVAL_SEC=60
+STALE_REAPER_OLDER_THAN_SEC=90
+BROKER_MAX_REQUEUE_ATTEMPTS=5
+```
+
+Each sweep calls the same `requeue_only` code path as the manual endpoint and
+keeps `assignedWorkerId` untouched. `GET /health` exposes `staleReaper` with the
+current config, `runCount`, `lastRunAt`, `lastRequeued`, `lastDeadLettered`,
+`totalDeadLettered`, `maxRequeueAttempts`, and the most recent `lastError` (if
+any) so operators can verify the loop is alive. Set `STALE_REAPER_ENABLED=0` if
+you prefer to drive recovery manually.
+
+### Requeue cap and dead-letter
+
+To stop a flapping worker or a poisoned payload from thrashing the queue forever,
+each task tracks a `requeueCount` and the broker caps how many automatic recoveries
+it will do. When a task has already been requeued `BROKER_MAX_REQUEUE_ATTEMPTS`
+times (default `5`), the next stale-recovery pass moves it to `failed` with
+`error.code = "exceeded_requeue_limit"` instead of requeuing it again. Operator
+reassignment through `POST /tasks/:id/reassign` resets `requeueCount` back to `0`
+so the fresh target gets a clean attempt budget. Set
+`BROKER_MAX_REQUEUE_ATTEMPTS=0` to disable the cap (unlimited requeues, legacy
+behavior).
+
+`POST /tasks/requeue_stale` now also returns `deadLettered` and
+`deadLetteredItems` (with the final `requeueCount`, `error`, and updated
+timestamp) alongside the usual `requeued` list, so operators can see the full
+outcome of a sweep without a follow-up `/audit` query.
+
 ## Quick start
 
 ```bash

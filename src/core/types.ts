@@ -208,6 +208,13 @@ export interface TaskRecord extends A2ATaskRequest {
   claimedBy?: string;
   result?: TaskResult;
   error?: TaskError;
+  /**
+   * Count of times this task has been requeued from claimed/running back to queued by the
+   * stale-task reaper or the manual requeue endpoint. Capped by the broker's
+   * `maxRequeueAttempts` policy so a flapping worker cannot thrash the queue indefinitely.
+   * Reset to 0 when an operator reassigns the task (fresh attempt budget).
+   */
+  requeueCount?: number;
 }
 
 export interface TaskClaimRequest {

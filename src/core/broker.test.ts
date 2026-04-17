@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { InMemoryA2ABroker } from "./broker.js";
+import { InMemoryA2ABroker, type TaskUpdate } from "./broker.js";
 import { CURRENT_BROKER_STATE_VERSION, type BrokerSnapshot } from "./store.js";
 import type { WorkerRecord } from "./types.js";
 
@@ -180,6 +180,138 @@ test("stale requeue keeps assignedWorkerId unchanged", () => {
   assert.equal(requeued.length, 1);
   assert.equal(requeued[0].assignedWorkerId, "worker-a");
   assert.equal(requeued[0].status, "queued");
+});
+
+test("requeueStaleTasks caps requeues and dead-letters the task to failed", () => {
+  const broker = new InMemoryA2ABroker(undefined, undefined, { maxRequeueAttempts: 2 });
+  registerWorker(broker, "worker-a");
+
+  const exchange = broker.startExchange({
+    requester: { id: "hub-a", kind: "node", role: "hub" },
+    target: { id: "worker-a", kind: "node", role: "analyst" },
+    message: "run analysis",
+    intent: "analyze",
+  });
+  broker.addExchangeMessage(exchange.id, {
+    actor: { id: "hub-a", kind: "node", role: "hub" },
+    message: "accepted",
+    decision: "accepted",
+    targetNodeId: "worker-a",
+    assignedWorkerId: "worker-a",
+  });
+  const taskId = broker.getExchange(exchange.id)?.activeTaskId;
+  assert.ok(taskId);
+
+  // Drive three consecutive claim → stale-requeue cycles. The first two should succeed as
+  // requeues; the third must dead-letter because the task has already been requeued twice.
+  broker.claimTask(taskId, "worker-a");
+  let result = broker.requeueStaleTasksDetailed(0);
+  assert.equal(result.requeued.length, 1);
+  assert.equal(result.deadLettered.length, 0);
+  assert.equal(result.requeued[0].requeueCount, 1);
+
+  broker.claimTask(taskId, "worker-a");
+  result = broker.requeueStaleTasksDetailed(0);
+  assert.equal(result.requeued.length, 1);
+  assert.equal(result.deadLettered.length, 0);
+  assert.equal(result.requeued[0].requeueCount, 2);
+
+  broker.claimTask(taskId, "worker-a");
+  result = broker.requeueStaleTasksDetailed(0);
+  assert.equal(result.requeued.length, 0);
+  assert.equal(result.deadLettered.length, 1);
+
+  const deadLettered = result.deadLettered[0];
+  assert.equal(deadLettered.status, "failed");
+  assert.equal(deadLettered.error?.code, "exceeded_requeue_limit");
+  assert.equal(deadLettered.requeueCount, 2);
+  assert.ok(deadLettered.completedAt);
+
+  const finalTask = broker.getTask(taskId);
+  assert.ok(finalTask);
+  assert.equal(finalTask.status, "failed");
+  assert.equal(finalTask.error?.code, "exceeded_requeue_limit");
+
+  // Dead-lettering should also close the linked exchange so operator dashboards do not keep
+  // it pinned as running forever.
+  const finalExchange = broker.getExchange(exchange.id);
+  assert.ok(finalExchange);
+  assert.equal(finalExchange.status, "failed");
+});
+
+test("maxRequeueAttempts=0 disables the cap and allows unlimited requeues", () => {
+  const broker = new InMemoryA2ABroker(undefined, undefined, { maxRequeueAttempts: 0 });
+  registerWorker(broker, "worker-a");
+
+  const exchange = broker.startExchange({
+    requester: { id: "hub-a", kind: "node", role: "hub" },
+    target: { id: "worker-a", kind: "node", role: "analyst" },
+    message: "run analysis",
+    intent: "analyze",
+  });
+  broker.addExchangeMessage(exchange.id, {
+    actor: { id: "hub-a", kind: "node", role: "hub" },
+    message: "accepted",
+    decision: "accepted",
+    targetNodeId: "worker-a",
+    assignedWorkerId: "worker-a",
+  });
+  const taskId = broker.getExchange(exchange.id)?.activeTaskId;
+  assert.ok(taskId);
+
+  for (let i = 0; i < 10; i++) {
+    broker.claimTask(taskId, "worker-a");
+    const { requeued, deadLettered } = broker.requeueStaleTasksDetailed(0);
+    assert.equal(requeued.length, 1, `iteration ${i} should requeue`);
+    assert.equal(deadLettered.length, 0, `iteration ${i} should not dead-letter`);
+  }
+
+  const finalTask = broker.getTask(taskId);
+  assert.ok(finalTask);
+  assert.equal(finalTask.status, "queued");
+  assert.equal(finalTask.requeueCount, 10);
+});
+
+test("reassignTask resets requeueCount so the new target gets a fresh attempt budget", () => {
+  const broker = new InMemoryA2ABroker(undefined, undefined, { maxRequeueAttempts: 1 });
+  registerWorker(broker, "worker-a");
+  registerWorker(broker, "worker-b");
+
+  const exchange = broker.startExchange({
+    requester: { id: "hub-a", kind: "node", role: "hub" },
+    target: { id: "worker-a", kind: "node", role: "analyst" },
+    message: "run analysis",
+    intent: "analyze",
+  });
+  broker.addExchangeMessage(exchange.id, {
+    actor: { id: "hub-a", kind: "node", role: "hub" },
+    message: "accepted",
+    decision: "accepted",
+    targetNodeId: "worker-a",
+    assignedWorkerId: "worker-a",
+  });
+  const taskId = broker.getExchange(exchange.id)?.activeTaskId;
+  assert.ok(taskId);
+
+  // Burn the single requeue attempt worker-a gets.
+  broker.claimTask(taskId, "worker-a");
+  let result = broker.requeueStaleTasksDetailed(0);
+  assert.equal(result.requeued[0].requeueCount, 1);
+
+  // Operator reassigns to worker-b; the fresh target should not inherit the dead-letter
+  // pressure from worker-a's flap.
+  const reassigned = broker.reassignTask(taskId, {
+    actor: { id: "ops", kind: "node", role: "operator" },
+    targetNodeId: "worker-b",
+    assignedWorkerId: "worker-b",
+  });
+  assert.equal(reassigned.requeueCount, 0);
+
+  broker.claimTask(taskId, "worker-b");
+  result = broker.requeueStaleTasksDetailed(0);
+  assert.equal(result.requeued.length, 1, "reassigned task should be requeuable again");
+  assert.equal(result.deadLettered.length, 0);
+  assert.equal(result.requeued[0].requeueCount, 1);
 });
 
 test("completing an accepted exchange task marks the exchange completed", () => {
@@ -711,3 +843,105 @@ test("retention prunes stale terminal state but preserves the newest referenced 
   assert.deepEqual(retained.auditEvents.map((event) => event.id), ["audit-retained"]);
   assert.deepEqual(retained.workers.map((worker) => worker.nodeId), [retainedWorker.id]);
 });
+
+test("subscribeToTask streams lifecycle updates and marks terminal events final", () => {
+  const broker = new InMemoryA2ABroker();
+  registerWorker(broker, "worker-a");
+
+  const task = broker.createTask({
+    intent: "analyze",
+    requester: { id: "hub-a", kind: "node", role: "hub" },
+    target: { id: "worker-a", kind: "node", role: "analyst" },
+    assignedWorkerId: "worker-a",
+    message: "run analysis",
+  });
+
+  const updates: TaskUpdate[] = [];
+  const unsubscribe = broker.subscribeToTask(task.id, (update) => {
+    updates.push(update);
+  });
+
+  broker.claimTask(task.id, "worker-a");
+  broker.startTask(task.id, "worker-a");
+  broker.completeTask(task.id, "worker-a", { summary: "done" });
+
+  unsubscribe();
+
+  assert.deepEqual(
+    updates.map((u) => u.reason),
+    ["claimed", "started", "succeeded"],
+  );
+  assert.deepEqual(
+    updates.map((u) => u.task.status),
+    ["claimed", "running", "succeeded"],
+  );
+  assert.deepEqual(
+    updates.map((u) => u.final),
+    [false, false, true],
+  );
+  // Snapshot safety: mutating the delivered task should not affect broker state.
+  updates[0].task.status = "canceled";
+  assert.equal(broker.getTask(task.id)?.status, "succeeded");
+});
+
+test("subscribeToTask emits dead_lettered and requeued updates during stale recovery", () => {
+  const broker = new InMemoryA2ABroker(undefined, undefined, { maxRequeueAttempts: 1 });
+  registerWorker(broker, "worker-a");
+
+  const task = broker.createTask({
+    intent: "analyze",
+    requester: { id: "hub-a", kind: "node", role: "hub" },
+    target: { id: "worker-a", kind: "node", role: "analyst" },
+    assignedWorkerId: "worker-a",
+    message: "run analysis",
+  });
+  broker.claimTask(task.id, "worker-a");
+
+  const updates: TaskUpdate[] = [];
+  const unsubscribe = broker.subscribeToTask(task.id, (update) => {
+    updates.push(update);
+  });
+
+  // First sweep requeues (within cap).
+  broker.requeueStaleTasksDetailed(0, { nowMs: Date.now() + 60_000 });
+  // Second sweep dead-letters because requeueCount already matches maxRequeueAttempts=1.
+  broker.claimTask(task.id, "worker-a");
+  broker.requeueStaleTasksDetailed(0, { nowMs: Date.now() + 120_000 });
+
+  unsubscribe();
+
+  const reasons = updates.map((u) => u.reason);
+  assert.ok(reasons.includes("requeued"), `expected requeued in ${reasons.join(",")}`);
+  assert.ok(reasons.includes("dead_lettered"), `expected dead_lettered in ${reasons.join(",")}`);
+  const terminal = updates.find((u) => u.reason === "dead_lettered");
+  assert.ok(terminal);
+  assert.equal(terminal.final, true);
+  assert.equal(terminal.task.status, "failed");
+});
+
+test("subscribeToTask unsubscribe stops further deliveries", () => {
+  const broker = new InMemoryA2ABroker();
+  registerWorker(broker, "worker-a");
+  const task = broker.createTask({
+    intent: "analyze",
+    requester: { id: "hub-a", kind: "node", role: "hub" },
+    target: { id: "worker-a", kind: "node", role: "analyst" },
+    assignedWorkerId: "worker-a",
+    message: "run analysis",
+  });
+
+  const updates: TaskUpdate[] = [];
+  const unsubscribe = broker.subscribeToTask(task.id, (update) => {
+    updates.push(update);
+  });
+
+  broker.claimTask(task.id, "worker-a");
+  unsubscribe();
+  broker.startTask(task.id, "worker-a");
+
+  assert.deepEqual(
+    updates.map((u) => u.reason),
+    ["claimed"],
+  );
+});
+

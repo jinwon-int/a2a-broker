@@ -3,7 +3,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { z } from "zod";
 
 import { BrokerError } from "./broker.js";
-import type { A2APartyKind, A2APartyRole, ChangeProposal } from "./types.js";
+import type { A2APartyKind, A2APartyRole, ChangeProposal, TaskRecord } from "./types.js";
 
 const requesterKindSchema = z.enum(["session", "node", "user", "service"]);
 const requesterRoleSchema = z.enum(["hub", "live-trader", "researcher", "analyst", "operator"]);
@@ -228,6 +228,32 @@ export function assertRequesterCanTouchProposalArtifacts(
   throw new BrokerError(
     "unauthorized",
     "artifact updates require the proposal source, target, or an operator requester",
+  );
+}
+
+export function assertRequesterCanSubscribeToTask(
+  identity: RequesterIdentity | null,
+  task: TaskRecord,
+): void {
+  const requester = requireRequesterIdentity(identity);
+
+  if (requester.role === "hub" || requester.role === "operator") {
+    return;
+  }
+
+  const allowedIds = new Set(
+    [task.requester.id, task.targetNodeId, task.assignedWorkerId].filter(
+      (value): value is string => typeof value === "string" && value.length > 0,
+    ),
+  );
+
+  if (allowedIds.has(requester.id)) {
+    return;
+  }
+
+  throw new BrokerError(
+    "unauthorized",
+    "task subscribe requires the task requester, target, assigned worker, or a hub/operator role",
   );
 }
 

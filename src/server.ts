@@ -2,15 +2,18 @@ import { createServer, type IncomingMessage, type RequestListener, type Server, 
 
 import { createBrokerAgentCard, type AgentCard } from "./a2a/agent-card.js";
 import { executeA2AJsonRpc } from "./a2a/json-rpc.js";
+import { projectBrokerTask } from "./a2a/task-projection.js";
 import {
   BrokerError,
   DEFAULT_BROKER_RETENTION_POLICY,
+  DEFAULT_MAX_REQUEUE_ATTEMPTS,
   InMemoryA2ABroker,
   type BrokerRetentionPolicy,
 } from "./core/broker.js";
 import {
   applyRateLimitHeaders,
   assertEdgeSecret,
+  assertRequesterCanSubscribeToTask,
   assertRequesterHasRole,
   assertRequesterCanTouchProposalArtifacts,
   assertRequesterMatchesParty,
@@ -46,6 +49,7 @@ import type {
   TaskFailRequest,
   TaskKind,
   TaskReassignRequest,
+  TaskRecord,
   TaskStatus,
   WorkerHeartbeatRequest,
   WorkerListFilters,
@@ -76,12 +80,46 @@ export interface BrokerServerOptions {
   retentionPolicy?: Partial<BrokerRetentionPolicy>;
   maxSnapshotBytes?: number;
   trustedProxy?: boolean;
+  staleReaperEnabled?: boolean;
+  staleReaperIntervalSec?: number;
+  staleReaperOlderThanSec?: number;
+  /**
+   * Max times the stale-task reaper (or manual requeue) may recycle a single task back to
+   * `queued` before dead-lettering it to `failed`. `0` disables the cap. Env:
+   * `BROKER_MAX_REQUEUE_ATTEMPTS`.
+   */
+  maxRequeueAttempts?: number;
+  /**
+   * SSE heartbeat interval for `/a2a/tasks/:id/events`. Comments (`: heartbeat ...`) keep
+   * intermediaries from timing out idle subscriptions. `0` disables heartbeats. Env:
+   * `TASK_SUBSCRIBE_HEARTBEAT_SEC`.
+   */
+  taskSubscribeHeartbeatSec?: number;
+}
+
+export interface BrokerStaleReaperStatus {
+  enabled: boolean;
+  intervalSec: number;
+  olderThanSec: number;
+  maxRequeueAttempts: number;
+  lastRunAt?: string;
+  lastRequeued?: number;
+  lastDeadLettered?: number;
+  totalDeadLettered: number;
+  lastError?: string;
+  runCount: number;
 }
 
 export interface BrokerServerRuntime {
   server: Server;
   handler: RequestListener<typeof IncomingMessage, typeof ServerResponse>;
   broker: InMemoryA2ABroker;
+  /** Run the stale-task reaper sweep once. Returns the number of requeued tasks. */
+  runStaleReaperSweep: () => number;
+  /** Stop the periodic stale-task reaper timer (if started). Safe to call multiple times. */
+  stopStaleReaper: () => void;
+  /** Current reaper configuration and last-run observations for ops visibility. */
+  getStaleReaperStatus: () => BrokerStaleReaperStatus;
   config: {
     host: string;
     port: number;
@@ -98,6 +136,11 @@ export interface BrokerServerRuntime {
     retentionPolicy: BrokerRetentionPolicy;
     maxSnapshotBytes: number;
     trustedProxy: boolean;
+    staleReaperEnabled: boolean;
+    staleReaperIntervalSec: number;
+    staleReaperOlderThanSec: number;
+    maxRequeueAttempts: number;
+    taskSubscribeHeartbeatSec: number;
   };
 }
 
@@ -123,11 +166,45 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
     1,
     options.maxSnapshotBytes ?? Number(process.env.STATE_FILE_MAX_BYTES ?? DEFAULT_BROKER_STATE_MAX_BYTES),
   );
+  const staleReaperEnabled =
+    options.staleReaperEnabled ?? resolveBooleanEnv(process.env.STALE_REAPER_ENABLED, true);
+  // Default sweep cadence (60s) is well below the default worker offline threshold (90s),
+  // so a dead worker's in-flight task gets reaped within roughly offlineAfterSec + intervalSec.
+  const staleReaperIntervalSec = Math.max(
+    1,
+    resolveIntegerOption(options.staleReaperIntervalSec, process.env.STALE_REAPER_INTERVAL_SEC, 60),
+  );
+  // Baseline stale threshold falls back to the worker offline window so local reaping never
+  // fires earlier than "worker definitely missed a heartbeat cycle".
+  const staleReaperOlderThanSec = Math.max(
+    0,
+    resolveIntegerOption(
+      options.staleReaperOlderThanSec,
+      process.env.STALE_REAPER_OLDER_THAN_SEC,
+      Math.max(workerOfflineAfterSec, 1),
+    ),
+  );
+  const maxRequeueAttempts = Math.max(
+    0,
+    resolveIntegerOption(
+      options.maxRequeueAttempts,
+      process.env.BROKER_MAX_REQUEUE_ATTEMPTS,
+      DEFAULT_MAX_REQUEUE_ATTEMPTS,
+    ),
+  );
+  const taskSubscribeHeartbeatSec = Math.max(
+    0,
+    resolveIntegerOption(options.taskSubscribeHeartbeatSec, process.env.TASK_SUBSCRIBE_HEARTBEAT_SEC, 15),
+  );
 
   const stateStore =
     options.stateStore ?? new JsonFileBrokerStateStore(stateFile, { maxBytes: maxSnapshotBytes });
   const broker =
-    options.broker ?? new InMemoryA2ABroker(stateStore, stateStore.load(), { retention: retentionPolicy });
+    options.broker ??
+    new InMemoryA2ABroker(stateStore, stateStore.load(), {
+      retention: retentionPolicy,
+      maxRequeueAttempts,
+    });
   const rateLimiter = new InMemoryRateLimiter(
     Math.max(1, rateLimitMaxRequests),
     Math.max(1, rateLimitWindowSec) * 1000,
@@ -141,9 +218,81 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
     createBrokerAgentCard({
       serviceName,
       publicBaseUrl,
-      supportsStreaming: false,
+      supportsStreaming: true,
       supportsPushNotifications: false,
     });
+
+  // In-broker periodic stale-task reaper. Without this, claimed/running tasks pointing at a
+  // dead worker stay stuck until an operator manually hits POST /tasks/requeue_stale. The
+  // broker snapshot already survives restart, but recovery still required a human. This loop
+  // makes recovery self-healing after node, worker, or broker restarts.
+  let staleReaperTimer: NodeJS.Timeout | null = null;
+  let staleReaperLastRunAt: string | undefined;
+  let staleReaperLastRequeued: number | undefined;
+  let staleReaperLastDeadLettered: number | undefined;
+  let staleReaperTotalDeadLettered = 0;
+  let staleReaperLastError: string | undefined;
+  let staleReaperRunCount = 0;
+
+  const runStaleReaperSweep = (): number => {
+    try {
+      const { requeued, deadLettered } = broker.requeueStaleTasksDetailed(
+        staleReaperOlderThanSec * 1000,
+        { workerOfflineAfterMs: workerOfflineAfterSec * 1000 },
+      );
+      staleReaperLastRunAt = new Date().toISOString();
+      staleReaperLastRequeued = requeued.length;
+      staleReaperLastDeadLettered = deadLettered.length;
+      staleReaperTotalDeadLettered += deadLettered.length;
+      staleReaperLastError = undefined;
+      staleReaperRunCount += 1;
+      if (deadLettered.length > 0) {
+        // Operators want to see this without trawling audit logs. Keep it a single, greppable
+        // line with task ids so it maps back to `task.failed` audit events.
+        console.warn(
+          `[a2a-broker] stale reaper dead-lettered ${deadLettered.length} task(s) after ${broker.getMaxRequeueAttempts()} requeue attempts: ${deadLettered
+            .map((task) => task.id)
+            .join(", ")}`,
+        );
+      }
+      return requeued.length;
+    } catch (error) {
+      staleReaperLastRunAt = new Date().toISOString();
+      staleReaperLastRequeued = 0;
+      staleReaperLastDeadLettered = 0;
+      staleReaperLastError = error instanceof Error ? error.message : String(error);
+      staleReaperRunCount += 1;
+      // Keep the loop alive: transient persistence errors shouldn't kill the timer.
+      console.error(`[a2a-broker] stale reaper sweep failed: ${staleReaperLastError}`);
+      return 0;
+    }
+  };
+
+  const stopStaleReaper = (): void => {
+    if (staleReaperTimer !== null) {
+      clearInterval(staleReaperTimer);
+      staleReaperTimer = null;
+    }
+  };
+
+  const getStaleReaperStatus = (): BrokerStaleReaperStatus => ({
+    enabled: staleReaperEnabled,
+    intervalSec: staleReaperIntervalSec,
+    olderThanSec: staleReaperOlderThanSec,
+    maxRequeueAttempts,
+    lastRunAt: staleReaperLastRunAt,
+    lastRequeued: staleReaperLastRequeued,
+    lastDeadLettered: staleReaperLastDeadLettered,
+    totalDeadLettered: staleReaperTotalDeadLettered,
+    lastError: staleReaperLastError,
+    runCount: staleReaperRunCount,
+  });
+
+  if (staleReaperEnabled) {
+    staleReaperTimer = setInterval(runStaleReaperSweep, staleReaperIntervalSec * 1000);
+    // Reaper should never block process exit; tests and scripts expect clean shutdown.
+    staleReaperTimer.unref?.();
+  }
 
   const handler: RequestListener<typeof IncomingMessage, typeof ServerResponse> = async (req, res) => {
     const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
@@ -185,6 +334,7 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
           workers: {
             offlineAfterSec: workerOfflineAfterSec,
           },
+          staleReaper: getStaleReaperStatus(),
           requestSecurity: {
             enforceRequesterIdentity,
             edgeSecretRequired: Boolean(edgeSecret),
@@ -210,10 +360,36 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
         const response = executeA2AJsonRpc(body, {
           broker,
           agentCard,
+          publicBaseUrl,
           requesterIdentity,
           enforceRequesterIdentity,
         });
         return sendJson(res, 200, response);
+      }
+
+      if (
+        req.method === "GET" &&
+        segments[0] === "a2a" &&
+        segments[1] === "tasks" &&
+        segments[2] &&
+        segments[3] === "events" &&
+        segments.length === 4
+      ) {
+        const taskId = segments[2];
+        const task = broker.getTask(taskId);
+        if (!task) {
+          throw new BrokerError("not_found", "task not found");
+        }
+        if (enforceRequesterIdentity) {
+          assertRequesterCanSubscribeToTask(requesterIdentity, task);
+        }
+
+        handleTaskEventStream(req, res, {
+          broker,
+          task,
+          heartbeatMs: taskSubscribeHeartbeatSec * 1000,
+        });
+        return;
       }
 
       if (req.method === "GET" && path === "/dashboard") {
@@ -485,21 +661,34 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
           assertRequesterHasRole(requesterIdentity, ["hub", "operator"], "task.requeue_stale");
         }
         const olderThanSec = numberQueryParam(url, "older_than_seconds") ?? 300;
-        const requeued = broker.requeueStaleTasks(olderThanSec * 1000, {
+        const { requeued, deadLettered } = broker.requeueStaleTasksDetailed(olderThanSec * 1000, {
           workerOfflineAfterMs: workerOfflineAfterSec * 1000,
         });
         return sendJson(res, 200, {
           ok: true,
           olderThanSeconds: olderThanSec,
           workerOfflineAfterSeconds: workerOfflineAfterSec,
+          maxRequeueAttempts: broker.getMaxRequeueAttempts(),
           policy: "requeue_only",
           requeued: requeued.length,
+          deadLettered: deadLettered.length,
           items: requeued.map((task) => ({
             id: task.id,
             status: task.status,
             targetNodeId: task.targetNodeId,
             assignedWorkerId: task.assignedWorkerId,
             proposalId: task.proposalId,
+            requeueCount: task.requeueCount,
+            updatedAt: task.updatedAt,
+          })),
+          deadLetteredItems: deadLettered.map((task) => ({
+            id: task.id,
+            status: task.status,
+            targetNodeId: task.targetNodeId,
+            assignedWorkerId: task.assignedWorkerId,
+            proposalId: task.proposalId,
+            requeueCount: task.requeueCount,
+            error: task.error,
             updatedAt: task.updatedAt,
           })),
         });
@@ -606,11 +795,18 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
   };
 
   const server = createServer(handler);
+  // When the HTTP server closes, ensure the reaper timer is cleaned up. This matters for
+  // tests and for any runtime that shuts down via server.close() rather than the SIGINT
+  // path in startBrokerServer.
+  server.on("close", stopStaleReaper);
 
   return {
     server,
     handler,
     broker,
+    runStaleReaperSweep,
+    stopStaleReaper,
+    getStaleReaperStatus,
     config: {
       host,
       port,
@@ -627,6 +823,11 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
       retentionPolicy,
       maxSnapshotBytes,
       trustedProxy,
+      staleReaperEnabled,
+      staleReaperIntervalSec,
+      staleReaperOlderThanSec,
+      maxRequeueAttempts,
+      taskSubscribeHeartbeatSec,
     },
   };
 }
@@ -678,6 +879,37 @@ function resolveBrokerRetentionPolicy(
   };
 }
 
+function resolveIntegerOption(
+  explicit: number | undefined,
+  fromEnv: string | undefined,
+  fallback: number,
+): number {
+  if (typeof explicit === "number" && Number.isFinite(explicit)) {
+    return Math.trunc(explicit);
+  }
+  if (fromEnv !== undefined) {
+    const parsed = Number(fromEnv);
+    if (Number.isFinite(parsed)) {
+      return Math.trunc(parsed);
+    }
+  }
+  return fallback;
+}
+
+function resolveBooleanEnv(value: string | undefined, fallback: boolean): boolean {
+  if (value === undefined) {
+    return fallback;
+  }
+  const normalized = value.trim().toLowerCase();
+  if (normalized === "1" || normalized === "true" || normalized === "yes") {
+    return true;
+  }
+  if (normalized === "0" || normalized === "false" || normalized === "no") {
+    return false;
+  }
+  return fallback;
+}
+
 function resolvePolicyNumber(
   explicit: number | undefined,
   fromEnv: string | undefined,
@@ -726,7 +958,25 @@ export function startBrokerServer(options: BrokerServerOptions = {}): BrokerServ
   const runtime = createBrokerServer(options);
   runtime.server.listen(runtime.config.port, runtime.config.host, () => {
     console.log(`${runtime.config.serviceName} listening on ${runtime.config.publicBaseUrl}`);
+    if (runtime.config.staleReaperEnabled) {
+      const cap =
+        runtime.config.maxRequeueAttempts === 0
+          ? "unlimited"
+          : `${runtime.config.maxRequeueAttempts}`;
+      console.log(
+        `[a2a-broker] stale reaper enabled: interval=${runtime.config.staleReaperIntervalSec}s olderThan=${runtime.config.staleReaperOlderThanSec}s maxRequeueAttempts=${cap}`,
+      );
+    }
   });
+
+  const gracefulShutdown = (signal: NodeJS.Signals) => {
+    console.log(`[a2a-broker] received ${signal}, stopping stale reaper and closing server`);
+    runtime.stopStaleReaper();
+    runtime.server.close(() => process.exit(0));
+  };
+  process.once("SIGINT", gracefulShutdown);
+  process.once("SIGTERM", gracefulShutdown);
+
   return runtime;
 }
 
@@ -961,6 +1211,110 @@ function statusCodeFor(code: BrokerError["code"]): number {
     default:
       throw new Error("unhandled broker error code");
   }
+}
+
+function handleTaskEventStream(
+  req: IncomingMessage,
+  res: ServerResponse<IncomingMessage>,
+  params: {
+    broker: InMemoryA2ABroker;
+    task: TaskRecord;
+    heartbeatMs: number;
+  },
+): void {
+  const { broker, task, heartbeatMs } = params;
+
+  res.writeHead(200, {
+    "content-type": "text/event-stream; charset=utf-8",
+    "cache-control": "no-cache, no-transform",
+    connection: "keep-alive",
+    // Disable proxy buffering (nginx, Caddy, most ingresses) so events flush immediately.
+    "x-accel-buffering": "no",
+  });
+  res.flushHeaders?.();
+
+  const writeEvent = (event: string, data: unknown, id?: string): void => {
+    if (res.writableEnded) {
+      return;
+    }
+    if (id) {
+      res.write(`id: ${id}\n`);
+    }
+    res.write(`event: ${event}\n`);
+    res.write(`data: ${JSON.stringify(data)}\n\n`);
+  };
+
+  writeEvent(
+    "task-snapshot",
+    {
+      task: projectBrokerTask(task),
+      reason: "snapshot",
+      final: isTerminalSnapshotStatus(task.status),
+    },
+    task.updatedAt,
+  );
+
+  if (isTerminalSnapshotStatus(task.status)) {
+    // Nothing further will fire for an already-terminal task. Close immediately so the
+    // caller doesn't hold the connection open waiting for an update that never comes.
+    res.end();
+    return;
+  }
+
+  let heartbeatTimer: NodeJS.Timeout | null = null;
+  let unsubscribe: (() => void) | null = null;
+
+  const cleanup = (): void => {
+    if (heartbeatTimer) {
+      clearInterval(heartbeatTimer);
+      heartbeatTimer = null;
+    }
+    if (unsubscribe) {
+      unsubscribe();
+      unsubscribe = null;
+    }
+  };
+
+  unsubscribe = broker.subscribeToTask(task.id, (update) => {
+    writeEvent(
+      "task-status-update",
+      {
+        task: projectBrokerTask(update.task),
+        reason: update.reason,
+        final: update.final,
+      },
+      update.task.updatedAt,
+    );
+    if (update.final) {
+      cleanup();
+      if (!res.writableEnded) {
+        res.end();
+      }
+    }
+  });
+
+  req.on("close", () => {
+    cleanup();
+    if (!res.writableEnded) {
+      res.end();
+    }
+  });
+  req.on("error", cleanup);
+
+  if (heartbeatMs > 0) {
+    heartbeatTimer = setInterval(() => {
+      if (res.writableEnded) {
+        cleanup();
+        return;
+      }
+      res.write(`: heartbeat ${new Date().toISOString()}\n\n`);
+    }, heartbeatMs);
+    heartbeatTimer.unref?.();
+  }
+}
+
+function isTerminalSnapshotStatus(status: string): boolean {
+  return status === "succeeded" || status === "failed" || status === "canceled";
 }
 
 function sendJson(
