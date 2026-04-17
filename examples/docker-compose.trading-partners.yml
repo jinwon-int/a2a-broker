@@ -32,6 +32,7 @@ services:
     container_name: bangtong-worker
     restart: unless-stopped
     working_dir: /app
+    # Placeholder only. Replace with the real worker startup command before using this in an operator flow.
     command: ["bash", "-lc", "echo bangtong worker placeholder && tail -f /dev/null"]
     environment:
       NODE_ID: bangtong
@@ -54,6 +55,7 @@ services:
     container_name: dengae-worker
     restart: unless-stopped
     working_dir: /app
+    # Placeholder only. Replace with the real worker startup command before using this in an operator flow.
     command: ["bash", "-lc", "echo dengae worker placeholder && tail -f /dev/null"]
     environment:
       NODE_ID: dengae

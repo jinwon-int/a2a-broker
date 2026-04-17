@@ -28,8 +28,33 @@ Recommended default:
 
 ```bash
 cd a2a-broker
+npm install
 npm run build
 ```
+
+## Fast operator path
+
+Use this exact order from a clean checkout:
+
+```bash
+cd a2a-broker
+npm install
+npm run build
+cp .env.example .env
+# replace PUBLIC_BASE_URL with the real broker URL before starting
+npm start
+```
+
+In another terminal, run the restart-recovery smoke:
+
+```bash
+cd a2a-broker
+BROKER_URL=http://127.0.0.1:8787 \
+BROKER_EDGE_SECRET=YOUR_EDGE_SECRET \
+npm run smoke:restart-recovery
+```
+
+If the broker is behind a public reverse proxy, replace `BROKER_URL` with that external URL.
 
 ## Automated smoke
 
@@ -89,6 +114,9 @@ The script:
 12. prints a JSON summary including audit actions
 
 ## Important behavior notes
+
+- `examples/docker-compose.trading-partners.yml` is not the verified smoke path. It is still an isolation example with placeholder worker commands.
+- the verified operator flow today is `npm start` for the broker plus `npm run smoke:restart-recovery` for the recovery drill.
 
 - `older_than_seconds=0` is deliberate. It forces an operator recovery sweep immediately and does not wait for `WORKER_OFFLINE_AFTER_SEC`.
 - `POST /tasks/requeue_stale` still requires requester identity, edge auth when enabled, and a `hub` or `operator` role.
