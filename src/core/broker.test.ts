@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { InMemoryA2ABroker, type TaskUpdate } from "./broker.js";
+import { InMemoryA2ABroker, type TaskUpdate, type BufferedTaskEvent } from "./broker.js";
 import { CURRENT_BROKER_STATE_VERSION, type BrokerSnapshot } from "./store.js";
 import type { WorkerRecord } from "./types.js";
 
@@ -943,5 +943,114 @@ test("subscribeToTask unsubscribe stops further deliveries", () => {
     updates.map((u) => u.reason),
     ["claimed"],
   );
+});
+
+test("subscribeToTask includes monotonically increasing seq numbers", () => {
+  const broker = new InMemoryA2ABroker();
+  registerWorker(broker, "worker-a");
+
+  const task = broker.createTask({
+    intent: "analyze",
+    requester: { id: "hub-a", kind: "node", role: "hub" },
+    target: { id: "worker-a", kind: "node", role: "analyst" },
+    assignedWorkerId: "worker-a",
+    message: "run analysis",
+  });
+
+  const updates: TaskUpdate[] = [];
+  const unsubscribe = broker.subscribeToTask(task.id, (update) => {
+    updates.push(update);
+  });
+
+  broker.claimTask(task.id, "worker-a");
+  broker.startTask(task.id, "worker-a");
+  broker.completeTask(task.id, "worker-a", { summary: "done" });
+
+  unsubscribe();
+
+  assert.ok(updates.length === 3);
+  assert.ok(updates[0].seq < updates[1].seq);
+  assert.ok(updates[1].seq < updates[2].seq);
+});
+
+test("replayTaskEvents returns events buffered after the given seq", () => {
+  const broker = new InMemoryA2ABroker();
+  registerWorker(broker, "worker-a");
+
+  const task = broker.createTask({
+    intent: "analyze",
+    requester: { id: "hub-a", kind: "node", role: "hub" },
+    target: { id: "worker-a", kind: "node", role: "analyst" },
+    assignedWorkerId: "worker-a",
+    message: "run analysis",
+  });
+
+  // Subscribe to trigger buffering.
+  const updates: TaskUpdate[] = [];
+  const unsubscribe = broker.subscribeToTask(task.id, (update) => {
+    updates.push(update);
+  });
+
+  broker.claimTask(task.id, "worker-a");
+  broker.startTask(task.id, "worker-a");
+  broker.completeTask(task.id, "worker-a", { summary: "done" });
+
+  unsubscribe();
+
+  // Replay from seq 0 should return events with seq > 0.
+  const replayed = broker.replayTaskEvents(task.id, 0);
+  assert.ok(replayed.length >= 2);
+  for (const event of replayed) {
+    assert.ok(event.seq > 0);
+  }
+});
+
+test("replayTaskEvents returns empty for unknown task", () => {
+  const broker = new InMemoryA2ABroker();
+  const replayed = broker.replayTaskEvents("nonexistent", 0);
+  assert.deepEqual(replayed, []);
+});
+
+test("formatSseEventId and parseSseEventId round-trip", () => {
+  const broker = new InMemoryA2ABroker();
+  const id = broker.formatSseEventId("task-abc", 42);
+  assert.equal(id, "task-abc:42");
+  const parsed = broker.parseSseEventId(id);
+  assert.deepEqual(parsed, { taskId: "task-abc", seq: 42 });
+});
+
+test("parseSseEventId returns null for malformed values", () => {
+  const broker = new InMemoryA2ABroker();
+  assert.equal(broker.parseSseEventId(""), null);
+  assert.equal(broker.parseSseEventId("no-colon"), null);
+  assert.equal(broker.parseSseEventId(":123"), null);
+  assert.equal(broker.parseSseEventId("task:notanumber"), null);
+});
+
+test("event buffer respects maxBufferedEventsPerTask limit", () => {
+  const broker = new InMemoryA2ABroker(undefined, undefined, {
+    maxBufferedEventsPerTask: 3,
+  });
+  registerWorker(broker, "worker-a");
+
+  // Create multiple tasks and drive lifecycle to generate events.
+  for (let i = 0; i < 5; i++) {
+    const task = broker.createTask({
+      intent: "analyze",
+      requester: { id: "hub-a", kind: "node", role: "hub" },
+      target: { id: "worker-a", kind: "node", role: "analyst" },
+      assignedWorkerId: "worker-a",
+      message: `run analysis ${i}`,
+    });
+    broker.claimTask(task.id, "worker-a");
+    broker.startTask(task.id, "worker-a");
+    broker.completeTask(task.id, "worker-a", { summary: `done ${i}` });
+  }
+
+  // Pick the first task and verify buffer is capped at 3.
+  const allTasks = broker.listTasks({});
+  const firstTask = allTasks[0];
+  const allEvents = broker.replayTaskEvents(firstTask.id, -1);
+  assert.ok(allEvents.length <= 3, `expected <= 3 events, got ${allEvents.length}`);
 });
 

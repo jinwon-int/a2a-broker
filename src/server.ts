@@ -1226,12 +1226,18 @@ function handleTaskEventStream(
 
   res.writeHead(200, {
     "content-type": "text/event-stream; charset=utf-8",
-    "cache-control": "no-cache, no-transform",
+    "cache-control": "no-cache, no-store, no-transform",
     connection: "keep-alive",
     // Disable proxy buffering (nginx, Caddy, most ingresses) so events flush immediately.
     "x-accel-buffering": "no",
+    // CORS for browser-based consumers (dashboards, dev tools).
+    "access-control-allow-origin": "*",
+    "access-control-allow-headers": "Last-Event-ID, x-a2a-requester-id, x-a2a-edge-secret",
   });
   res.flushHeaders?.();
+
+  // Send retry advisory: wait 3 seconds before reconnecting.
+  res.write("retry: 3000\n\n");
 
   const writeEvent = (event: string, data: unknown, id?: string): void => {
     if (res.writableEnded) {
@@ -1244,6 +1250,35 @@ function handleTaskEventStream(
     res.write(`data: ${JSON.stringify(data)}\n\n`);
   };
 
+  // Parse Last-Event-ID for reconnect replay.
+  const lastEventIdHeader = req.headers["last-event-id"] as string | undefined;
+  let replayAfterSeq = -1;
+  if (lastEventIdHeader) {
+    const parsed = broker.parseSseEventId(lastEventIdHeader);
+    if (parsed && parsed.taskId === task.id) {
+      replayAfterSeq = parsed.seq;
+    }
+  }
+
+  // If reconnecting with a valid Last-Event-ID, replay missed events first.
+  if (replayAfterSeq >= 0) {
+    const missed = broker.replayTaskEvents(task.id, replayAfterSeq);
+    for (const buffered of missed) {
+      writeEvent(
+        buffered.event,
+        {
+          task: projectBrokerTask(buffered.data.task),
+          reason: buffered.data.reason,
+          final: buffered.data.final,
+        },
+        broker.formatSseEventId(task.id, buffered.seq),
+      );
+    }
+  }
+
+  // Always send a fresh snapshot as the opening event.
+  const snapshotSeq = broker.replayTaskEvents(task.id, -1).length;
+  // Use seq=0 for the initial snapshot if no buffered events exist.
   writeEvent(
     "task-snapshot",
     {
@@ -1251,7 +1286,7 @@ function handleTaskEventStream(
       reason: "snapshot",
       final: isTerminalSnapshotStatus(task.status),
     },
-    task.updatedAt,
+    broker.formatSseEventId(task.id, snapshotSeq > 0 ? snapshotSeq : 0),
   );
 
   if (isTerminalSnapshotStatus(task.status)) {
@@ -1283,7 +1318,7 @@ function handleTaskEventStream(
         reason: update.reason,
         final: update.final,
       },
-      update.task.updatedAt,
+      broker.formatSseEventId(task.id, update.seq),
     );
     if (update.final) {
       cleanup();

@@ -90,6 +90,12 @@ export interface InMemoryA2ABrokerOptions {
    * cap (unlimited requeues, legacy behavior).
    */
   maxRequeueAttempts?: number;
+  /**
+   * Max buffered SSE events per task for replay after reconnect.
+   * Events beyond this limit are discarded (oldest first).
+   * Default: 100.
+   */
+  maxBufferedEventsPerTask?: number;
 }
 
 /**
@@ -127,6 +133,15 @@ export interface TaskUpdate {
   reason: TaskUpdateReason;
   /** Terminal updates should be the last event a subscriber sees for this task. */
   final: boolean;
+  /** Monotonically increasing sequence number per task for SSE `id:` field and replay. */
+  seq: number;
+}
+
+/** Buffered SSE event for replay after reconnect. */
+export interface BufferedTaskEvent {
+  seq: number;
+  event: string;
+  data: TaskUpdate;
 }
 
 export type TaskUpdateListener = (update: TaskUpdate) => void;
@@ -141,6 +156,9 @@ export class InMemoryA2ABroker {
   private readonly workers = new Map<string, WorkerRecord>();
   private readonly tasks = new Map<string, TaskRecord>();
   private readonly taskListeners = new Map<string, Set<TaskUpdateListener>>();
+  private readonly taskEventBuffers = new Map<string, BufferedTaskEvent[]>();
+  private readonly taskEventSeqs = new Map<string, number>();
+  private readonly maxBufferedEventsPerTask: number;
 
   constructor(
     private readonly stateStore?: BrokerStateStore,
@@ -149,6 +167,7 @@ export class InMemoryA2ABroker {
   ) {
     this.retentionPolicy = normalizeBrokerRetentionPolicy(options.retention);
     this.maxRequeueAttempts = normalizeMaxRequeueAttempts(options.maxRequeueAttempts);
+    this.maxBufferedEventsPerTask = options.maxBufferedEventsPerTask ?? 100;
     if (snapshot) {
       this.loadSnapshot(snapshot);
     }
@@ -192,18 +211,35 @@ export class InMemoryA2ABroker {
 
   private emitTaskUpdate(task: TaskRecord, reason: TaskUpdateReason): void {
     const listeners = this.taskListeners.get(task.id);
-    if (!listeners || listeners.size === 0) {
+    const hasActiveSubscribers = listeners && listeners.size > 0;
+    const hasBuffer = this.taskEventBuffers.has(task.id);
+
+    if (!hasActiveSubscribers && !hasBuffer) {
       return;
     }
+
     const final = isTerminalTaskStatus(task.status);
+    const seq = this.advanceTaskEventSeq(task.id);
     // Snapshot the listener set and clone the task so a listener that mutates its copy (or
     // the broker mutating later) can't alter what other subscribers observe.
     const snapshot: TaskUpdate = {
       task: structuredClone(task),
       reason,
       final,
+      seq,
     };
-    for (const listener of [...listeners]) {
+
+    // Buffer event for replay even if no active subscribers.
+    this.bufferTaskEvent(task.id, {
+      seq,
+      event: "task-status-update",
+      data: snapshot,
+    });
+
+    if (!hasActiveSubscribers) {
+      return;
+    }
+    for (const listener of [...listeners!]) {
       try {
         listener(snapshot);
       } catch (error) {
@@ -214,6 +250,54 @@ export class InMemoryA2ABroker {
         );
       }
     }
+  }
+
+  private advanceTaskEventSeq(taskId: string): number {
+    const current = this.taskEventSeqs.get(taskId) ?? 0;
+    const next = current + 1;
+    this.taskEventSeqs.set(taskId, next);
+    return next;
+  }
+
+  private bufferTaskEvent(taskId: string, event: BufferedTaskEvent): void {
+    let buffer = this.taskEventBuffers.get(taskId);
+    if (!buffer) {
+      buffer = [];
+      this.taskEventBuffers.set(taskId, buffer);
+    }
+    buffer.push(event);
+    // Trim oldest events beyond the limit.
+    if (buffer.length > this.maxBufferedEventsPerTask) {
+      buffer.splice(0, buffer.length - this.maxBufferedEventsPerTask);
+    }
+  }
+
+  /** Replay buffered events after the given sequence number. Returns events with seq > afterSeq. */
+  replayTaskEvents(taskId: string, afterSeq: number): BufferedTaskEvent[] {
+    const buffer = this.taskEventBuffers.get(taskId);
+    if (!buffer) {
+      return [];
+    }
+    return buffer.filter((e) => e.seq > afterSeq);
+  }
+
+  /** Build the SSE `id` field value: `{taskId}:{seq}`. */
+  formatSseEventId(taskId: string, seq: number): string {
+    return `${taskId}:${seq}`;
+  }
+
+  /** Parse an SSE `Last-Event-Id` value into taskId and seq. Returns null if malformed. */
+  parseSseEventId(raw: string): { taskId: string; seq: number } | null {
+    const colonIdx = raw.lastIndexOf(":");
+    if (colonIdx < 1) {
+      return null;
+    }
+    const taskId = raw.substring(0, colonIdx);
+    const seq = Number(raw.substring(colonIdx + 1));
+    if (!taskId || !Number.isFinite(seq) || seq < 0) {
+      return null;
+    }
+    return { taskId, seq };
   }
 
   startExchange(request: A2AExchangeRequest): A2AExchangeState {
