@@ -12,7 +12,8 @@
     "start:worker": "node dist/worker.js",
     "smoke:restart-recovery": "node scripts/restart-recovery-smoke.mjs",
     "dev": "node --watch --enable-source-maps src/server.ts",
-    "dev:worker": "node --watch --enable-source-maps src/worker.ts"
+    "dev:worker": "node --watch --enable-source-maps src/worker.ts",
+    "release_gate": "node scripts/release-gate.mjs"
   },
   "engines": {
     "node": ">=22"
