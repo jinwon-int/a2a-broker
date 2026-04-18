@@ -25,8 +25,24 @@ export interface RateLimitDecision {
   allowed: boolean;
 }
 
+export interface RateLimitPressureSnapshot {
+  limit: number;
+  windowMs: number;
+  activeKeys: number;
+  allowedRequests: number;
+  deniedRequests: number;
+  busiest: Array<{
+    key: string;
+    inWindow: number;
+    remaining: number;
+    resetAtMs: number;
+  }>;
+}
+
 export class InMemoryRateLimiter {
   private readonly buckets = new Map<string, number[]>();
+  private allowedRequests = 0;
+  private deniedRequests = 0;
 
   constructor(
     private readonly maxRequests: number,
@@ -40,6 +56,9 @@ export class InMemoryRateLimiter {
 
     if (allowed) {
       timestamps.push(nowMs);
+      this.allowedRequests += 1;
+    } else {
+      this.deniedRequests += 1;
     }
 
     this.buckets.set(key, timestamps);
@@ -55,6 +74,41 @@ export class InMemoryRateLimiter {
       resetAtMs,
       retryAfterSec,
       allowed,
+    };
+  }
+
+  snapshot(nowMs = Date.now(), topKeys = 5): RateLimitPressureSnapshot {
+    const windowStart = nowMs - this.windowMs;
+    const activeEntries = [...this.buckets.entries()]
+      .map(([key, timestamps]) => {
+        const inWindow = timestamps.filter((value) => value > windowStart);
+        if (inWindow.length === 0) {
+          this.buckets.delete(key);
+          return null;
+        }
+        this.buckets.set(key, inWindow);
+        return {
+          key,
+          inWindow: inWindow.length,
+          remaining: Math.max(0, this.maxRequests - inWindow.length),
+          resetAtMs: (inWindow[0] ?? nowMs) + this.windowMs,
+        };
+      })
+      .filter((entry): entry is NonNullable<typeof entry> => entry !== null)
+      .sort((a, b) => {
+        if (b.inWindow !== a.inWindow) {
+          return b.inWindow - a.inWindow;
+        }
+        return a.key.localeCompare(b.key);
+      });
+
+    return {
+      limit: this.maxRequests,
+      windowMs: this.windowMs,
+      activeKeys: activeEntries.length,
+      allowedRequests: this.allowedRequests,
+      deniedRequests: this.deniedRequests,
+      busiest: activeEntries.slice(0, topKeys),
     };
   }
 }

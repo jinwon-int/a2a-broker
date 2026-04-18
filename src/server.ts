@@ -344,6 +344,10 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
             workerRateLimitMaxRequests,
             trustedProxy,
           },
+          requestPressure: {
+            general: rateLimiter.snapshot(),
+            worker: workerRateLimiter.snapshot(),
+          },
           retentionPolicy,
           maxSnapshotBytes,
         });
@@ -402,7 +406,13 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
           oldestPendingLimit,
           pendingActionLimit,
         });
-        return sendJson(res, 200, dashboard);
+        return sendJson(res, 200, {
+          ...dashboard,
+          requestPressure: {
+            general: rateLimiter.snapshot(),
+            worker: workerRateLimiter.snapshot(),
+          },
+        });
       }
 
       if (req.method === "GET" && path === "/workers") {
