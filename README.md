@@ -2,8 +2,19 @@
 
 Minimal standalone A2A broker scaffold.
 
+This repo is the canonical home for the A2A task protocol. The
+in-process library entrypoints from the archived legacy `a2a` repo
+(`runA2ATaskRequest`, `runA2ABrokerExchange`,
+`applyA2ATaskProtocolUpdate`, `applyA2ATaskProtocolCancel`,
+`loadA2ATaskProtocolStatusById`, plus event constructors and reducer
+helpers) are **retired**. Consumers reach the same protocol behavior
+over HTTP and JSON-RPC against this broker — see
+`docs/a2a-protocol.md` for the canonical reference and the migration
+map.
+
 ## Design docs
 
+- `docs/a2a-protocol.md` for the canonical A2A task protocol: envelope shape, lifecycle, cancel semantics, event/state model, and the migration map from the retired legacy library entrypoints
 - `docs/v1-acceptance-handoff.md` for the v1 acceptance gate, the plugin-facing contract, and the cross-repo handoff bar for `openclaw-plugin-a2a`
 - `docs/trading-partner-refactor-design.md` for the broker evolution plan that supports stateful trading-partner workers such as `bangtong` and `dengae`
 - `docs/phase-1-implementation-checklist.md` for the first implementation slice
