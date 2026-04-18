@@ -11,6 +11,7 @@ Minimal standalone A2A broker scaffold.
 - `docs/smoke-compose.md` plus `examples/docker-compose.smoke.yml` for a runnable single-host smoke stack using the built-in echo worker
 - `docs/docker-compose-trading-partners.md` plus `examples/docker-compose.trading-partners.yml` for broker and worker isolation examples (the compose example is not a turnkey smoke stack)
 - `docs/restart-recovery-smoke.md` for the operator runbook and automation flow that validates restart recovery
+- `docs/durable-persistence-path.md` for the recommended next persistence step beyond the phase-1 JSON snapshot backend
 
 ## What is included
 
