@@ -4,9 +4,11 @@ Minimal standalone A2A broker scaffold.
 
 ## Design docs
 
+- `docs/v1-acceptance-handoff.md` for the v1 acceptance gate, the plugin-facing contract, and the cross-repo handoff bar for `openclaw-plugin-a2a`
 - `docs/trading-partner-refactor-design.md` for the broker evolution plan that supports stateful trading-partner workers such as `bangtong` and `dengae`
 - `docs/phase-1-implementation-checklist.md` for the first implementation slice
 - `docs/api-spec-draft.md` for proposal, validation, approval, and apply routes
+- `docs/smoke-compose.md` plus `examples/docker-compose.smoke.yml` for a runnable single-host smoke stack using the built-in echo worker
 - `docs/docker-compose-trading-partners.md` plus `examples/docker-compose.trading-partners.yml` for broker and worker isolation examples (the compose example is not a turnkey smoke stack)
 - `docs/restart-recovery-smoke.md` for the operator runbook and automation flow that validates restart recovery
 
@@ -197,6 +199,15 @@ npm run start:worker
 ```
 
 The worker registers itself, sends heartbeats, polls queued tasks assigned to `WORKER_ID`, claims and starts them, then completes or fails them.
+
+Run the end-to-end smoke stack (broker plus built-in echo worker in Docker):
+
+```bash
+docker compose -f examples/docker-compose.smoke.yml up --build -d
+```
+
+Follow `docs/smoke-compose.md` to seed a task from the shell and
+verify it reaches `succeeded`.
 
 Run the restart recovery smoke:
 

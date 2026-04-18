@@ -116,7 +116,8 @@ The script:
 ## Important behavior notes
 
 - `examples/docker-compose.trading-partners.yml` is not the verified smoke path. It is still an isolation example with placeholder worker commands.
-- the verified operator flow today is `npm start` for the broker plus `npm run smoke:restart-recovery` for the recovery drill.
+- for a copy/paste end-to-end smoke that is not restart-specific, use `docs/smoke-compose.md` plus `examples/docker-compose.smoke.yml`.
+- the verified operator flow for restart recovery today is `npm start` for the broker plus `npm run smoke:restart-recovery` for the recovery drill.
 
 - `older_than_seconds=0` is deliberate. It forces an operator recovery sweep immediately and does not wait for `WORKER_OFFLINE_AFTER_SEC`.
 - `POST /tasks/requeue_stale` still requires requester identity, edge auth when enabled, and a `hub` or `operator` role.
