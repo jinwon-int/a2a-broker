@@ -72,7 +72,7 @@ Current breakpoints:
 - the compose file does not seed a task lifecycle by itself
 - the `/srv/trading/...` mounts are placeholders that must be replaced before real use
 
-For the operator path that is currently runnable, use `docs/restart-recovery-smoke.md`.
+For a runnable copy/paste smoke path, use `docs/smoke-compose.md` plus `examples/docker-compose.smoke.yml`. For a restart-recovery drill, use `docs/restart-recovery-smoke.md`.
 
 ## Important guardrails
 
