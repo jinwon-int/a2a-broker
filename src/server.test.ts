@@ -968,11 +968,20 @@ test("GET /dashboard returns aggregated summary without authentication", async (
     assert.ok(typeof dashboard.workers.online === "number");
     assert.ok(typeof dashboard.workers.stale === "number");
     assert.ok(typeof dashboard.workers.byNode === "object");
+    assert.ok(typeof dashboard.observability === "object");
+    assert.ok(typeof dashboard.observability.queuePressure === "object");
+    assert.ok(typeof dashboard.observability.recovery === "object");
+    assert.ok(typeof dashboard.observability.workerHealth === "object");
+    assert.ok(typeof dashboard.requestPressure === "object");
+    assert.ok(typeof dashboard.requestPressure.general === "object");
+    assert.ok(typeof dashboard.requestPressure.worker === "object");
 
     // Empty state defaults
     assert.equal(dashboard.queue.total, 0);
     assert.equal(dashboard.history.totalCompleted, 0);
     assert.equal(dashboard.workers.total, 0);
+    assert.equal(dashboard.observability.queuePressure.queued, 0);
+    assert.equal(dashboard.observability.recovery.totalDeadLettered, 0);
   } finally {
     await server.close();
   }
@@ -1059,6 +1068,9 @@ test("GET /dashboard reflects task lifecycle after create/claim/complete", async
     assert.equal(doneDash.history.completedLastHour, 1);
     assert.equal(doneDash.history.recent.length, 1);
     assert.equal(doneDash.history.recent[0].status, "succeeded");
+    assert.equal(doneDash.observability.queuePressure.queued, 0);
+    assert.equal(doneDash.observability.queuePressure.claimed, 0);
+    assert.equal(doneDash.observability.queuePressure.running, 0);
   } finally {
     await server.close();
   }
@@ -1204,6 +1216,9 @@ test("stale reaper surfaces config and last-run status via /health", async () =>
     assert.equal(health.staleReaper.intervalSec, 120);
     assert.equal(health.staleReaper.olderThanSec, 240);
     assert.equal(health.staleReaper.runCount, 0);
+    assert.ok(health.requestPressure);
+    assert.ok(health.requestPressure.general);
+    assert.ok(health.requestPressure.worker);
 
     assert.equal(server.runtime.config.staleReaperEnabled, true);
     assert.equal(server.runtime.config.staleReaperIntervalSec, 120);
@@ -1304,6 +1319,13 @@ test("stale reaper dead-letters tasks exceeding maxRequeueAttempts and exposes t
     const healthAfter = await (await fetch(`${server.baseUrl}/health`)).json();
     assert.equal(healthAfter.staleReaper.totalDeadLettered, 1);
     assert.equal(healthAfter.staleReaper.lastDeadLettered, 1);
+
+    const dashboardAfter = await (await fetch(`${server.baseUrl}/dashboard`, {
+      headers: { "x-a2a-edge-secret": "s" },
+    })).json();
+    assert.equal(dashboardAfter.observability.recovery.totalRequeued, 1);
+    assert.equal(dashboardAfter.observability.recovery.totalDeadLettered, 1);
+    assert.equal(dashboardAfter.observability.recovery.recentDeadLetters.length, 1);
   } finally {
     await server.close();
   }

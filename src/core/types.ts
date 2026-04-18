@@ -423,6 +423,37 @@ export interface BrokerDashboard {
   proposals: ProposalPipelineSummary;
   /** Worker fleet status. */
   workers: WorkerFleetSummary;
+  /** Operator-facing observability summary for queue pressure and recovery cases. */
+  observability: BrokerObservabilitySummary;
+}
+
+export interface BrokerObservabilitySummary {
+  queuePressure: {
+    queued: number;
+    claimed: number;
+    running: number;
+    staleWorkerAssignments: number;
+    oldestClaimed?: Pick<TaskRecord, 'id' | 'intent' | 'targetNodeId' | 'assignedWorkerId' | 'createdAt'>;
+    oldestRunning?: Pick<TaskRecord, 'id' | 'intent' | 'targetNodeId' | 'assignedWorkerId' | 'createdAt'>;
+  };
+  recovery: {
+    totalRequeued: number;
+    totalDeadLettered: number;
+    recentRequeues: Array<{
+      taskId: string;
+      actorId: string;
+      createdAt: string;
+      note?: string;
+    }>;
+    recentDeadLetters: Array<Pick<TaskRecord, 'id' | 'intent' | 'targetNodeId' | 'assignedWorkerId' | 'completedAt' | 'error' | 'requeueCount'>>;
+  };
+  workerHealth: {
+    staleWorkersWithActiveTasks: Array<{
+      nodeId: string;
+      activeTaskCount: number;
+      lastSeenAt: string;
+    }>;
+  };
 }
 
 export interface TaskQueueSummary {

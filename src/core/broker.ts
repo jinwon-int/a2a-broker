@@ -1219,6 +1219,7 @@ export class InMemoryA2ABroker {
     const allTasks = [...this.tasks.values()];
     const allProposals = [...this.proposals.values()];
     const allWorkers = [...this.workers.values()];
+    const staleWorkerIds = new Set(this.listStaleWorkerIds(offlineAfterMs, nowMs));
 
     // --- Queue ---
     const pendingTasks = allTasks.filter(
@@ -1333,12 +1334,87 @@ export class InMemoryA2ABroker {
       byNode,
     };
 
+    const claimedTasks = allTasks.filter((task) => task.status === "claimed");
+    const runningTasks = allTasks.filter((task) => task.status === "running");
+    const staleWorkerAssignments = allTasks.filter((task) => {
+      const workerId = task.assignedWorkerId ?? task.targetNodeId;
+      return (
+        (task.status === "claimed" || task.status === "running") &&
+        typeof workerId === "string" &&
+        staleWorkerIds.has(workerId)
+      );
+    }).length;
+    const recentRequeueEvents = this.listAuditEvents({ action: "task.requeued" })
+      .slice(0, 5)
+      .map((event) => ({
+        taskId: event.targetId,
+        actorId: event.actorId,
+        createdAt: event.createdAt,
+        note: event.note,
+      }));
+    const deadLetteredTasks = sortedCopy(
+      allTasks.filter(
+        (task) => task.status === "failed" && task.error?.code === "exceeded_requeue_limit",
+      ),
+      (a, b) => (b.completedAt ?? "").localeCompare(a.completedAt ?? ""),
+    );
+    const observability = {
+      queuePressure: {
+        queued: queue.byStatus.queued ?? 0,
+        claimed: queue.byStatus.claimed ?? 0,
+        running: queue.byStatus.running ?? 0,
+        staleWorkerAssignments,
+        oldestClaimed: sortedCopy(claimedTasks, (a, b) => a.createdAt.localeCompare(b.createdAt))[0]
+          ? {
+              id: sortedCopy(claimedTasks, (a, b) => a.createdAt.localeCompare(b.createdAt))[0]!.id,
+              intent: sortedCopy(claimedTasks, (a, b) => a.createdAt.localeCompare(b.createdAt))[0]!.intent,
+              targetNodeId: sortedCopy(claimedTasks, (a, b) => a.createdAt.localeCompare(b.createdAt))[0]!.targetNodeId,
+              assignedWorkerId: sortedCopy(claimedTasks, (a, b) => a.createdAt.localeCompare(b.createdAt))[0]!.assignedWorkerId,
+              createdAt: sortedCopy(claimedTasks, (a, b) => a.createdAt.localeCompare(b.createdAt))[0]!.createdAt,
+            }
+          : undefined,
+        oldestRunning: sortedCopy(runningTasks, (a, b) => a.createdAt.localeCompare(b.createdAt))[0]
+          ? {
+              id: sortedCopy(runningTasks, (a, b) => a.createdAt.localeCompare(b.createdAt))[0]!.id,
+              intent: sortedCopy(runningTasks, (a, b) => a.createdAt.localeCompare(b.createdAt))[0]!.intent,
+              targetNodeId: sortedCopy(runningTasks, (a, b) => a.createdAt.localeCompare(b.createdAt))[0]!.targetNodeId,
+              assignedWorkerId: sortedCopy(runningTasks, (a, b) => a.createdAt.localeCompare(b.createdAt))[0]!.assignedWorkerId,
+              createdAt: sortedCopy(runningTasks, (a, b) => a.createdAt.localeCompare(b.createdAt))[0]!.createdAt,
+            }
+          : undefined,
+      },
+      recovery: {
+        totalRequeued: this.listAuditEvents({ action: "task.requeued" }).length,
+        totalDeadLettered: deadLetteredTasks.length,
+        recentRequeues: recentRequeueEvents,
+        recentDeadLetters: deadLetteredTasks.slice(0, 5).map((task) => ({
+          id: task.id,
+          intent: task.intent,
+          targetNodeId: task.targetNodeId,
+          assignedWorkerId: task.assignedWorkerId,
+          completedAt: task.completedAt,
+          error: task.error,
+          requeueCount: task.requeueCount,
+        })),
+      },
+      workerHealth: {
+        staleWorkersWithActiveTasks: byNode
+          .filter((worker) => worker.status === "stale" && worker.activeTaskCount > 0)
+          .map((worker) => ({
+            nodeId: worker.nodeId,
+            activeTaskCount: worker.activeTaskCount,
+            lastSeenAt: worker.lastSeenAt,
+          })),
+      },
+    };
+
     return {
       generatedAt: new Date(nowMs).toISOString(),
       queue,
       history,
       proposals,
       workers,
+      observability,
     };
   }
 
