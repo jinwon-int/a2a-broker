@@ -61,6 +61,19 @@ Replace these placeholders with your real paths or volume strategy:
 - `/srv/trading/dengae/datasets`
 - `/srv/trading/dengae/artifacts`
 
+## Operator smoke status
+
+This compose file is not a turnkey smoke stack.
+
+Current breakpoints:
+
+- `bangtong-worker` uses a placeholder command and does not start `npm run start:worker`
+- `dengae-worker` also uses a placeholder command
+- the compose file does not seed a task lifecycle by itself
+- the `/srv/trading/...` mounts are placeholders that must be replaced before real use
+
+For the operator path that is currently runnable, use `docs/restart-recovery-smoke.md`.
+
 ## Important guardrails
 
 Do not change the example into any of the following:
@@ -71,6 +84,17 @@ Do not change the example into any of the following:
 - one combined artifacts volume without node separation
 
 ## Recommended next step after compose
+
+Once you have real worker startup commands and local mounts in place, validate the broker separately first:
+
+```bash
+cd a2a-broker
+npm install
+npm run build
+npm start
+```
+
+Then run the recovery drill from `docs/restart-recovery-smoke.md`.
 
 Once worker runtimes exist, each worker should expose only structured actions such as:
 
