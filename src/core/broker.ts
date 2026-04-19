@@ -46,6 +46,11 @@ import type {
   ValidationResult,
   WorkerFleetSummary,
   WorkerHeartbeatRequest,
+  TaskDiagnosticReport,
+  TaskDiagnosticStatus,
+  TaskTombstone,
+  TombstoneListFilters,
+  TombstoneReason,
   WorkerListFilters,
   WorkerRecord,
   WorkerView,
@@ -155,6 +160,7 @@ export class InMemoryA2ABroker {
   private readonly auditEvents = new Map<string, AuditEvent>();
   private readonly workers = new Map<string, WorkerRecord>();
   private readonly tasks = new Map<string, TaskRecord>();
+  private readonly tombstones = new Map<string, TaskTombstone>();
   private readonly taskListeners = new Map<string, Set<TaskUpdateListener>>();
   private readonly taskEventBuffers = new Map<string, BufferedTaskEvent[]>();
   private readonly taskEventSeqs = new Map<string, number>();
@@ -1024,6 +1030,7 @@ export class InMemoryA2ABroker {
     });
     this.persistState();
     this.emitTaskUpdate(task, "succeeded");
+    // Succeeded tasks don't get a tombstone — they completed normally.
     return task;
   }
 
@@ -1051,6 +1058,7 @@ export class InMemoryA2ABroker {
     });
     this.persistState();
     this.emitTaskUpdate(task, "failed");
+    this.writeTombstone(task, "failed");
     return task;
   }
 
@@ -1126,6 +1134,7 @@ export class InMemoryA2ABroker {
           note: task.error.message,
         });
         deadLettered.push(task);
+        this.writeTombstone(task, "dead_lettered");
         continue;
       }
 
@@ -1439,6 +1448,7 @@ export class InMemoryA2ABroker {
       auditEvents: [...this.auditEvents.values()],
       workers: [...this.workers.values()],
       tasks: [...this.tasks.values()],
+      tombstones: [...this.tombstones.values()],
     };
   }
 
@@ -1697,6 +1707,10 @@ export class InMemoryA2ABroker {
       this.tasks.set(task.id, normalizeTaskRecord(task));
     }
 
+    for (const tombstone of snapshot.tombstones ?? []) {
+      this.tombstones.set(tombstone.taskId, tombstone);
+    }
+
     this.applyRetentionPolicy();
   }
 
@@ -1945,6 +1959,7 @@ export class InMemoryA2ABroker {
     });
     this.persistState();
     this.emitTaskUpdate(task, "canceled");
+    this.writeTombstone(task, "canceled", { actorId: params.actorId, reason: params.reason });
     return task;
   }
 
@@ -1986,6 +2001,174 @@ export class InMemoryA2ABroker {
       [...this.tasks.values()].filter((task) => task.parentTaskId === parentTaskId),
       sortNewestFirst,
     );
+  }
+
+  // --- Task Heartbeat ---
+
+  /** Record a task-level heartbeat from the assigned worker. */
+  heartbeatTask(taskId: string, workerId: string): TaskRecord {
+    const task = this.requireTask(taskId);
+    this.assertTaskWorker(task, workerId, "heartbeat");
+    this.assertTaskStatus(task.status, ["claimed", "running"], "heartbeat");
+
+    const now = isoNow();
+    task.lastHeartbeatAt = now;
+    task.updatedAt = now;
+    this.tasks.set(task.id, task);
+    this.appendAuditEvent({
+      actorId: workerId,
+      action: "task.heartbeat",
+      targetType: "task",
+      targetId: task.id,
+      proposalId: task.proposalId,
+      note: "task heartbeat",
+    });
+    this.persistState();
+    this.emitTaskUpdate(task, "started"); // re-emit so subscribers see the heartbeat
+    return task;
+  }
+
+  // --- Diagnostics ---
+
+  /** Compute the diagnostic status for a single task. */
+  getTaskDiagnostics(
+    taskId: string,
+    options?: {
+      /** Threshold in ms after which a running task without heartbeat is stale. */
+      staleAfterMs?: number;
+      /** Threshold in ms after which a running task is long-running. */
+      longRunningAfterMs?: number;
+      nowMs?: number;
+    },
+  ): TaskDiagnosticReport {
+    const task = this.requireTask(taskId);
+    const nowMs = options?.nowMs ?? Date.now();
+    const staleAfterMs = options?.staleAfterMs ?? 120_000; // 2 min default
+    const longRunningAfterMs = options?.longRunningAfterMs ?? 3_600_000; // 1 hr default
+
+    const tombstone = this.tombstones.get(taskId);
+    const diagnosticStatus = computeTaskDiagnosticStatus(task, staleAfterMs, longRunningAfterMs, nowMs);
+    const createdAtMs = Date.parse(task.createdAt);
+    const lastStatusChangeMs = Math.max(
+      createdAtMs,
+      task.claimedAt ? Date.parse(task.claimedAt) : 0,
+      task.completedAt ? Date.parse(task.completedAt) : 0,
+      task.lastHeartbeatAt ? Date.parse(task.lastHeartbeatAt) : 0,
+    );
+    const stalenessMs = task.lastHeartbeatAt ? nowMs - Date.parse(task.lastHeartbeatAt) : undefined;
+
+    return {
+      taskId: task.id,
+      diagnosticStatus,
+      task: structuredClone(task),
+      currentStatusDurationMs: nowMs - lastStatusChangeMs,
+      stalenessMs,
+      tombstone: tombstone ? structuredClone(tombstone) : undefined,
+      lifecycle: {
+        createdAt: task.createdAt,
+        claimedAt: task.claimedAt,
+        startedAt:
+          task.status === "running" || task.status === "succeeded" || task.status === "failed"
+            ? task.claimedAt
+            : undefined,
+        lastHeartbeatAt: task.lastHeartbeatAt,
+        completedAt: task.completedAt,
+        tombstonedAt: tombstone?.tombstonedAt,
+      },
+    };
+  }
+
+  /** List tasks that are stale (claimed/running with no recent heartbeat). */
+  listStaleTasks(options?: {
+    staleAfterMs?: number;
+    nowMs?: number;
+  }): TaskRecord[] {
+    const staleAfterMs = options?.staleAfterMs ?? 120_000;
+    const nowMs = options?.nowMs ?? Date.now();
+    const threshold = nowMs - staleAfterMs;
+
+    return [...this.tasks.values()].filter((task) => {
+      if (task.status !== "claimed" && task.status !== "running") {
+        return false;
+      }
+      const lastSignal = task.lastHeartbeatAt
+        ? Date.parse(task.lastHeartbeatAt)
+        : task.claimedAt
+          ? Date.parse(task.claimedAt)
+          : Date.parse(task.createdAt);
+      return lastSignal < threshold;
+    });
+  }
+
+  /** List tasks that have been running longer than a threshold. */
+  listLongRunningTasks(options?: {
+    longRunningAfterMs?: number;
+    nowMs?: number;
+  }): TaskRecord[] {
+    const longRunningAfterMs = options?.longRunningAfterMs ?? 3_600_000;
+    const nowMs = options?.nowMs ?? Date.now();
+    const threshold = nowMs - longRunningAfterMs;
+
+    return [...this.tasks.values()].filter((task) => {
+      if (task.status !== "running") {
+        return false;
+      }
+      const startTime = task.claimedAt ? Date.parse(task.claimedAt) : Date.parse(task.createdAt);
+      return startTime < threshold;
+    });
+  }
+
+  // --- Tombstones ---
+
+  /** Get a tombstone by task ID. */
+  getTombstone(taskId: string): TaskTombstone | null {
+    return this.tombstones.get(taskId) ?? null;
+  }
+
+  /** List tombstones with optional filters. */
+  listTombstones(filters?: TombstoneListFilters): TaskTombstone[] {
+    const items = [...this.tombstones.values()].filter((ts) => {
+      if (filters?.taskId && ts.taskId !== filters.taskId) return false;
+      if (filters?.tombstoneReason && ts.tombstoneReason !== filters.tombstoneReason) return false;
+      if (filters?.terminalStatus && ts.terminalStatus !== filters.terminalStatus) return false;
+      if (filters?.since && ts.tombstonedAt < filters.since) return false;
+      return true;
+    });
+    items.sort((a, b) => b.tombstonedAt.localeCompare(a.tombstonedAt));
+    return items;
+  }
+
+  /** Write a tombstone for a terminal task. Called internally on terminal transitions. */
+  private writeTombstone(
+    task: TaskRecord,
+    reason: TombstoneReason,
+    context?: { actorId?: string; reason?: string },
+  ): void {
+    const now = isoNow();
+    const createdAtMs = Date.parse(task.createdAt);
+    const completedAtMs = task.completedAt ? Date.parse(task.completedAt) : Date.now();
+
+    const tombstone: TaskTombstone = {
+      taskId: task.id,
+      terminalStatus: task.status as TaskStatus,
+      tombstoneReason: reason,
+      durationMs: completedAtMs - createdAtMs,
+      requeueCount: task.requeueCount ?? 0,
+      error: task.error ? structuredClone(task.error) : undefined,
+      result: task.result ? structuredClone(task.result) : undefined,
+      tombstonedAt: now,
+      metadata: context ? { actorId: context.actorId, cancelReason: context.reason } : undefined,
+    };
+
+    this.tombstones.set(task.id, tombstone);
+    this.appendAuditEvent({
+      actorId: context?.actorId ?? "broker",
+      action: "task.tombstoned",
+      targetType: "task",
+      targetId: task.id,
+      proposalId: task.proposalId,
+      note: `tombstoned: ${reason}`,
+    });
   }
 
   private linkTaskToExchange(task: TaskRecord): void {
@@ -2428,6 +2611,39 @@ function isTerminalExchangeStatus(status: A2AExchangeState["status"]): boolean {
 
 function isTerminalTaskStatus(status: TaskRecord["status"]): boolean {
   return status === "succeeded" || status === "failed" || status === "canceled";
+}
+
+function computeTaskDiagnosticStatus(
+  task: TaskRecord,
+  staleAfterMs: number,
+  longRunningAfterMs: number,
+  nowMs: number,
+): TaskDiagnosticStatus {
+  if (isTerminalTaskStatus(task.status)) {
+    return "terminal";
+  }
+
+  if (task.status === "claimed" || task.status === "running") {
+    const lastSignal = task.lastHeartbeatAt
+      ? Date.parse(task.lastHeartbeatAt)
+      : task.claimedAt
+        ? Date.parse(task.claimedAt)
+        : Date.parse(task.createdAt);
+    const elapsed = nowMs - lastSignal;
+
+    if (elapsed > staleAfterMs) {
+      return "stale";
+    }
+
+    const runningSince = task.claimedAt
+      ? Date.parse(task.claimedAt)
+      : Date.parse(task.createdAt);
+    if (task.status === "running" && nowMs - runningSince > longRunningAfterMs) {
+      return "long_running";
+    }
+  }
+
+  return "active";
 }
 
 function isTerminalProposalStatus(status: ChangeProposal["status"]): boolean {

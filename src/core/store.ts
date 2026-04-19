@@ -10,11 +10,12 @@ import type {
   A2AExchangeState,
   ChangeProposal,
   TaskRecord,
+  TaskTombstone,
   ValidationResult,
   WorkerRecord,
 } from "./types.js";
 
-export const CURRENT_BROKER_STATE_VERSION = 5;
+export const CURRENT_BROKER_STATE_VERSION = 6;
 export const DEFAULT_BROKER_STATE_MAX_BYTES = 50 * 1024 * 1024;
 
 export interface BrokerSnapshot {
@@ -27,6 +28,7 @@ export interface BrokerSnapshot {
   auditEvents: AuditEvent[];
   workers: WorkerRecord[];
   tasks: TaskRecord[];
+  tombstones?: TaskTombstone[];
 }
 
 export interface BrokerStateStore {
@@ -178,6 +180,7 @@ const taskSchema = z
     error: taskErrorSchema.optional(),
     cancellation: taskCancellationSchema.optional(),
     requeueCount: z.number().int().nonnegative().optional(),
+    lastHeartbeatAt: z.string().optional(),
   })
   .passthrough();
 
@@ -266,6 +269,20 @@ const workerSchema = z
   })
   .passthrough();
 
+const tombstoneSchema = z
+  .object({
+    taskId: z.string().min(1),
+    terminalStatus: z.string().min(1),
+    tombstoneReason: z.string().min(1),
+    durationMs: z.number(),
+    requeueCount: z.number(),
+    error: taskErrorSchema.optional(),
+    result: taskResultSchema.optional(),
+    tombstonedAt: z.string().min(1),
+    metadata: z.record(z.string(), z.unknown()).optional(),
+  })
+  .passthrough();
+
 const brokerSnapshotSchema = z
   .object({
     version: z.number().int().nonnegative().optional().default(CURRENT_BROKER_STATE_VERSION),
@@ -277,6 +294,7 @@ const brokerSnapshotSchema = z
     auditEvents: z.array(auditEventSchema).optional().default([]),
     workers: z.array(workerSchema).optional().default([]),
     tasks: z.array(taskSchema).optional().default([]),
+    tombstones: z.array(tombstoneSchema).optional().default([]),
   })
   .passthrough();
 
@@ -342,6 +360,7 @@ export function emptySnapshot(): BrokerSnapshot {
     auditEvents: [],
     workers: [],
     tasks: [],
+    tombstones: [],
   };
 }
 
