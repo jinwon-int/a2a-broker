@@ -54,11 +54,13 @@ export type AuditAction =
   | "task.created"
   | "task.claimed"
   | "task.started"
+  | "task.heartbeat"
   | "task.reassigned"
   | "task.requeued"
   | "task.succeeded"
   | "task.failed"
   | "task.canceled"
+  | "task.tombstoned"
   | "worker.registered"
   | "worker.heartbeat";
 export type A2AWorkerEnvironment = "research" | "staging" | "live";
@@ -215,6 +217,12 @@ export interface TaskRecord extends A2ATaskRequest {
    * Reset to 0 when an operator reassigns the task (fresh attempt budget).
    */
   requeueCount?: number;
+  /**
+   * Last time a worker explicitly heartbeat this task, confirming active progress.
+   * Updated by `heartbeatTask()`. Enables per-task staleness detection independent
+   * of the worker-level `lastSeenAt`.
+   */
+  lastHeartbeatAt?: string;
 }
 
 export interface TaskClaimRequest {
@@ -409,6 +417,67 @@ export interface AuditListFilters {
   actorId?: string;
   action?: AuditAction;
   targetId?: string;
+}
+
+/** Diagnostic status for a delegated run, computed from lifecycle data. */
+export type TaskDiagnosticStatus =
+  | "active"      // claimed or running with recent heartbeat
+  | "stale"       // claimed or running but no recent heartbeat / exceeded expected duration
+  | "long_running" // running beyond a configurable threshold
+  | "terminal";    // succeeded, failed, or canceled
+
+/** Reason a tombstone was written. */
+export type TombstoneReason =
+  | "failed"              // task completed with error
+  | "canceled"            // operator/requester canceled
+  | "timeout"             // exceeded maximum allowed run time
+  | "dead_lettered"       // requeue limit exhausted
+  | "worker_lost";        // assigned worker went offline
+
+/** Preserved terminal context for post-mortem inspection. */
+export interface TaskTombstone {
+  taskId: string;
+  terminalStatus: TaskStatus;
+  tombstoneReason: TombstoneReason;
+  /** Wall-clock duration from creation to termination, in milliseconds. */
+  durationMs: number;
+  requeueCount: number;
+  error?: TaskError;
+  result?: TaskResult;
+  tombstonedAt: string;
+  /** Arbitrary context the broker attaches at tombstone time. */
+  metadata?: Record<string, unknown>;
+}
+
+/** Stable diagnostic report for downstream consumers (adapter, UI). */
+export interface TaskDiagnosticReport {
+  taskId: string;
+  diagnosticStatus: TaskDiagnosticStatus;
+  /** Current task snapshot (read-only copy). */
+  task: TaskRecord;
+  /** How long the task has been in its current status, in milliseconds. */
+  currentStatusDurationMs: number;
+  /** Time since last task heartbeat, in milliseconds. Undefined if never heartbeaten. */
+  stalenessMs?: number;
+  /** For terminal tasks: the tombstone, if one was written. */
+  tombstone?: TaskTombstone;
+  /** Lifecycle summary: key timestamps. */
+  lifecycle: {
+    createdAt: string;
+    claimedAt?: string;
+    startedAt?: string;
+    lastHeartbeatAt?: string;
+    completedAt?: string;
+    tombstonedAt?: string;
+  };
+}
+
+/** Filters for querying tombstones. */
+export interface TombstoneListFilters {
+  taskId?: string;
+  tombstoneReason?: TombstoneReason;
+  terminalStatus?: TaskStatus;
+  since?: string;
 }
 
 /** Dashboard: aggregated summary of broker state for operator visibility. */
