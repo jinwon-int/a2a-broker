@@ -134,6 +134,15 @@ const taskErrorSchema = z
   })
   .passthrough();
 
+const taskCancellationSchema = z
+  .object({
+    requestedAt: z.string(),
+    requestedBy: z.string().min(1),
+    reason: z.string().optional(),
+    sourceTaskId: z.string().min(1).optional(),
+  })
+  .passthrough();
+
 const taskPolicyContextSchema = z
   .object({
     requiresApproval: z.boolean().optional(),
@@ -146,6 +155,7 @@ const taskSchema = z
   .object({
     id: z.string().min(1),
     exchangeId: z.string().min(1).optional(),
+    parentTaskId: z.string().min(1).optional(),
     intent: z.string().min(1),
     requester: partyRefSchema,
     target: partyRefSchema,
@@ -166,6 +176,7 @@ const taskSchema = z
     claimedBy: z.string().min(1).optional(),
     result: taskResultSchema.optional(),
     error: taskErrorSchema.optional(),
+    cancellation: taskCancellationSchema.optional(),
     requeueCount: z.number().int().nonnegative().optional(),
   })
   .passthrough();

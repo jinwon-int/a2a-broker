@@ -785,6 +785,7 @@ export class InMemoryA2ABroker {
     const task: TaskRecord = {
       id: request.id ?? randomUUID(),
       exchangeId: request.exchangeId,
+      parentTaskId: request.parentTaskId,
       intent: request.intent,
       requester: request.requester,
       target: request.target,
@@ -913,10 +914,6 @@ export class InMemoryA2ABroker {
       throw new BrokerError("bad_request", "actor.id is required");
     }
 
-    if (task.status === "succeeded" || task.status === "failed" || task.status === "canceled") {
-      return task;
-    }
-
     const actorId = request.actor.id;
     const actorRole = request.actor.role;
     const requesterMatch = actorId === task.requester.id;
@@ -937,7 +934,11 @@ export class InMemoryA2ABroker {
       );
     }
 
-    return this.cancelTaskRecord(task, {
+    if (task.status === "succeeded" || task.status === "failed" || task.status === "canceled") {
+      return task;
+    }
+
+    return this.cancelTaskTree(task, {
       actorId,
       reason: request.reason,
     });
@@ -1915,15 +1916,23 @@ export class InMemoryA2ABroker {
     params: {
       actorId: string;
       reason?: string;
+      sourceTaskId?: string;
     },
   ): TaskRecord {
+    const canceledAt = isoNow();
     task.status = "canceled";
     task.claimedBy = undefined;
     task.claimedAt = undefined;
-    task.completedAt = isoNow();
-    task.updatedAt = task.completedAt;
+    task.completedAt = canceledAt;
+    task.updatedAt = canceledAt;
     task.result = undefined;
     task.error = undefined;
+    task.cancellation = {
+      requestedAt: canceledAt,
+      requestedBy: params.actorId,
+      reason: params.reason,
+      sourceTaskId: params.sourceTaskId,
+    };
     this.tasks.set(task.id, task);
     this.syncExchangeStateFromTask(task, "queued");
     this.appendAuditEvent({
@@ -1937,6 +1946,46 @@ export class InMemoryA2ABroker {
     this.persistState();
     this.emitTaskUpdate(task, "canceled");
     return task;
+  }
+
+  private cancelTaskTree(
+    task: TaskRecord,
+    params: {
+      actorId: string;
+      reason?: string;
+      sourceTaskId?: string;
+    },
+    visited = new Set<string>(),
+  ): TaskRecord {
+    if (visited.has(task.id)) {
+      return task;
+    }
+    visited.add(task.id);
+
+    const canceledTask = this.cancelTaskRecord(task, params);
+    for (const childTask of this.listChildTasks(task.id)) {
+      if (isTerminalTaskStatus(childTask.status)) {
+        continue;
+      }
+      this.cancelTaskTree(
+        childTask,
+        {
+          actorId: params.actorId,
+          reason: params.reason,
+          sourceTaskId: task.id,
+        },
+        visited,
+      );
+    }
+
+    return canceledTask;
+  }
+
+  private listChildTasks(parentTaskId: string): TaskRecord[] {
+    return sortedCopy(
+      [...this.tasks.values()].filter((task) => task.parentTaskId === parentTaskId),
+      sortNewestFirst,
+    );
   }
 
   private linkTaskToExchange(task: TaskRecord): void {
