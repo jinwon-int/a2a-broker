@@ -638,7 +638,9 @@ JSON-RPC 2.0 endpoint. Supported methods:
 - `SendMessage` — create a task or append to an existing exchange.
 - `GetTask` — fetch the current task snapshot by id.
 - `ListTasks` — filter tasks by status, target, intent, etc.
-- `CancelTask` — cancel a task owned by the caller.
+- `CancelTask` — cancel a task owned by the caller. If the task has descendants linked by
+  `parentTaskId`, the broker fans the cancel out to every non-terminal child task recursively.
+  Repeated cancel calls are idempotent and return the original terminal task snapshot unchanged.
 - `SubscribeToTask` — return the current snapshot and the SSE URL clients should
   connect to for live updates. The actual stream is served at
   `GET /a2a/tasks/:id/events` because JSON-RPC over a single POST cannot carry a

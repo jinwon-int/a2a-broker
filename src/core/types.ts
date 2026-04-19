@@ -144,6 +144,7 @@ export interface A2AExchangeState {
 export interface A2ATaskRequest {
   id: string;
   exchangeId?: string;
+  parentTaskId?: string;
   intent: A2AExchangeIntent;
   requester: A2APartyRef;
   target: A2APartyRef;
@@ -197,6 +198,13 @@ export interface TaskError {
   details?: Record<string, unknown>;
 }
 
+export interface TaskCancellationInfo {
+  requestedAt: string;
+  requestedBy: string;
+  reason?: string;
+  sourceTaskId?: string;
+}
+
 export interface TaskRecord extends A2ATaskRequest {
   intent: TaskKind;
   status: TaskStatus;
@@ -208,6 +216,7 @@ export interface TaskRecord extends A2ATaskRequest {
   claimedBy?: string;
   result?: TaskResult;
   error?: TaskError;
+  cancellation?: TaskCancellationInfo;
   /**
    * Count of times this task has been requeued from claimed/running back to queued by the
    * stale-task reaper or the manual requeue endpoint. Capped by the broker's
