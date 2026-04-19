@@ -507,3 +507,15 @@ export interface WorkerFleetSummary {
     lastSeenAt: string;
   }>;
 }
+
+// ---------------------------------------------------------------------------
+// Delegated-run types (re-exported from ./delegated-runtime.ts)
+// ---------------------------------------------------------------------------
+
+export type {
+  DelegatedRunState,
+  DelegatedRun,
+  DelegatedRunOptions,
+  DelegatedRunHandle,
+  BrokerTaskBridge,
+} from "./delegated-runtime.js";
