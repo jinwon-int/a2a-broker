@@ -4,6 +4,12 @@ import { once } from "node:events";
 
 import { createBrokerServer, type BrokerServerOptions } from "./server.js";
 import { emptySnapshot, type BrokerStateStore } from "./core/store.js";
+import {
+  TRADING_DIALECTIC_KIND,
+  TRADING_DIALECTIC_VERSION,
+  type TradingDialecticTaskInputV1,
+  type TradingDialecticTaskV1,
+} from "./trading-dialectic/types.js";
 
 function createInMemoryStateStore(): BrokerStateStore {
   let snapshot = emptySnapshot();
@@ -50,6 +56,42 @@ function jsonHeaders(headers: Record<string, string> = {}): Record<string, strin
     "content-type": "application/json",
     ...headers,
   };
+}
+
+async function registerTestWorker(
+  baseUrl: string,
+  nodeId: string,
+  role: string,
+  edgeSecret?: string,
+): Promise<void> {
+  const headers: Record<string, string> = {
+    "x-a2a-requester-id": nodeId,
+    "x-a2a-requester-role": role,
+  };
+  if (edgeSecret) {
+    headers["x-a2a-edge-secret"] = edgeSecret;
+  }
+  const res = await fetch(`${baseUrl}/workers/register`, {
+    method: "POST",
+    headers: jsonHeaders(headers),
+    body: JSON.stringify({
+      nodeId,
+      role,
+      capabilities: {
+        canAnalyze: true,
+        canBackfill: false,
+        canPatchWorkspace: false,
+        canPromoteLive: false,
+        workspaceIds: ["test"],
+        environments: ["research"],
+      },
+    }),
+  });
+  if (res.status !== 201) {
+    throw new Error(
+      `failed to register test worker ${nodeId}: ${res.status} ${await res.text()}`,
+    );
+  }
 }
 
 test("server requires a real PUBLIC_BASE_URL", () => {
@@ -1762,6 +1804,362 @@ test("JSON-RPC SubscribeToTask returns current task plus SSE subscription URL", 
     );
     assert.ok(Array.isArray(body.result.subscription.eventTypes));
     assert.ok(body.result.subscription.eventTypes.includes("task-status-update"));
+  } finally {
+    await server.close();
+  }
+});
+
+function buildTradingDialecticTaskFixture(
+  overrides: Partial<TradingDialecticTaskV1> = {},
+): TradingDialecticTaskV1 {
+  return {
+    kind: TRADING_DIALECTIC_KIND,
+    version: TRADING_DIALECTIC_VERSION,
+    taskId: "td-task-01",
+    revision: 4,
+    state: "EXECUTION_ROUTED",
+    meta: {
+      symbol: "BTCUSDT",
+      venue: "binance",
+      marketType: "perp",
+      side: "long",
+      accountRef: "acct-live-01",
+      timeHorizon: "intraday",
+      urgency: "normal",
+      strategyId: "mean-revert-01",
+      riskBudgetRef: "risk-live-01",
+      snapshotAt: "2026-04-19T09:00:00.000Z",
+      dataFreshnessMs: 1500,
+      openedAt: "2026-04-19T09:00:00.000Z",
+      expiresAt: "2026-04-19T10:00:00.000Z",
+      openedBy: "seoseo",
+    },
+    roles: {
+      thesisAgent: { agentId: "bangtong" },
+      antithesisAgent: { agentId: "dengae" },
+      synthAgent: { agentId: "seoseo" },
+    },
+    context: {
+      marketSnapshot: { bid: 64000, ask: 64010 },
+      contextRefs: ["ctx-01"],
+      maxProbeRiskR: 0.5,
+      maxFullRiskR: 1,
+      maxLeverage: 5,
+      maxTimestampDriftMs: 2000,
+    },
+    thesis: {
+      author: { agentId: "bangtong" },
+      submittedAt: "2026-04-19T09:05:00.000Z",
+      regimeHypothesis: "trend-up",
+      tradeIdea: "long perp",
+      whyNow: "breakout confirmed",
+      entryPlan: "limit at pullback",
+      invalidation: "below prior swing",
+      targets: ["64500", "65000"],
+      confidence: 0.7,
+      evidenceRefs: ["ev-01"],
+      assumptions: ["liquidity holds"],
+      riskNotes: ["watch funding"],
+    },
+    antithesis: {
+      author: { agentId: "dengae" },
+      submittedAt: "2026-04-19T09:10:00.000Z",
+      counterView: "false breakout risk",
+      alternativeRegime: "chop",
+      whyThesisMayFail: "thin volume",
+      failureModes: ["liquidity vacuum"],
+      contradictions: ["weakening RSI"],
+      vetoFlags: [],
+      evidenceRefs: ["ev-02"],
+      confidence: 0.6,
+    },
+    rebuttal: {
+      author: { agentId: "bangtong" },
+      submittedAt: "2026-04-19T09:15:00.000Z",
+      response: "volume returning post-open",
+      defendedClaims: ["trend intact"],
+      concededRisks: ["funding spike risk"],
+      residualRisks: ["news event"],
+    },
+    synthesis: {
+      author: { agentId: "seoseo" },
+      submittedAt: "2026-04-19T09:20:00.000Z",
+      preserve: ["entry plan"],
+      discard: ["aggressive sizing"],
+      metaRule: "probe-first under low conviction",
+      verdict: "EXECUTE_PROBE",
+      triggerSet: ["price>64200"],
+      sizeRule: "0.5R",
+      killSwitch: ["price<63500"],
+      unresolved: ["funding outcome"],
+    },
+    decision: {
+      action: "EXECUTE_PROBE",
+      routeTo: "bangtong",
+      ttlSec: 600,
+      hardVeto: false,
+      executionPolicyRef: "policy-probe-v1",
+      decisionBasisRevision: 4,
+    },
+    ...overrides,
+  };
+}
+
+function buildTradingDialecticPayload(
+  overrides: Partial<TradingDialecticTaskV1> = {},
+  phase: TradingDialecticTaskInputV1["contract"]["phase"] = "synthesis",
+): TradingDialecticTaskInputV1 {
+  return {
+    contract: {
+      kind: TRADING_DIALECTIC_KIND,
+      version: TRADING_DIALECTIC_VERSION,
+      phase,
+      task: buildTradingDialecticTaskFixture(overrides),
+    },
+  };
+}
+
+test("trading-dialectic read model returns operator stage rail and decision card", async () => {
+  const server = await startTestServer({
+    edgeSecret: "test-edge-secret",
+    enforceRequesterIdentity: true,
+  });
+  try {
+    await registerTestWorker(server.baseUrl, "bangtong", "live-trader", "test-edge-secret");
+    const createRes = await fetch(`${server.baseUrl}/tasks`, {
+      method: "POST",
+      headers: jsonHeaders({
+        "x-a2a-edge-secret": "test-edge-secret",
+        "x-a2a-requester-id": "hub-a",
+        "x-a2a-requester-role": "hub",
+      }),
+      body: JSON.stringify({
+        intent: "analyze",
+        requester: { id: "hub-a", kind: "node", role: "hub" },
+        target: { id: "bangtong", kind: "node", role: "live-trader" },
+        assignedWorkerId: "bangtong",
+        message: "trade BTCUSDT",
+        payload: buildTradingDialecticPayload(),
+      }),
+    });
+    assert.equal(createRes.status, 201);
+    const task = await createRes.json();
+
+    const readRes = await fetch(`${server.baseUrl}/tasks/${task.id}/trading-dialectic`, {
+      headers: {
+        "x-a2a-edge-secret": "test-edge-secret",
+        "x-a2a-requester-id": "hub-a",
+        "x-a2a-requester-role": "hub",
+      },
+    });
+    assert.equal(readRes.status, 200);
+    const body = await readRes.json();
+
+    assert.equal(body.kind, "trading.dialectic");
+    assert.equal(body.version, 1);
+    assert.equal(body.brokerTaskId, task.id);
+    assert.equal(body.contract.taskId, "td-task-01");
+    assert.equal(body.contract.revision, 4);
+    assert.equal(body.contract.state, "EXECUTION_ROUTED");
+    assert.equal(body.contract.phase, "synthesis");
+    assert.equal(body.meta.symbol, "BTCUSDT");
+    assert.equal(body.roles.synthAgent.agentId, "seoseo");
+
+    const stageNames = ["thesis", "antithesis", "rebuttal", "synthesis", "outcome"];
+    for (const stage of stageNames) {
+      assert.ok(body.stages[stage], `expected stage ${stage}`);
+      assert.equal(body.stages[stage].name, stage);
+    }
+    assert.equal(body.stages.thesis.present, true);
+    assert.equal(body.stages.thesis.author.agentId, "bangtong");
+    assert.equal(body.stages.thesis.at, "2026-04-19T09:05:00.000Z");
+    assert.equal(body.stages.antithesis.present, true);
+    assert.deepEqual(body.stages.antithesis.vetoFlags, []);
+    assert.equal(body.stages.synthesis.present, true);
+    assert.equal(body.stages.synthesis.verdict, "EXECUTE_PROBE");
+    assert.equal(body.stages.outcome.present, false);
+    assert.equal(body.stages.outcome.data, undefined);
+
+    assert.equal(body.decisionCard.present, true);
+    assert.equal(body.decisionCard.verdict, "EXECUTE_PROBE");
+    assert.equal(body.decisionCard.route, "bangtong");
+    assert.equal(body.decisionCard.hardVeto, false);
+    assert.equal(body.decisionCard.executionPolicyRef, "policy-probe-v1");
+    assert.equal(body.decisionCard.decisionBasisRevision, 4);
+    assert.equal(body.decisionCard.ttlSec, 600);
+    assert.equal(body.decisionCard.decidedBy.agentId, "seoseo");
+    assert.equal(body.decisionCard.decidedAt, "2026-04-19T09:20:00.000Z");
+
+    assert.equal(typeof body.summary.headline, "string");
+    assert.equal(typeof body.summary.decision, "string");
+    assert.match(body.summary.decision, /EXECUTE_PROBE/);
+  } finally {
+    await server.close();
+  }
+});
+
+test("trading-dialectic read model omits absent decision card and stages", async () => {
+  const server = await startTestServer({
+    edgeSecret: "test-edge-secret",
+    enforceRequesterIdentity: true,
+  });
+  try {
+    await registerTestWorker(server.baseUrl, "bangtong", "live-trader", "test-edge-secret");
+    const createRes = await fetch(`${server.baseUrl}/tasks`, {
+      method: "POST",
+      headers: jsonHeaders({
+        "x-a2a-edge-secret": "test-edge-secret",
+        "x-a2a-requester-id": "hub-a",
+        "x-a2a-requester-role": "hub",
+      }),
+      body: JSON.stringify({
+        intent: "analyze",
+        requester: { id: "hub-a", kind: "node", role: "hub" },
+        target: { id: "bangtong", kind: "node", role: "live-trader" },
+        assignedWorkerId: "bangtong",
+        message: "early stage trade",
+        payload: buildTradingDialecticPayload(
+          {
+            state: "THESIS_SUBMITTED",
+            revision: 1,
+            antithesis: undefined,
+            rebuttal: undefined,
+            synthesis: undefined,
+            decision: undefined,
+            outcome: undefined,
+          },
+          "thesis",
+        ),
+      }),
+    });
+    assert.equal(createRes.status, 201);
+    const task = await createRes.json();
+
+    const readRes = await fetch(`${server.baseUrl}/tasks/${task.id}/trading-dialectic`, {
+      headers: {
+        "x-a2a-edge-secret": "test-edge-secret",
+        "x-a2a-requester-id": "hub-a",
+        "x-a2a-requester-role": "hub",
+      },
+    });
+    assert.equal(readRes.status, 200);
+    const body = await readRes.json();
+
+    assert.equal(body.contract.state, "THESIS_SUBMITTED");
+    assert.equal(body.contract.phase, "thesis");
+    assert.equal(body.stages.thesis.present, true);
+    assert.equal(body.stages.antithesis.present, false);
+    assert.equal(body.stages.synthesis.present, false);
+    assert.equal(body.stages.synthesis.verdict, undefined);
+    assert.equal(body.stages.outcome.present, false);
+    assert.equal(body.decisionCard.present, false);
+    assert.equal(body.decisionCard.verdict, undefined);
+    assert.equal(body.decisionCard.route, undefined);
+  } finally {
+    await server.close();
+  }
+});
+
+test("trading-dialectic route returns 404 when task is not a trading.dialectic", async () => {
+  const server = await startTestServer({
+    edgeSecret: "test-edge-secret",
+    enforceRequesterIdentity: true,
+  });
+  try {
+    await registerTestWorker(server.baseUrl, "worker-a", "analyst", "test-edge-secret");
+    const createRes = await fetch(`${server.baseUrl}/tasks`, {
+      method: "POST",
+      headers: jsonHeaders({
+        "x-a2a-edge-secret": "test-edge-secret",
+        "x-a2a-requester-id": "hub-a",
+        "x-a2a-requester-role": "hub",
+      }),
+      body: JSON.stringify({
+        intent: "analyze",
+        requester: { id: "hub-a", kind: "node", role: "hub" },
+        target: { id: "worker-a", kind: "node", role: "analyst" },
+        assignedWorkerId: "worker-a",
+        message: "non-dialectic task",
+      }),
+    });
+    assert.equal(createRes.status, 201);
+    const task = await createRes.json();
+
+    const readRes = await fetch(`${server.baseUrl}/tasks/${task.id}/trading-dialectic`, {
+      headers: {
+        "x-a2a-edge-secret": "test-edge-secret",
+        "x-a2a-requester-id": "hub-a",
+        "x-a2a-requester-role": "hub",
+      },
+    });
+    assert.equal(readRes.status, 404);
+    const body = await readRes.json();
+    assert.equal(body.error.code, "not_found");
+    assert.match(body.error.message, /trading\.dialectic/);
+
+    const missingRes = await fetch(
+      `${server.baseUrl}/tasks/does-not-exist/trading-dialectic`,
+      {
+        headers: {
+          "x-a2a-edge-secret": "test-edge-secret",
+          "x-a2a-requester-id": "hub-a",
+          "x-a2a-requester-role": "hub",
+        },
+      },
+    );
+    assert.equal(missingRes.status, 404);
+    const missingBody = await missingRes.json();
+    assert.equal(missingBody.error.code, "not_found");
+    assert.match(missingBody.error.message, /task not found/);
+  } finally {
+    await server.close();
+  }
+});
+
+test("trading-dialectic route rejects unsupported version with 400", async () => {
+  const server = await startTestServer({
+    edgeSecret: "test-edge-secret",
+    enforceRequesterIdentity: true,
+  });
+  try {
+    await registerTestWorker(server.baseUrl, "worker-a", "analyst", "test-edge-secret");
+    const createRes = await fetch(`${server.baseUrl}/tasks`, {
+      method: "POST",
+      headers: jsonHeaders({
+        "x-a2a-edge-secret": "test-edge-secret",
+        "x-a2a-requester-id": "hub-a",
+        "x-a2a-requester-role": "hub",
+      }),
+      body: JSON.stringify({
+        intent: "analyze",
+        requester: { id: "hub-a", kind: "node", role: "hub" },
+        target: { id: "worker-a", kind: "node", role: "analyst" },
+        assignedWorkerId: "worker-a",
+        message: "future-version contract",
+        payload: {
+          contract: {
+            kind: TRADING_DIALECTIC_KIND,
+            version: 99,
+            phase: "thesis",
+            task: buildTradingDialecticTaskFixture(),
+          },
+        },
+      }),
+    });
+    assert.equal(createRes.status, 201);
+    const task = await createRes.json();
+
+    const readRes = await fetch(`${server.baseUrl}/tasks/${task.id}/trading-dialectic`, {
+      headers: {
+        "x-a2a-edge-secret": "test-edge-secret",
+        "x-a2a-requester-id": "hub-a",
+        "x-a2a-requester-role": "hub",
+      },
+    });
+    assert.equal(readRes.status, 400);
+    const body = await readRes.json();
+    assert.equal(body.error.code, "bad_request");
+    assert.match(body.error.message, /unsupported.*version/);
   } finally {
     await server.close();
   }

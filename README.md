@@ -32,6 +32,7 @@ map.
 - public AgentCard discovery at `GET /.well-known/agent-card.json`
 - JSON-RPC facade at `POST /a2a/jsonrpc` with initial `SendMessage`, `GetTask`, `ListTasks`, `CancelTask`, and `GetExtendedAgentCard` methods
 - create/list/get exchange endpoints
+- operator read model for trading dialectic tasks at `GET /tasks/:id/trading-dialectic` (returns stage rail, decision card, and summary projection of a `trading.dialectic` v1 task payload)
 - Dockerfile
 - docker-compose.yml
 

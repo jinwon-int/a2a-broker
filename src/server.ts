@@ -56,6 +56,10 @@ import type {
   A2AWorkerEnvironment,
   A2APartyRole,
 } from "./core/types.js";
+import {
+  projectTradingDialecticReadModel,
+  TradingDialecticReadModelError,
+} from "./trading-dialectic/read-model.js";
 
 interface ThreadedExchangeMessage extends A2AExchangeMessageRecord {
   replies: ThreadedExchangeMessage[];
@@ -702,6 +706,29 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
             updatedAt: task.updatedAt,
           })),
         });
+      }
+
+      if (
+        req.method === "GET" &&
+        segments[0] === "tasks" &&
+        segments[1] &&
+        segments[2] === "trading-dialectic" &&
+        segments.length === 3
+      ) {
+        const task = broker.getTask(segments[1]);
+        if (!task) {
+          throw new BrokerError("not_found", "task not found");
+        }
+        try {
+          const readModel = projectTradingDialecticReadModel(task);
+          return sendJson(res, 200, readModel);
+        } catch (error) {
+          if (error instanceof TradingDialecticReadModelError) {
+            const code = error.code === "missing_contract" || error.code === "wrong_kind" ? "not_found" : "bad_request";
+            throw new BrokerError(code, error.message);
+          }
+          throw error;
+        }
       }
 
       if (req.method === "GET" && segments[0] === "tasks" && segments[1] && segments.length === 2) {
