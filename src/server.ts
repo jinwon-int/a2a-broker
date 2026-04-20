@@ -60,6 +60,7 @@ import {
   projectTradingDialecticReadModel,
   TradingDialecticReadModelError,
 } from "./trading-dialectic/read-model.js";
+import { projectAlerts } from "./core/alert-projection.js";
 
 interface ThreadedExchangeMessage extends A2AExchangeMessageRecord {
   replies: ThreadedExchangeMessage[];
@@ -419,6 +420,23 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
         });
       }
 
+      // GET /alerts — monitoring-friendly alert projection
+      if (req.method === "GET" && path === "/alerts") {
+        const staleAfterMs = numberQueryParam(url, "stale_after_ms") ?? 120_000;
+        const longRunningAfterMs = numberQueryParam(url, "long_running_after_ms") ?? 3_600_000;
+        const allTasks = broker.listTasks();
+        const reports = allTasks.map((task) =>
+          broker.getTaskDiagnostics(task.id, { staleAfterMs, longRunningAfterMs }),
+        );
+        const result = projectAlerts(reports, {
+          staleWarningMs: numberQueryParam(url, "stale_warning_ms") ?? undefined,
+          staleCriticalMs: numberQueryParam(url, "stale_critical_ms") ?? undefined,
+          longRunningWarningMs: numberQueryParam(url, "long_running_warning_ms") ?? undefined,
+          longRunningCriticalMs: numberQueryParam(url, "long_running_critical_ms") ?? undefined,
+        });
+        return sendJson(res, 200, result);
+      }
+
       if (req.method === "GET" && path === "/workers") {
         const filters = workerFiltersFromUrl(url);
         const items = broker.listWorkerViews(workerOfflineAfterSec * 1000, filters);
@@ -737,6 +755,32 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
           throw new BrokerError("not_found", "task not found");
         }
         return sendJson(res, 200, task);
+      }
+
+      // GET /tasks/:id/diagnostics — monitoring-friendly diagnostic report
+      if (
+        req.method === "GET" &&
+        segments[0] === "tasks" &&
+        segments[1] &&
+        segments[2] === "diagnostics" &&
+        segments.length === 3
+      ) {
+        const report = broker.getTaskDiagnostics(segments[1], {
+          staleAfterMs: numberQueryParam(url, "stale_after_ms") ?? undefined,
+          longRunningAfterMs: numberQueryParam(url, "long_running_after_ms") ?? undefined,
+        });
+        return sendJson(res, 200, report);
+      }
+
+      // GET /tasks/diagnostics — all-task diagnostic scan for alert projection
+      if (req.method === "GET" && path === "tasks/diagnostics") {
+        const staleAfterMs = numberQueryParam(url, "stale_after_ms") ?? 120_000;
+        const longRunningAfterMs = numberQueryParam(url, "long_running_after_ms") ?? 3_600_000;
+        const allTasks = broker.listTasks();
+        const reports = allTasks.map((task) =>
+          broker.getTaskDiagnostics(task.id, { staleAfterMs, longRunningAfterMs }),
+        );
+        return sendJson(res, 200, { items: reports, generatedAt: new Date().toISOString() });
       }
 
       if (req.method === "POST" && segments[0] === "tasks" && segments[1] && segments[2] === "claim") {
