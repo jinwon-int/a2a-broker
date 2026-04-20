@@ -749,6 +749,17 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
         }
       }
 
+      // GET /tasks/diagnostics — bulk diagnostic scan (MUST come before /tasks/:id)
+      if (req.method === "GET" && path === "tasks/diagnostics") {
+        const staleAfterMs = numberQueryParam(url, "stale_after_ms") ?? 120_000;
+        const longRunningAfterMs = numberQueryParam(url, "long_running_after_ms") ?? 3_600_000;
+        const allTasks = broker.listTasks();
+        const reports = allTasks.map((task) =>
+          broker.getTaskDiagnostics(task.id, { staleAfterMs, longRunningAfterMs }),
+        );
+        return sendJson(res, 200, { items: reports, generatedAt: new Date().toISOString() });
+      }
+
       if (req.method === "GET" && segments[0] === "tasks" && segments[1] && segments.length === 2) {
         const task = broker.getTask(segments[1]);
         if (!task) {
@@ -772,18 +783,8 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
         return sendJson(res, 200, report);
       }
 
-      // GET /tasks/diagnostics — all-task diagnostic scan for alert projection
-      if (req.method === "GET" && path === "tasks/diagnostics") {
-        const staleAfterMs = numberQueryParam(url, "stale_after_ms") ?? 120_000;
-        const longRunningAfterMs = numberQueryParam(url, "long_running_after_ms") ?? 3_600_000;
-        const allTasks = broker.listTasks();
-        const reports = allTasks.map((task) =>
-          broker.getTaskDiagnostics(task.id, { staleAfterMs, longRunningAfterMs }),
-        );
-        return sendJson(res, 200, { items: reports, generatedAt: new Date().toISOString() });
-      }
-
-      if (req.method === "POST" && segments[0] === "tasks" && segments[1] && segments[2] === "claim") {
+      if (
+        req.method === "POST" && segments[0] === "tasks" && segments[1] && segments[2] === "claim") {
         const body = await readJson<TaskClaimRequest>(req);
         if (!body?.workerId) {
           throw new BrokerError("bad_request", "workerId is required");
