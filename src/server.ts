@@ -750,7 +750,7 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
       }
 
       // GET /tasks/diagnostics — bulk diagnostic scan (MUST come before /tasks/:id)
-      if (req.method === "GET" && path === "tasks/diagnostics") {
+      if (req.method === "GET" && path === "/tasks/diagnostics") {
         const staleAfterMs = numberQueryParam(url, "stale_after_ms") ?? 120_000;
         const longRunningAfterMs = numberQueryParam(url, "long_running_after_ms") ?? 3_600_000;
         const allTasks = broker.listTasks();
