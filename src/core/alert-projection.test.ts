@@ -52,9 +52,22 @@ function makeReport(
   return {
     taskId: task.id,
     diagnosticStatus: "active",
+    brokerState: "healthy",
+    reconcileNeeded: false,
+    interruption: undefined,
     task,
     currentStatusDurationMs: 60_000,
     stalenessMs: undefined,
+    brokerHints: {
+      staleLease: false,
+      staleWorker: false,
+      cancellationRequested: false,
+      requeued: false,
+      lastRequeueAt: undefined,
+      lastRequeueReason: undefined,
+      workerLastSeenAt: undefined,
+      tombstoneReason: undefined,
+    },
     tombstone: undefined,
     lifecycle: {
       createdAt: task.createdAt,

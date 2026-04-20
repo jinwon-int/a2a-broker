@@ -2054,6 +2054,8 @@ export class InMemoryA2ABroker {
       staleAfterMs?: number;
       /** Threshold in ms after which a running task is long-running. */
       longRunningAfterMs?: number;
+      /** Threshold in ms after which an assigned worker is considered stale/offline. */
+      workerOfflineAfterMs?: number;
       nowMs?: number;
     },
   ): TaskDiagnosticReport {
@@ -2061,9 +2063,23 @@ export class InMemoryA2ABroker {
     const nowMs = options?.nowMs ?? Date.now();
     const staleAfterMs = options?.staleAfterMs ?? 120_000; // 2 min default
     const longRunningAfterMs = options?.longRunningAfterMs ?? 3_600_000; // 1 hr default
+    const workerOfflineAfterMs = options?.workerOfflineAfterMs ?? 90_000;
 
     const tombstone = this.tombstones.get(taskId);
     const diagnosticStatus = computeTaskDiagnosticStatus(task, staleAfterMs, longRunningAfterMs, nowMs);
+    const assignedWorker = task.assignedWorkerId ? this.workers.get(task.assignedWorkerId) : undefined;
+    const staleWorker = assignedWorker
+      ? isWorkerStale(assignedWorker.lastSeenAt, workerOfflineAfterMs, nowMs)
+      : false;
+    const lastRequeueEvent = findLatestTaskAuditEvent(this.auditEvents.values(), task.id, "task.requeued");
+    const durableSignals = projectTaskDurableSignals({
+      task,
+      diagnosticStatus,
+      tombstone,
+      assignedWorker,
+      staleWorker,
+      lastRequeueEvent,
+    });
     const createdAtMs = Date.parse(task.createdAt);
     const lastStatusChangeMs = Math.max(
       createdAtMs,
@@ -2078,9 +2094,13 @@ export class InMemoryA2ABroker {
     return {
       taskId: task.id,
       diagnosticStatus,
+      brokerState: durableSignals.brokerState,
+      reconcileNeeded: durableSignals.reconcileNeeded,
+      interruption: durableSignals.interruption,
       task: structuredClone(task),
       currentStatusDurationMs: nowMs - lastStatusChangeMs,
       stalenessMs,
+      brokerHints: durableSignals.brokerHints,
       tombstone: tombstone ? structuredClone(tombstone) : undefined,
       lifecycle: {
         createdAt: task.createdAt,
@@ -2521,6 +2541,181 @@ function isWorkerStale(lastSeenAt: string, offlineAfterMs: number, nowMs: number
   }
 
   return nowMs - lastSeenMs > offlineAfterMs;
+}
+
+function findLatestTaskAuditEvent(
+  events: Iterable<AuditEvent>,
+  taskId: string,
+  action: AuditAction,
+): AuditEvent | undefined {
+  let latest: AuditEvent | undefined;
+  for (const event of events) {
+    if (event.targetId !== taskId || event.action !== action) {
+      continue;
+    }
+    if (!latest || event.createdAt > latest.createdAt) {
+      latest = event;
+    }
+  }
+  return latest;
+}
+
+function projectTaskDurableSignals(params: {
+  task: TaskRecord;
+  diagnosticStatus: TaskDiagnosticStatus;
+  tombstone?: TaskTombstone;
+  assignedWorker?: WorkerRecord;
+  staleWorker: boolean;
+  lastRequeueEvent?: AuditEvent;
+}): Pick<TaskDiagnosticReport, "brokerState" | "reconcileNeeded" | "interruption" | "brokerHints"> {
+  const { task, diagnosticStatus, tombstone, assignedWorker, staleWorker, lastRequeueEvent } = params;
+  const staleLease = diagnosticStatus === "stale";
+  const requeued = (task.requeueCount ?? 0) > 0;
+
+  const brokerHints: TaskDiagnosticReport["brokerHints"] = {
+    staleLease,
+    staleWorker,
+    cancellationRequested: Boolean(task.cancellation),
+    requeued,
+    lastRequeueAt: lastRequeueEvent?.createdAt,
+    lastRequeueReason: lastRequeueEvent?.note,
+    workerLastSeenAt: assignedWorker?.lastSeenAt,
+    tombstoneReason: tombstone?.tombstoneReason,
+  };
+
+  if (tombstone) {
+    switch (tombstone.tombstoneReason) {
+      case "timeout":
+        return {
+          brokerState: "terminal",
+          reconcileNeeded: false,
+          interruption: {
+            kind: "timeout",
+            source: "tombstone",
+            summary: "broker marked the task as timed out",
+            detectedAt: tombstone.tombstonedAt,
+            reason: tombstone.error?.message,
+          },
+          brokerHints,
+        };
+      case "worker_lost":
+        return {
+          brokerState: "terminal",
+          reconcileNeeded: false,
+          interruption: {
+            kind: "worker_lost",
+            source: "tombstone",
+            summary: "broker terminated the task after worker loss",
+            detectedAt: tombstone.tombstonedAt,
+          },
+          brokerHints,
+        };
+      case "dead_lettered":
+        return {
+          brokerState: "terminal",
+          reconcileNeeded: false,
+          interruption: {
+            kind: "dead_lettered",
+            source: "tombstone",
+            summary: "broker dead-lettered the task after exhausting requeues",
+            detectedAt: tombstone.tombstonedAt,
+            reason: tombstone.error?.message,
+          },
+          brokerHints,
+        };
+      case "canceled":
+        return {
+          brokerState: "terminal",
+          reconcileNeeded: false,
+          interruption: {
+            kind: "operator_canceled",
+            source: "tombstone",
+            summary: "broker canceled the task",
+            detectedAt: tombstone.tombstonedAt,
+            actorId: task.cancellation?.requestedBy,
+            reason: task.cancellation?.reason,
+          },
+          brokerHints,
+        };
+      case "failed":
+        if (tombstone.error?.code === "timeout") {
+          return {
+            brokerState: "terminal",
+            reconcileNeeded: false,
+            interruption: {
+              kind: "timeout",
+              source: "tombstone",
+              summary: "broker recorded timeout failure for the task",
+              detectedAt: tombstone.tombstonedAt,
+              reason: tombstone.error?.message,
+            },
+            brokerHints,
+          };
+        }
+        return {
+          brokerState: "terminal",
+          reconcileNeeded: false,
+          interruption: {
+            kind: "failed",
+            source: "tombstone",
+            summary: "broker recorded task failure",
+            detectedAt: tombstone.tombstonedAt,
+            reason: tombstone.error?.message,
+          },
+          brokerHints,
+        };
+    }
+  }
+
+  if (staleWorker && (task.status === "claimed" || task.status === "running")) {
+    return {
+      brokerState: "reconcile_needed",
+      reconcileNeeded: true,
+      interruption: {
+        kind: "stale_worker",
+        source: "worker_state",
+        summary: "assigned worker is stale while the task is still active",
+        detectedAt: assignedWorker?.lastSeenAt,
+        actorId: task.assignedWorkerId,
+      },
+      brokerHints,
+    };
+  }
+
+  if (staleLease && (task.status === "claimed" || task.status === "running")) {
+    return {
+      brokerState: "reconcile_needed",
+      reconcileNeeded: true,
+      interruption: {
+        kind: "stale_lease",
+        source: "task_state",
+        summary: "task lease is stale and should be reconciled from broker state",
+      },
+      brokerHints,
+    };
+  }
+
+  if (task.status === "queued" && requeued) {
+    return {
+      brokerState: "interrupted",
+      reconcileNeeded: false,
+      interruption: {
+        kind: "requeued",
+        source: "audit",
+        summary: "broker requeued the task after interruption detection",
+        detectedAt: lastRequeueEvent?.createdAt,
+        reason: lastRequeueEvent?.note,
+      },
+      brokerHints,
+    };
+  }
+
+  return {
+    brokerState: task.status === "succeeded" ? "terminal" : "healthy",
+    reconcileNeeded: false,
+    interruption: undefined,
+    brokerHints,
+  };
 }
 
 function normalizeCapabilities(

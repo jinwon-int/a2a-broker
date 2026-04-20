@@ -435,6 +435,30 @@ export type TaskDiagnosticStatus =
   | "long_running" // running beyond a configurable threshold
   | "terminal";    // succeeded, failed, or canceled
 
+/** Stable broker-owned classification for downstream reconciliation / interruption handling. */
+export type TaskBrokerState = "healthy" | "reconcile_needed" | "interrupted" | "terminal";
+
+/** Distinguishable interruption / reconciliation causes projected from durable broker state. */
+export type TaskInterruptionKind =
+  | "stale_lease"
+  | "stale_worker"
+  | "requeued"
+  | "operator_canceled"
+  | "timeout"
+  | "worker_lost"
+  | "dead_lettered"
+  | "failed";
+
+export interface TaskInterruptionDiagnostic {
+  kind: TaskInterruptionKind;
+  /** Where this signal came from so plugin/operator lanes do not need to infer it. */
+  source: "task_state" | "worker_state" | "audit" | "tombstone";
+  summary: string;
+  detectedAt?: string;
+  actorId?: string;
+  reason?: string;
+}
+
 /** Reason a tombstone was written. */
 export type TombstoneReason =
   | "failed"              // task completed with error
@@ -462,12 +486,29 @@ export interface TaskTombstone {
 export interface TaskDiagnosticReport {
   taskId: string;
   diagnosticStatus: TaskDiagnosticStatus;
+  /** Higher-level broker-owned state for downstream lanes. */
+  brokerState: TaskBrokerState;
+  /** Whether downstream consumers should reconcile this task from broker state. */
+  reconcileNeeded: boolean;
+  /** Distinguishable interruption/reconciliation signal when one exists. */
+  interruption?: TaskInterruptionDiagnostic;
   /** Current task snapshot (read-only copy). */
   task: TaskRecord;
   /** How long the task has been in its current status, in milliseconds. */
   currentStatusDurationMs: number;
   /** Time since last task heartbeat, in milliseconds. Undefined if never heartbeaten. */
   stalenessMs?: number;
+  /** Broker-owned hints that plugin/operator consumers may rely on directly. */
+  brokerHints: {
+    staleLease: boolean;
+    staleWorker: boolean;
+    cancellationRequested: boolean;
+    requeued: boolean;
+    lastRequeueAt?: string;
+    lastRequeueReason?: string;
+    workerLastSeenAt?: string;
+    tombstoneReason?: TombstoneReason;
+  };
   /** For terminal tasks: the tombstone, if one was written. */
   tombstone?: TaskTombstone;
   /** Lifecycle summary: key timestamps. */
