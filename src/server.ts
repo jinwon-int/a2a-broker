@@ -412,6 +412,7 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
         });
         return sendJson(res, 200, {
           ...dashboard,
+          staleReaper: getStaleReaperStatus(),
           requestPressure: {
             general: rateLimiter.snapshot(),
             worker: workerRateLimiter.snapshot(),

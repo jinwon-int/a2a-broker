@@ -1014,6 +1014,9 @@ test("GET /dashboard returns aggregated summary without authentication", async (
     assert.ok(typeof dashboard.observability.queuePressure === "object");
     assert.ok(typeof dashboard.observability.recovery === "object");
     assert.ok(typeof dashboard.observability.workerHealth === "object");
+    assert.ok(typeof dashboard.staleReaper === "object");
+    assert.ok(typeof dashboard.staleReaper.enabled === "boolean");
+    assert.ok(typeof dashboard.staleReaper.runCount === "number");
     assert.ok(typeof dashboard.requestPressure === "object");
     assert.ok(typeof dashboard.requestPressure.general === "object");
     assert.ok(typeof dashboard.requestPressure.worker === "object");
@@ -1024,6 +1027,7 @@ test("GET /dashboard returns aggregated summary without authentication", async (
     assert.equal(dashboard.workers.total, 0);
     assert.equal(dashboard.observability.queuePressure.queued, 0);
     assert.equal(dashboard.observability.recovery.totalDeadLettered, 0);
+    assert.equal(dashboard.staleReaper.runCount, 0);
   } finally {
     await server.close();
   }
@@ -1378,6 +1382,9 @@ test("stale reaper dead-letters tasks exceeding maxRequeueAttempts and exposes t
     assert.equal(dashboardAfter.observability.recovery.totalRequeued, 1);
     assert.equal(dashboardAfter.observability.recovery.totalDeadLettered, 1);
     assert.equal(dashboardAfter.observability.recovery.recentDeadLetters.length, 1);
+    assert.equal(dashboardAfter.staleReaper.runCount, 2);
+    assert.equal(dashboardAfter.staleReaper.totalDeadLettered, 1);
+    assert.equal(dashboardAfter.staleReaper.lastDeadLettered, 1);
   } finally {
     await server.close();
   }

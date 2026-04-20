@@ -131,6 +131,21 @@ Requires edge secret authentication (same as other non-health routes).
         { "nodeId": "dungae", "activeTaskCount": 2, "lastSeenAt": "...", "lastSeenAgeSec": 137 }
       ]
     }
+  },
+  "staleReaper": {
+    "enabled": true,
+    "intervalSec": 60,
+    "olderThanSec": 90,
+    "maxRequeueAttempts": 5,
+    "lastRunAt": "...",
+    "lastRequeued": 1,
+    "lastDeadLettered": 0,
+    "totalDeadLettered": 1,
+    "runCount": 12
+  },
+  "requestPressure": {
+    "general": { "windowSec": 60, "maxRequests": 10, "activeKeys": 1 },
+    "worker": { "windowSec": 60, "maxRequests": 60, "activeKeys": 1 }
   }
 }
 ```
@@ -142,6 +157,8 @@ Requires edge secret authentication (same as other non-health routes).
 - **proposals.pendingAction**: proposals in `submitted`, `validated`, or `approved` status — these are blocking on the next actor.
 - **workers.byNode**: includes `activeTaskCount` and `lastSeenAgeSec` — spot overloading and stale heartbeats without extra client-side time math.
 - **observability.queuePressure.oldestClaimed / oldestRunning**: expose `statusSinceAt` and `statusAgeSec` so dashboards can flag stuck work using broker-owned timing, not browser clocks.
+- **staleReaper**: mirrors the runtime reaper status from `/health`, letting dashboard/inspector clients render recovery state without a second fetch.
+- **requestPressure**: mirrors general vs worker bucket snapshots so operator UIs can detect throttling pressure without polling `/health`.
 - All limits are configurable via query params to keep responses small on constrained clients.
 - Computed lazily on each request with no extra persistence.
 
