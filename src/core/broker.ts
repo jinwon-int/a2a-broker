@@ -1235,22 +1235,24 @@ export class InMemoryA2ABroker {
     const pendingTasks = allTasks.filter(
       (t) => t.status === "queued" || t.status === "claimed",
     );
+    const oldestPending = sortedCopy(
+      pendingTasks,
+      (a, b) => taskStatusSinceAt(a).localeCompare(taskStatusSinceAt(b)),
+    ).slice(0, oldestPendingLimit);
     const queue: TaskQueueSummary = {
       total: pendingTasks.length,
       byStatus: this.countBy(allTasks, (t) => t.status) as Record<TaskStatus, number>,
       byIntent: this.countBy(allTasks, (t) => t.intent),
-      oldestPending: sortedCopy(
-        pendingTasks,
-        (a, b) => a.createdAt.localeCompare(b.createdAt),
-      ).slice(0, oldestPendingLimit)
-        .map((t) => ({
-          id: t.id,
-          intent: t.intent,
-          status: t.status,
-          targetNodeId: t.targetNodeId,
-          assignedWorkerId: t.assignedWorkerId,
-          createdAt: t.createdAt,
-        })),
+      oldestPending: oldestPending.map((t) => ({
+        id: t.id,
+        intent: t.intent,
+        status: t.status,
+        targetNodeId: t.targetNodeId,
+        assignedWorkerId: t.assignedWorkerId,
+        createdAt: t.createdAt,
+        statusSinceAt: taskStatusSinceAt(t),
+        statusAgeSec: ageSecFromIso(taskStatusSinceAt(t), nowMs),
+      })),
     };
 
     // --- History ---
@@ -1335,6 +1337,7 @@ export class InMemoryA2ABroker {
               : false,
         ).length,
         lastSeenAt: w.lastSeenAt,
+        lastSeenAgeSec: ageSecFromIso(w.lastSeenAt, nowMs),
       };
     });
     const workers: WorkerFleetSummary = {
@@ -1346,6 +1349,14 @@ export class InMemoryA2ABroker {
 
     const claimedTasks = allTasks.filter((task) => task.status === "claimed");
     const runningTasks = allTasks.filter((task) => task.status === "running");
+    const oldestClaimedTask = sortedCopy(
+      claimedTasks,
+      (a, b) => taskStatusSinceAt(a).localeCompare(taskStatusSinceAt(b)),
+    )[0];
+    const oldestRunningTask = sortedCopy(
+      runningTasks,
+      (a, b) => taskStatusSinceAt(a).localeCompare(taskStatusSinceAt(b)),
+    )[0];
     const staleWorkerAssignments = allTasks.filter((task) => {
       const workerId = task.assignedWorkerId ?? task.targetNodeId;
       return (
@@ -1374,22 +1385,26 @@ export class InMemoryA2ABroker {
         claimed: queue.byStatus.claimed ?? 0,
         running: queue.byStatus.running ?? 0,
         staleWorkerAssignments,
-        oldestClaimed: sortedCopy(claimedTasks, (a, b) => a.createdAt.localeCompare(b.createdAt))[0]
+        oldestClaimed: oldestClaimedTask
           ? {
-              id: sortedCopy(claimedTasks, (a, b) => a.createdAt.localeCompare(b.createdAt))[0]!.id,
-              intent: sortedCopy(claimedTasks, (a, b) => a.createdAt.localeCompare(b.createdAt))[0]!.intent,
-              targetNodeId: sortedCopy(claimedTasks, (a, b) => a.createdAt.localeCompare(b.createdAt))[0]!.targetNodeId,
-              assignedWorkerId: sortedCopy(claimedTasks, (a, b) => a.createdAt.localeCompare(b.createdAt))[0]!.assignedWorkerId,
-              createdAt: sortedCopy(claimedTasks, (a, b) => a.createdAt.localeCompare(b.createdAt))[0]!.createdAt,
+              id: oldestClaimedTask.id,
+              intent: oldestClaimedTask.intent,
+              targetNodeId: oldestClaimedTask.targetNodeId,
+              assignedWorkerId: oldestClaimedTask.assignedWorkerId,
+              createdAt: oldestClaimedTask.createdAt,
+              statusSinceAt: taskStatusSinceAt(oldestClaimedTask),
+              statusAgeSec: ageSecFromIso(taskStatusSinceAt(oldestClaimedTask), nowMs),
             }
           : undefined,
-        oldestRunning: sortedCopy(runningTasks, (a, b) => a.createdAt.localeCompare(b.createdAt))[0]
+        oldestRunning: oldestRunningTask
           ? {
-              id: sortedCopy(runningTasks, (a, b) => a.createdAt.localeCompare(b.createdAt))[0]!.id,
-              intent: sortedCopy(runningTasks, (a, b) => a.createdAt.localeCompare(b.createdAt))[0]!.intent,
-              targetNodeId: sortedCopy(runningTasks, (a, b) => a.createdAt.localeCompare(b.createdAt))[0]!.targetNodeId,
-              assignedWorkerId: sortedCopy(runningTasks, (a, b) => a.createdAt.localeCompare(b.createdAt))[0]!.assignedWorkerId,
-              createdAt: sortedCopy(runningTasks, (a, b) => a.createdAt.localeCompare(b.createdAt))[0]!.createdAt,
+              id: oldestRunningTask.id,
+              intent: oldestRunningTask.intent,
+              targetNodeId: oldestRunningTask.targetNodeId,
+              assignedWorkerId: oldestRunningTask.assignedWorkerId,
+              createdAt: oldestRunningTask.createdAt,
+              statusSinceAt: taskStatusSinceAt(oldestRunningTask),
+              statusAgeSec: ageSecFromIso(taskStatusSinceAt(oldestRunningTask), nowMs),
             }
           : undefined,
       },
@@ -1414,6 +1429,7 @@ export class InMemoryA2ABroker {
             nodeId: worker.nodeId,
             activeTaskCount: worker.activeTaskCount,
             lastSeenAt: worker.lastSeenAt,
+            lastSeenAgeSec: worker.lastSeenAgeSec,
           })),
       },
     };
@@ -2405,6 +2421,24 @@ function sortedCopy<T>(values: Iterable<T>, compare: (a: T, b: T) => number): T[
   const items = [...values];
   items.sort(compare);
   return items;
+}
+
+function taskStatusSinceAt(task: Pick<TaskRecord, "status" | "createdAt" | "updatedAt" | "claimedAt">): string {
+  if (task.status === "claimed") {
+    return task.claimedAt ?? task.updatedAt ?? task.createdAt;
+  }
+  if (task.status === "running") {
+    return task.updatedAt ?? task.claimedAt ?? task.createdAt;
+  }
+  return task.createdAt;
+}
+
+function ageSecFromIso(iso: string, nowMs: number): number {
+  const parsed = Date.parse(iso);
+  if (!Number.isFinite(parsed)) {
+    return 0;
+  }
+  return Math.max(0, Math.floor((nowMs - parsed) / 1000));
 }
 
 function sortNewestFirst<T extends { createdAt: string }>(a: T, b: T): number {

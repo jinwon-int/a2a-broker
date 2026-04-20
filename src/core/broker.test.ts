@@ -660,6 +660,55 @@ test("getDashboard workers shows active task counts", () => {
   const w1 = dashboard.workers.byNode.find((w) => w.nodeId === "w1")!;
   assert.equal(w1.activeTaskCount, 1);
   assert.equal(w1.role, "analyst");
+  assert.ok(typeof w1.lastSeenAgeSec === "number");
+});
+
+test("getDashboard exposes broker-owned age fields for pending work and stale workers", () => {
+  const broker = new InMemoryA2ABroker();
+  registerWorker(broker, "w1");
+
+  const claimedTask = broker.createTask({
+    intent: "analyze",
+    requester: { id: "hub-1", kind: "node", role: "hub" },
+    target: { id: "w1", kind: "node", role: "analyst" },
+    assignedWorkerId: "w1",
+    message: "claimed-task",
+  });
+  const claimed = broker.claimTask(claimedTask.id, "w1");
+
+  const runningTask = broker.createTask({
+    intent: "backfill",
+    requester: { id: "hub-1", kind: "node", role: "hub" },
+    target: { id: "w1", kind: "node", role: "analyst" },
+    assignedWorkerId: "w1",
+    message: "running-task",
+  });
+  broker.claimTask(runningTask.id, "w1");
+  const running = broker.startTask(runningTask.id, "w1");
+
+  const nowMs = Math.max(
+    Date.parse(claimed.claimedAt ?? claimed.createdAt),
+    Date.parse(running.updatedAt),
+    Date.parse(broker.listWorkers()[0]!.lastSeenAt),
+  ) + 30_000;
+
+  const dashboard = broker.getDashboard({ nowMs, offlineAfterMs: 10_000 });
+  const pendingClaimed = dashboard.queue.oldestPending.find((task) => task.id === claimed.id)!;
+  const oldestClaimed = dashboard.observability.queuePressure.oldestClaimed!;
+  const oldestRunning = dashboard.observability.queuePressure.oldestRunning!;
+  const staleWorker = dashboard.observability.workerHealth.staleWorkersWithActiveTasks[0]!;
+  const worker = dashboard.workers.byNode.find((entry) => entry.nodeId === "w1")!;
+
+  assert.equal(pendingClaimed.statusSinceAt, claimed.claimedAt);
+  assert.ok(pendingClaimed.statusAgeSec >= 30);
+  assert.equal(oldestClaimed.statusSinceAt, claimed.claimedAt);
+  assert.ok(oldestClaimed.statusAgeSec >= 30);
+  assert.equal(oldestRunning.statusSinceAt, running.updatedAt);
+  assert.ok(oldestRunning.statusAgeSec >= 30);
+  assert.equal(worker.status, "stale");
+  assert.ok(worker.lastSeenAgeSec >= 30);
+  assert.equal(staleWorker.nodeId, "w1");
+  assert.ok(staleWorker.lastSeenAgeSec >= 30);
 });
 
 test("retention prunes stale terminal state but preserves the newest referenced graph", () => {

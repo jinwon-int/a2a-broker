@@ -1083,6 +1083,8 @@ test("GET /dashboard reflects task lifecycle after create/claim/complete", async
     })).json();
     assert.equal(queuedDash.queue.total, 1);
     assert.equal(queuedDash.queue.byStatus["queued"], 1);
+    assert.ok(typeof queuedDash.queue.oldestPending[0].statusSinceAt === "string");
+    assert.ok(typeof queuedDash.queue.oldestPending[0].statusAgeSec === "number");
 
     // Claim and complete
     await fetch(`${server.baseUrl}/tasks/${task.id}/claim`, {
@@ -1095,6 +1097,14 @@ test("GET /dashboard reflects task lifecycle after create/claim/complete", async
       headers: h({ "x-a2a-requester-id": "w1", "x-a2a-requester-role": "analyst" }),
       body: JSON.stringify({ workerId: "w1" }),
     });
+
+    const runningDash = await (await fetch(`${server.baseUrl}/dashboard`, {
+      headers: { "x-a2a-edge-secret": "s" },
+    })).json();
+    assert.ok(typeof runningDash.observability.queuePressure.oldestRunning.statusSinceAt === "string");
+    assert.ok(typeof runningDash.observability.queuePressure.oldestRunning.statusAgeSec === "number");
+    assert.ok(typeof runningDash.workers.byNode[0].lastSeenAgeSec === "number");
+
     await fetch(`${server.baseUrl}/tasks/${task.id}/complete`, {
       method: "POST",
       headers: h({ "x-a2a-requester-id": "w1", "x-a2a-requester-role": "analyst" }),
