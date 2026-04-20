@@ -137,6 +137,8 @@ Operational note:
 - Phase 1 proposal auth is intentionally narrow: artifact updates are limited to the proposal source, target, or an operator.
 - Validation is limited to the proposal source or target node.
 - Local apply remains target-node or operator only, even after approval.
+- Task lineage uses optional `parentTaskId`. Canceling a parent task now fans out to every non-terminal descendant.
+- Repeated `CancelTask` / `POST /tasks/:id/cancel` calls are idempotent. The broker returns the existing terminal task unchanged and keeps the original cancellation record.
 
 ## Stale-task reaper
 

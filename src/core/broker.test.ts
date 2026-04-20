@@ -152,6 +152,84 @@ test("declined marks exchange failed and cancels any active task", () => {
   assert.equal(linkedTask.status, "canceled");
 });
 
+test("canceling a parent task fans out to child tasks recursively", () => {
+  const broker = new InMemoryA2ABroker();
+  registerWorker(broker, "worker-a");
+  registerWorker(broker, "worker-b");
+  registerWorker(broker, "worker-c");
+
+  const parent = broker.createTask({
+    intent: "analyze",
+    requester: { id: "hub-a", kind: "node", role: "hub" },
+    target: { id: "worker-a", kind: "node", role: "analyst" },
+    assignedWorkerId: "worker-a",
+    message: "parent",
+  });
+  const child = broker.createTask({
+    parentTaskId: parent.id,
+    intent: "analyze",
+    requester: { id: "hub-a", kind: "node", role: "hub" },
+    target: { id: "worker-b", kind: "node", role: "analyst" },
+    assignedWorkerId: "worker-b",
+    message: "child",
+  });
+  const grandchild = broker.createTask({
+    parentTaskId: child.id,
+    intent: "analyze",
+    requester: { id: "hub-a", kind: "node", role: "hub" },
+    target: { id: "worker-c", kind: "node", role: "analyst" },
+    assignedWorkerId: "worker-c",
+    message: "grandchild",
+  });
+
+  broker.claimTask(child.id, "worker-b");
+
+  broker.cancelTask(parent.id, {
+    actor: { id: "hub-a", kind: "node", role: "hub" },
+    reason: "operator stop",
+  });
+
+  assert.equal(broker.getTask(parent.id)?.status, "canceled");
+  assert.equal(broker.getTask(child.id)?.status, "canceled");
+  assert.equal(broker.getTask(grandchild.id)?.status, "canceled");
+  assert.equal(broker.getTask(child.id)?.cancellation?.sourceTaskId, parent.id);
+  assert.equal(broker.getTask(grandchild.id)?.cancellation?.sourceTaskId, child.id);
+  assert.deepEqual(
+    broker.listAuditEvents({ action: "task.canceled" }).map((event) => event.targetId).sort(),
+    [child.id, grandchild.id, parent.id].sort(),
+  );
+});
+
+test("repeat cancel is idempotent and preserves the first cancellation record", () => {
+  const broker = new InMemoryA2ABroker();
+  registerWorker(broker, "worker-a");
+
+  const task = broker.createTask({
+    intent: "analyze",
+    requester: { id: "hub-a", kind: "node", role: "hub" },
+    target: { id: "worker-a", kind: "node", role: "analyst" },
+    assignedWorkerId: "worker-a",
+    message: "run analysis",
+  });
+
+  const first = broker.cancelTask(task.id, {
+    actor: { id: "hub-a", kind: "node", role: "hub" },
+    reason: "first stop",
+  });
+  const auditCount = broker.listAuditEvents({ targetId: task.id, action: "task.canceled" }).length;
+
+  const second = broker.cancelTask(task.id, {
+    actor: { id: "hub-a", kind: "node", role: "hub" },
+    reason: "second stop",
+  });
+
+  assert.equal(second.status, "canceled");
+  assert.equal(second.completedAt, first.completedAt);
+  assert.deepEqual(second.cancellation, first.cancellation);
+  assert.equal(second.cancellation?.reason, "first stop");
+  assert.equal(broker.listAuditEvents({ targetId: task.id, action: "task.canceled" }).length, auditCount);
+});
+
 test("stale requeue keeps assignedWorkerId unchanged", () => {
   const broker = new InMemoryA2ABroker();
   registerWorker(broker, "worker-a");
@@ -1053,4 +1131,3 @@ test("event buffer respects maxBufferedEventsPerTask limit", () => {
   const allEvents = broker.replayTaskEvents(firstTask.id, -1);
   assert.ok(allEvents.length <= 3, `expected <= 3 events, got ${allEvents.length}`);
 });
-
