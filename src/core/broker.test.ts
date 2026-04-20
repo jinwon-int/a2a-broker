@@ -1180,3 +1180,195 @@ test("event buffer respects maxBufferedEventsPerTask limit", () => {
   const allEvents = broker.replayTaskEvents(firstTask.id, -1);
   assert.ok(allEvents.length <= 3, `expected <= 3 events, got ${allEvents.length}`);
 });
+
+// ---------------------------------------------------------------------------
+// Durable task/attempt identity and idempotent create semantics
+// ---------------------------------------------------------------------------
+
+test("idempotent create returns existing task for same id", () => {
+  const broker = new InMemoryA2ABroker();
+  registerWorker(broker, "worker-a");
+
+  const task1 = broker.createTask({
+    id: "dup-1",
+    intent: "analyze",
+    requester: { id: "hub-a", kind: "node", role: "hub" },
+    target: { id: "worker-a", kind: "node", role: "analyst" },
+    message: "run analysis",
+  });
+
+  const auditBefore = broker.listAuditEvents({ targetId: "dup-1" });
+
+  const task2 = broker.createTask({
+    id: "dup-1",
+    intent: "analyze",
+    requester: { id: "hub-a", kind: "node", role: "hub" },
+    target: { id: "worker-a", kind: "node", role: "analyst" },
+    message: "run analysis again",
+  });
+
+  assert.equal(task1, task2);
+
+  const auditAfter = broker.listAuditEvents({ targetId: "dup-1" });
+  assert.equal(auditAfter.length, auditBefore.length, "no duplicate audit events");
+});
+
+test("idempotent create does not revalidate", () => {
+  const broker = new InMemoryA2ABroker();
+  registerWorker(broker, "worker-a");
+
+  const task = broker.createTask({
+    id: "dup-noval",
+    intent: "analyze",
+    requester: { id: "hub-a", kind: "node", role: "hub" },
+    target: { id: "worker-a", kind: "node", role: "analyst" },
+    message: "run analysis",
+  });
+
+  // Second create with a non-existent worker should NOT throw — it returns the existing task.
+  const task2 = broker.createTask({
+    id: "dup-noval",
+    intent: "analyze",
+    requester: { id: "hub-a", kind: "node", role: "hub" },
+    target: { id: "no-such-worker", kind: "node", role: "analyst" },
+    assignedWorkerId: "no-such-worker",
+    message: "invalid worker",
+  });
+
+  assert.equal(task, task2);
+});
+
+test("claimTask generates attemptId", () => {
+  const broker = new InMemoryA2ABroker();
+  registerWorker(broker, "worker-a");
+
+  const task = broker.createTask({
+    intent: "analyze",
+    requester: { id: "hub-a", kind: "node", role: "hub" },
+    target: { id: "worker-a", kind: "node", role: "analyst" },
+    assignedWorkerId: "worker-a",
+    message: "run analysis",
+  });
+
+  const claimed = broker.claimTask(task.id, "worker-a");
+  assert.equal(typeof claimed.attemptId, "string");
+  const firstAttemptId = claimed.attemptId;
+
+  // Requeue and claim again — should get a new attemptId
+  broker.requeueStaleTasks(0, { nowMs: Date.now() + 999_999 });
+  const reclaimedTask = broker.getTask(task.id)!;
+  assert.equal(reclaimedTask.attemptId, undefined);
+
+  const claimed2 = broker.claimTask(task.id, "worker-a");
+  assert.equal(typeof claimed2.attemptId, "string");
+  assert.notEqual(claimed2.attemptId, firstAttemptId);
+});
+
+test("reassign clears attemptId", () => {
+  const broker = new InMemoryA2ABroker();
+  registerWorker(broker, "worker-a");
+  registerWorker(broker, "worker-b");
+
+  const task = broker.createTask({
+    intent: "analyze",
+    requester: { id: "hub-a", kind: "node", role: "hub" },
+    target: { id: "worker-a", kind: "node", role: "analyst" },
+    assignedWorkerId: "worker-a",
+    message: "run analysis",
+  });
+
+  broker.claimTask(task.id, "worker-a");
+  const claimed = broker.getTask(task.id)!;
+  assert.ok(claimed.attemptId);
+
+  broker.reassignTask(task.id, {
+    actor: { id: "hub-a", kind: "node", role: "operator" },
+    targetNodeId: "worker-b",
+  });
+
+  const reassigned = broker.getTask(task.id)!;
+  assert.equal(reassigned.attemptId, undefined);
+});
+
+test("completeTask is idempotent on already-succeeded", () => {
+  const broker = new InMemoryA2ABroker();
+  registerWorker(broker, "worker-a");
+
+  const task = broker.createTask({
+    intent: "analyze",
+    requester: { id: "hub-a", kind: "node", role: "hub" },
+    target: { id: "worker-a", kind: "node", role: "analyst" },
+    assignedWorkerId: "worker-a",
+    message: "run analysis",
+  });
+
+  broker.claimTask(task.id, "worker-a");
+  const completed1 = broker.completeTask(task.id, "worker-a", { summary: "done" });
+  const completed2 = broker.completeTask(task.id, "worker-a", { summary: "done again" });
+
+  assert.equal(completed1.completedAt, completed2.completedAt);
+  assert.deepEqual(completed1.result, completed2.result);
+  assert.equal(completed2.status, "succeeded");
+});
+
+test("failTask is idempotent on already-failed", () => {
+  const broker = new InMemoryA2ABroker();
+  registerWorker(broker, "worker-a");
+
+  const task = broker.createTask({
+    intent: "analyze",
+    requester: { id: "hub-a", kind: "node", role: "hub" },
+    target: { id: "worker-a", kind: "node", role: "analyst" },
+    assignedWorkerId: "worker-a",
+    message: "run analysis",
+  });
+
+  broker.claimTask(task.id, "worker-a");
+  const failed1 = broker.failTask(task.id, "worker-a", { message: "boom" });
+  const failed2 = broker.failTask(task.id, "worker-a", { message: "boom again" });
+
+  assert.equal(failed1.completedAt, failed2.completedAt);
+  assert.deepEqual(failed1.error, failed2.error);
+  assert.equal(failed2.status, "failed");
+});
+
+test("completeTask on already-canceled returns task without mutation", () => {
+  const broker = new InMemoryA2ABroker();
+  registerWorker(broker, "worker-a");
+
+  const task = broker.createTask({
+    intent: "analyze",
+    requester: { id: "hub-a", kind: "node", role: "hub" },
+    target: { id: "worker-a", kind: "node", role: "analyst" },
+    assignedWorkerId: "worker-a",
+    message: "run analysis",
+  });
+
+  broker.claimTask(task.id, "worker-a");
+  broker.cancelTask(task.id, {
+    actor: { id: "hub-a", kind: "node", role: "hub" },
+    reason: "no longer needed",
+  });
+
+  const result = broker.completeTask(task.id, "worker-a", { summary: "done" });
+  assert.equal(result.status, "canceled");
+});
+
+test("failTask on already-succeeded returns task without mutation", () => {
+  const broker = new InMemoryA2ABroker();
+  registerWorker(broker, "worker-a");
+
+  const task = broker.createTask({
+    intent: "analyze",
+    requester: { id: "hub-a", kind: "node", role: "hub" },
+    target: { id: "worker-a", kind: "node", role: "analyst" },
+    assignedWorkerId: "worker-a",
+    message: "run analysis",
+  });
+
+  broker.claimTask(task.id, "worker-a");
+  broker.completeTask(task.id, "worker-a", { summary: "done" });
+
+  const result = broker.failTask(task.id, "worker-a", { message: "boom" });
+  assert.equal(result.status, "succeeded");
+});

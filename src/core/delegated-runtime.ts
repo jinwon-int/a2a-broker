@@ -163,6 +163,12 @@ class ManagedRun {
       this.resolveFn = resolve;
     });
 
+    // Handle already-terminal tasks (idempotent create resume)
+    if (task.status === "succeeded" || task.status === "failed" || task.status === "canceled") {
+      this.onTaskUpdate({ task, final: true });
+      return;
+    }
+
     // Subscribe to broker task updates
     this.unsubscribe = this.bridge.subscribeToTask(task.id, (update) => {
       this.onTaskUpdate(update);

@@ -132,17 +132,15 @@ test("failed state: cannot claim or complete a failed task", () => {
     /cannot start task/,
   );
 
-  // Complete should throw
-  assert.throws(
-    () => broker.completeTask(task.id, "worker-regression"),
-    /cannot complete task/,
-  );
+  // Complete should return existing task (idempotent terminal guard)
+  const completeResult = broker.completeTask(task.id, "worker-regression");
+  assert.equal(completeResult.status, "failed");
+  assert.equal(completeResult.error?.code, "handler_error");
 
-  // Fail should throw
-  assert.throws(
-    () => broker.failTask(task.id, "worker-regression"),
-    /cannot fail task/,
-  );
+  // Fail should return existing task (idempotent terminal guard)
+  const failResult = broker.failTask(task.id, "worker-regression");
+  assert.equal(failResult.status, "failed");
+  assert.equal(failResult.error?.code, "handler_error");
 
   // Cancel should be idempotent on terminal states
   const cancelResult = broker.cancelTask(task.id, {
