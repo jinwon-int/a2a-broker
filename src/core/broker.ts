@@ -2055,7 +2055,9 @@ export class InMemoryA2ABroker {
       task.completedAt ? Date.parse(task.completedAt) : 0,
       task.lastHeartbeatAt ? Date.parse(task.lastHeartbeatAt) : 0,
     );
-    const stalenessMs = task.lastHeartbeatAt ? nowMs - Date.parse(task.lastHeartbeatAt) : undefined;
+    const stalenessMs = task.lastHeartbeatAt
+      ? nowMs - Date.parse(task.lastHeartbeatAt)
+      : undefined;
 
     return {
       taskId: task.id,
@@ -2067,10 +2069,9 @@ export class InMemoryA2ABroker {
       lifecycle: {
         createdAt: task.createdAt,
         claimedAt: task.claimedAt,
-        startedAt:
-          task.status === "running" || task.status === "succeeded" || task.status === "failed"
-            ? task.claimedAt
-            : undefined,
+        startedAt: task.status === "running" || task.status === "succeeded" || task.status === "failed"
+          ? task.claimedAt
+          : undefined,
         lastHeartbeatAt: task.lastHeartbeatAt,
         completedAt: task.completedAt,
         tombstonedAt: tombstone?.tombstonedAt,
@@ -2113,7 +2114,9 @@ export class InMemoryA2ABroker {
       if (task.status !== "running") {
         return false;
       }
-      const startTime = task.claimedAt ? Date.parse(task.claimedAt) : Date.parse(task.createdAt);
+      const startTime = task.claimedAt
+        ? Date.parse(task.claimedAt)
+        : Date.parse(task.createdAt);
       return startTime < threshold;
     });
   }
