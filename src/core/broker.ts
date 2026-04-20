@@ -778,6 +778,15 @@ export class InMemoryA2ABroker {
 
   createTask(request: CreateTaskRequest): TaskRecord {
     this.assertTaskPayload(request);
+
+    // Idempotent create: if a task with the requested id already exists, return it as-is.
+    if (request.id) {
+      const existing = this.tasks.get(request.id);
+      if (existing) {
+        return existing;
+      }
+    }
+
     if (request.exchangeId) {
       this.requireExchange(request.exchangeId);
     }
@@ -896,6 +905,7 @@ export class InMemoryA2ABroker {
     // Operator reassignment is a fresh attempt budget: clearing `requeueCount` so the new
     // target isn't penalized by the previous worker's flaps.
     task.requeueCount = 0;
+    task.attemptId = undefined;
     task.updatedAt = now;
     this.tasks.set(task.id, task);
     this.syncExchangeStateFromTask(task, "queued");
@@ -957,6 +967,7 @@ export class InMemoryA2ABroker {
 
     const now = isoNow();
     task.status = "claimed";
+    task.attemptId = randomUUID();
     task.claimedBy = workerId;
     task.claimedAt = now;
     task.updatedAt = now;
@@ -1000,7 +1011,14 @@ export class InMemoryA2ABroker {
   completeTask(taskId: string, workerId: string, result?: TaskResult): TaskRecord {
     const task = this.requireTask(taskId);
     this.assertTaskWorker(task, workerId, "complete");
-    this.assertTaskStatus(task.status, ["claimed", "running"], "complete");
+
+    // Idempotent: if already terminal, return as-is without mutation
+    if (isTerminalTaskStatus(task.status)) {
+      return task;
+    }
+    if (task.status !== "claimed" && task.status !== "running") {
+      throw new BrokerError("invalid_transition", "cannot complete task while status is " + task.status);
+    }
 
     const normalizedResult = normalizeTaskResult(result);
     this.applyTaskCompletion(task, workerId, normalizedResult);
@@ -1037,7 +1055,14 @@ export class InMemoryA2ABroker {
   failTask(taskId: string, workerId: string, error?: TaskError): TaskRecord {
     const task = this.requireTask(taskId);
     this.assertTaskWorker(task, workerId, "fail");
-    this.assertTaskStatus(task.status, ["claimed", "running"], "fail");
+
+    // Idempotent: if already terminal, return as-is without mutation
+    if (isTerminalTaskStatus(task.status)) {
+      return task;
+    }
+    if (task.status !== "claimed" && task.status !== "running") {
+      throw new BrokerError("invalid_transition", "cannot fail task while status is " + task.status);
+    }
 
     const now = isoNow();
     const normalizedError = normalizeTaskError(error);
@@ -1142,6 +1167,7 @@ export class InMemoryA2ABroker {
       task.claimedBy = undefined;
       task.claimedAt = undefined;
       task.completedAt = undefined;
+      task.attemptId = undefined;
       task.updatedAt = nowIso;
       task.requeueCount = currentRequeues + 1;
       this.tasks.set(task.id, task);
@@ -3068,6 +3094,7 @@ function normalizeTaskRecord(task: TaskRecord): TaskRecord {
     payload: normalizeTaskPayload(task.payload),
     result: task.result ? normalizeTaskResult(task.result) : undefined,
     error: task.error ? normalizeTaskError(task.error) : undefined,
+    attemptId: task.attemptId,
   };
 }
 

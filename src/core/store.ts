@@ -181,6 +181,7 @@ const taskSchema = z
     cancellation: taskCancellationSchema.optional(),
     requeueCount: z.number().int().nonnegative().optional(),
     lastHeartbeatAt: z.string().optional(),
+    attemptId: z.string().min(1).optional(),
   })
   .passthrough();
 

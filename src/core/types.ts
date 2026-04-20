@@ -232,6 +232,11 @@ export interface TaskRecord extends A2ATaskRequest {
    * of the worker-level `lastSeenAt`.
    */
   lastHeartbeatAt?: string;
+  /**
+   * Broker-generated UUID assigned when a task transitions from queued to claimed.
+   * Reset on requeue/reassign. Each attempt represents a discrete execution window.
+   */
+  attemptId?: string;
 }
 
 export interface TaskClaimRequest {
