@@ -1263,6 +1263,28 @@ function buildDashboardAttention(input: {
     });
   }
 
+  const claimedAgeThresholdSec = Math.max(1, input.staleReaper.olderThanSec || 0);
+  const oldestClaimed = input.dashboard.observability.queuePressure.oldestClaimed;
+  if (oldestClaimed && oldestClaimed.statusAgeSec >= claimedAgeThresholdSec) {
+    items.push({
+      code: "aged-claimed-task",
+      severity: oldestClaimed.statusAgeSec >= claimedAgeThresholdSec * 2 ? "critical" : "warn",
+      count: 1,
+      summary: `claimed task ${oldestClaimed.id} has been waiting ${oldestClaimed.statusAgeSec}s since claim`,
+    });
+  }
+
+  const runningAgeThresholdSec = claimedAgeThresholdSec;
+  const oldestRunning = input.dashboard.observability.queuePressure.oldestRunning;
+  if (oldestRunning && oldestRunning.statusAgeSec >= runningAgeThresholdSec) {
+    items.push({
+      code: "aged-running-task",
+      severity: oldestRunning.statusAgeSec >= runningAgeThresholdSec * 2 ? "critical" : "warn",
+      count: 1,
+      summary: `running task ${oldestRunning.id} has been active ${oldestRunning.statusAgeSec}s since start`,
+    });
+  }
+
   const recentDeadLetters = Math.max(
     input.dashboard.observability.recovery.recentDeadLetters.length,
     input.staleReaper.lastDeadLettered ?? 0,

@@ -1397,6 +1397,78 @@ test("stale reaper dead-letters tasks exceeding maxRequeueAttempts and exposes t
   }
 });
 
+test("GET /dashboard attention flags aged claimed and running tasks", async () => {
+  const server = await startTestServer({
+    edgeSecret: "s",
+    staleReaperEnabled: false,
+    staleReaperOlderThanSec: 1,
+    workerOfflineAfterSec: 120,
+  });
+  try {
+    const h = (extra: Record<string, string> = {}) => ({
+      "content-type": "application/json",
+      "x-a2a-edge-secret": "s",
+      ...extra,
+    });
+
+    await fetch(`${server.baseUrl}/workers/register`, {
+      method: "POST",
+      headers: h({ "x-a2a-requester-id": "w1", "x-a2a-requester-role": "analyst" }),
+      body: JSON.stringify({
+        nodeId: "w1",
+        role: "analyst",
+        capabilities: {
+          canAnalyze: true,
+          canBackfill: false,
+          canPatchWorkspace: false,
+          canPromoteLive: false,
+          workspaceIds: ["ws"],
+          environments: ["research"],
+        },
+      }),
+    });
+
+    const taskRes = await fetch(`${server.baseUrl}/tasks`, {
+      method: "POST",
+      headers: h({ "x-a2a-requester-id": "hub-1", "x-a2a-requester-role": "hub" }),
+      body: JSON.stringify({
+        intent: "analyze",
+        requester: { id: "hub-1", kind: "node", role: "hub" },
+        target: { id: "w1", kind: "node", role: "analyst" },
+        assignedWorkerId: "w1",
+        message: "attention task",
+      }),
+    });
+    const task = await taskRes.json();
+
+    await fetch(`${server.baseUrl}/tasks/${task.id}/claim`, {
+      method: "POST",
+      headers: h({ "x-a2a-requester-id": "w1", "x-a2a-requester-role": "analyst" }),
+      body: JSON.stringify({ workerId: "w1" }),
+    });
+    await new Promise((resolve) => setTimeout(resolve, 1100));
+
+    let dashboard = await (await fetch(`${server.baseUrl}/dashboard`, {
+      headers: { "x-a2a-edge-secret": "s" },
+    })).json();
+    assert.ok(dashboard.attention.items.some((item: { code: string }) => item.code === "aged-claimed-task"));
+
+    await fetch(`${server.baseUrl}/tasks/${task.id}/start`, {
+      method: "POST",
+      headers: h({ "x-a2a-requester-id": "w1", "x-a2a-requester-role": "analyst" }),
+      body: JSON.stringify({ workerId: "w1" }),
+    });
+    await new Promise((resolve) => setTimeout(resolve, 1100));
+
+    dashboard = await (await fetch(`${server.baseUrl}/dashboard`, {
+      headers: { "x-a2a-edge-secret": "s" },
+    })).json();
+    assert.ok(dashboard.attention.items.some((item: { code: string }) => item.code === "aged-running-task"));
+  } finally {
+    await server.close();
+  }
+});
+
 test("POST /tasks/requeue_stale reports both requeued and dead-lettered counts", async () => {
   const server = await startTestServer({
     edgeSecret: "s",

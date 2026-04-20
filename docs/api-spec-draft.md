@@ -155,6 +155,12 @@ Requires edge secret authentication (same as other non-health routes).
         "severity": "warn",
         "count": 1,
         "summary": "1 task(s) were dead-lettered and need operator review"
+      },
+      {
+        "code": "aged-claimed-task",
+        "severity": "warn",
+        "count": 1,
+        "summary": "claimed task task-123 has been waiting 91s since claim"
       }
     ]
   }
@@ -170,7 +176,7 @@ Requires edge secret authentication (same as other non-health routes).
 - **observability.queuePressure.oldestClaimed / oldestRunning**: expose `statusSinceAt` and `statusAgeSec` so dashboards can flag stuck work using broker-owned timing, not browser clocks.
 - **staleReaper**: mirrors the runtime reaper status from `/health`, letting dashboard/inspector clients render recovery state without a second fetch.
 - **requestPressure**: mirrors general vs worker bucket snapshots so operator UIs can detect throttling pressure without polling `/health`.
-- **attention**: broker-owned alert projection for dashboard/inspector UIs. Clients can render `highestSeverity` and `items` directly without re-implementing stale-worker, dead-letter, or rate-limit interpretation rules.
+- **attention**: broker-owned alert projection for dashboard/inspector UIs. Clients can render `highestSeverity` and `items` directly without re-implementing stale-worker, dead-letter, aged claimed/running task, or rate-limit interpretation rules.
 - All limits are configurable via query params to keep responses small on constrained clients.
 - Computed lazily on each request with no extra persistence.
 
