@@ -6,7 +6,9 @@
   "description": "Minimal standalone A2A broker scaffold",
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "test": "npm run build && node --test dist/*.test.js dist/core/*.test.js",
+    "test": "npm run build && node --test dist/*.test.js dist/core/*.test.js dist/workers/*.test.js",
+    "test:broker": "npm run build && node --test dist/core/broker.test.js dist/core/durable-runtime.test.js",
+    "test:integration": "npm run build && node --test dist/server.test.js",
     "test:worker": "npm run build && node --test dist/worker.test.js",
     "start": "node dist/server.js",
     "start:worker": "node dist/worker.js",
