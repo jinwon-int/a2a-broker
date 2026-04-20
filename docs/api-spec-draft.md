@@ -60,7 +60,16 @@ Requires edge secret authentication (same as other non-health routes).
     "byStatus": { "queued": 2, "claimed": 1, "running": 0, "succeeded": 0, "failed": 0, "canceled": 0 },
     "byIntent": { "analyze": 2, "backfill": 1 },
     "oldestPending": [
-      { "id": "...", "intent": "analyze", "status": "queued", "targetNodeId": "dungae", "assignedWorkerId": "dungae", "createdAt": "..." }
+      {
+        "id": "...",
+        "intent": "analyze",
+        "status": "queued",
+        "targetNodeId": "dungae",
+        "assignedWorkerId": "dungae",
+        "createdAt": "...",
+        "statusSinceAt": "...",
+        "statusAgeSec": 42
+      }
     ]
   },
   "history": {
@@ -84,7 +93,75 @@ Requires edge secret authentication (same as other non-health routes).
     "online": 2,
     "stale": 1,
     "byNode": [
-      { "nodeId": "bangtong", "role": "live-trader", "displayName": "방통", "status": "online", "activeTaskCount": 1, "lastSeenAt": "..." }
+      {
+        "nodeId": "bangtong",
+        "role": "live-trader",
+        "displayName": "방통",
+        "status": "online",
+        "activeTaskCount": 1,
+        "lastSeenAt": "...",
+        "lastSeenAgeSec": 8
+      }
+    ]
+  },
+  "observability": {
+    "queuePressure": {
+      "queued": 2,
+      "claimed": 1,
+      "running": 0,
+      "staleWorkerAssignments": 0,
+      "oldestClaimed": {
+        "id": "...",
+        "intent": "validate_change",
+        "targetNodeId": "bangtong",
+        "assignedWorkerId": "bangtong",
+        "createdAt": "...",
+        "statusSinceAt": "...",
+        "statusAgeSec": 19
+      }
+    },
+    "recovery": {
+      "totalRequeued": 4,
+      "totalDeadLettered": 1,
+      "recentRequeues": [],
+      "recentDeadLetters": []
+    },
+    "workerHealth": {
+      "staleWorkersWithActiveTasks": [
+        { "nodeId": "dungae", "activeTaskCount": 2, "lastSeenAt": "...", "lastSeenAgeSec": 137 }
+      ]
+    }
+  },
+  "staleReaper": {
+    "enabled": true,
+    "intervalSec": 60,
+    "olderThanSec": 90,
+    "maxRequeueAttempts": 5,
+    "lastRunAt": "...",
+    "lastRequeued": 1,
+    "lastDeadLettered": 0,
+    "totalDeadLettered": 1,
+    "runCount": 12
+  },
+  "requestPressure": {
+    "general": { "limit": 10, "windowMs": 60000, "activeKeys": 1, "allowedRequests": 42, "deniedRequests": 0, "busiest": [] },
+    "worker": { "limit": 60, "windowMs": 60000, "activeKeys": 1, "allowedRequests": 8, "deniedRequests": 0, "busiest": [] }
+  },
+  "attention": {
+    "highestSeverity": "warn",
+    "items": [
+      {
+        "code": "dead-lettered-tasks",
+        "severity": "warn",
+        "count": 1,
+        "summary": "1 task(s) were dead-lettered and need operator review"
+      },
+      {
+        "code": "aged-claimed-task",
+        "severity": "warn",
+        "count": 1,
+        "summary": "claimed task task-123 has been waiting 91s since claim"
+      }
     ]
   }
 }
@@ -92,10 +169,14 @@ Requires edge secret authentication (same as other non-health routes).
 
 **Design notes:**
 
-- **queue.oldestPending**: sorted by `createdAt` ascending — operators see what has been waiting the longest first.
+- **queue.oldestPending**: sorted by `statusSinceAt` ascending — operators see what has been stuck the longest in its current queued/claimed state first.
 - **history.recent**: sorted by `completedAt` descending (newest first) — quick view of recent throughput and failures.
 - **proposals.pendingAction**: proposals in `submitted`, `validated`, or `approved` status — these are blocking on the next actor.
-- **workers.byNode**: includes `activeTaskCount` — spot overloading before it causes timeouts.
+- **workers.byNode**: includes `activeTaskCount` and `lastSeenAgeSec` — spot overloading and stale heartbeats without extra client-side time math.
+- **observability.queuePressure.oldestClaimed / oldestRunning**: expose `statusSinceAt` and `statusAgeSec` so dashboards can flag stuck work using broker-owned timing, not browser clocks.
+- **staleReaper**: mirrors the runtime reaper status from `/health`, letting dashboard/inspector clients render recovery state without a second fetch.
+- **requestPressure**: mirrors general vs worker bucket snapshots so operator UIs can detect throttling pressure without polling `/health`.
+- **attention**: broker-owned alert projection for dashboard/inspector UIs. Clients can render `highestSeverity` and `items` directly without re-implementing stale-worker, dead-letter, aged claimed/running task, or rate-limit interpretation rules.
 - All limits are configurable via query params to keep responses small on constrained clients.
 - Computed lazily on each request with no extra persistence.
 

@@ -1014,6 +1014,12 @@ test("GET /dashboard returns aggregated summary without authentication", async (
     assert.ok(typeof dashboard.observability.queuePressure === "object");
     assert.ok(typeof dashboard.observability.recovery === "object");
     assert.ok(typeof dashboard.observability.workerHealth === "object");
+    assert.ok(typeof dashboard.staleReaper === "object");
+    assert.ok(typeof dashboard.staleReaper.enabled === "boolean");
+    assert.ok(typeof dashboard.staleReaper.runCount === "number");
+    assert.ok(typeof dashboard.attention === "object");
+    assert.ok(typeof dashboard.attention.highestSeverity === "string");
+    assert.ok(Array.isArray(dashboard.attention.items));
     assert.ok(typeof dashboard.requestPressure === "object");
     assert.ok(typeof dashboard.requestPressure.general === "object");
     assert.ok(typeof dashboard.requestPressure.worker === "object");
@@ -1024,6 +1030,9 @@ test("GET /dashboard returns aggregated summary without authentication", async (
     assert.equal(dashboard.workers.total, 0);
     assert.equal(dashboard.observability.queuePressure.queued, 0);
     assert.equal(dashboard.observability.recovery.totalDeadLettered, 0);
+    assert.equal(dashboard.staleReaper.runCount, 0);
+    assert.equal(dashboard.attention.highestSeverity, "none");
+    assert.equal(dashboard.attention.items.length, 0);
   } finally {
     await server.close();
   }
@@ -1083,6 +1092,8 @@ test("GET /dashboard reflects task lifecycle after create/claim/complete", async
     })).json();
     assert.equal(queuedDash.queue.total, 1);
     assert.equal(queuedDash.queue.byStatus["queued"], 1);
+    assert.ok(typeof queuedDash.queue.oldestPending[0].statusSinceAt === "string");
+    assert.ok(typeof queuedDash.queue.oldestPending[0].statusAgeSec === "number");
 
     // Claim and complete
     await fetch(`${server.baseUrl}/tasks/${task.id}/claim`, {
@@ -1095,6 +1106,14 @@ test("GET /dashboard reflects task lifecycle after create/claim/complete", async
       headers: h({ "x-a2a-requester-id": "w1", "x-a2a-requester-role": "analyst" }),
       body: JSON.stringify({ workerId: "w1" }),
     });
+
+    const runningDash = await (await fetch(`${server.baseUrl}/dashboard`, {
+      headers: { "x-a2a-edge-secret": "s" },
+    })).json();
+    assert.ok(typeof runningDash.observability.queuePressure.oldestRunning.statusSinceAt === "string");
+    assert.ok(typeof runningDash.observability.queuePressure.oldestRunning.statusAgeSec === "number");
+    assert.ok(typeof runningDash.workers.byNode[0].lastSeenAgeSec === "number");
+
     await fetch(`${server.baseUrl}/tasks/${task.id}/complete`, {
       method: "POST",
       headers: h({ "x-a2a-requester-id": "w1", "x-a2a-requester-role": "analyst" }),
@@ -1368,6 +1387,83 @@ test("stale reaper dead-letters tasks exceeding maxRequeueAttempts and exposes t
     assert.equal(dashboardAfter.observability.recovery.totalRequeued, 1);
     assert.equal(dashboardAfter.observability.recovery.totalDeadLettered, 1);
     assert.equal(dashboardAfter.observability.recovery.recentDeadLetters.length, 1);
+    assert.equal(dashboardAfter.staleReaper.runCount, 2);
+    assert.equal(dashboardAfter.staleReaper.totalDeadLettered, 1);
+    assert.equal(dashboardAfter.staleReaper.lastDeadLettered, 1);
+    assert.equal(dashboardAfter.attention.highestSeverity, "warn");
+    assert.ok(dashboardAfter.attention.items.some((item: { code: string }) => item.code === "dead-lettered-tasks"));
+  } finally {
+    await server.close();
+  }
+});
+
+test("GET /dashboard attention flags aged claimed and running tasks", async () => {
+  const server = await startTestServer({
+    edgeSecret: "s",
+    staleReaperEnabled: false,
+    staleReaperOlderThanSec: 1,
+    workerOfflineAfterSec: 120,
+  });
+  try {
+    const h = (extra: Record<string, string> = {}) => ({
+      "content-type": "application/json",
+      "x-a2a-edge-secret": "s",
+      ...extra,
+    });
+
+    await fetch(`${server.baseUrl}/workers/register`, {
+      method: "POST",
+      headers: h({ "x-a2a-requester-id": "w1", "x-a2a-requester-role": "analyst" }),
+      body: JSON.stringify({
+        nodeId: "w1",
+        role: "analyst",
+        capabilities: {
+          canAnalyze: true,
+          canBackfill: false,
+          canPatchWorkspace: false,
+          canPromoteLive: false,
+          workspaceIds: ["ws"],
+          environments: ["research"],
+        },
+      }),
+    });
+
+    const taskRes = await fetch(`${server.baseUrl}/tasks`, {
+      method: "POST",
+      headers: h({ "x-a2a-requester-id": "hub-1", "x-a2a-requester-role": "hub" }),
+      body: JSON.stringify({
+        intent: "analyze",
+        requester: { id: "hub-1", kind: "node", role: "hub" },
+        target: { id: "w1", kind: "node", role: "analyst" },
+        assignedWorkerId: "w1",
+        message: "attention task",
+      }),
+    });
+    const task = await taskRes.json();
+
+    await fetch(`${server.baseUrl}/tasks/${task.id}/claim`, {
+      method: "POST",
+      headers: h({ "x-a2a-requester-id": "w1", "x-a2a-requester-role": "analyst" }),
+      body: JSON.stringify({ workerId: "w1" }),
+    });
+    await new Promise((resolve) => setTimeout(resolve, 1100));
+
+    let dashboard = await (await fetch(`${server.baseUrl}/dashboard`, {
+      headers: { "x-a2a-edge-secret": "s" },
+    })).json();
+    assert.ok(dashboard.attention.items.some((item: { code: string }) => item.code === "aged-claimed-task"));
+
+    await fetch(`${server.baseUrl}/tasks/${task.id}/start`, {
+      method: "POST",
+      headers: h({ "x-a2a-requester-id": "w1", "x-a2a-requester-role": "analyst" }),
+      body: JSON.stringify({ workerId: "w1" }),
+    });
+    await new Promise((resolve) => setTimeout(resolve, 1100));
+
+    dashboard = await (await fetch(`${server.baseUrl}/dashboard`, {
+      headers: { "x-a2a-edge-secret": "s" },
+    })).json();
+    assert.ok(dashboard.attention.items.some((item: { code: string }) => item.code === "aged-running-task"));
   } finally {
     await server.close();
   }

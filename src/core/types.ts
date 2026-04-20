@@ -511,8 +511,14 @@ export interface BrokerObservabilitySummary {
     claimed: number;
     running: number;
     staleWorkerAssignments: number;
-    oldestClaimed?: Pick<TaskRecord, 'id' | 'intent' | 'targetNodeId' | 'assignedWorkerId' | 'createdAt'>;
-    oldestRunning?: Pick<TaskRecord, 'id' | 'intent' | 'targetNodeId' | 'assignedWorkerId' | 'createdAt'>;
+    oldestClaimed?: Pick<TaskRecord, 'id' | 'intent' | 'targetNodeId' | 'assignedWorkerId' | 'createdAt'> & {
+      statusSinceAt: string;
+      statusAgeSec: number;
+    };
+    oldestRunning?: Pick<TaskRecord, 'id' | 'intent' | 'targetNodeId' | 'assignedWorkerId' | 'createdAt'> & {
+      statusSinceAt: string;
+      statusAgeSec: number;
+    };
   };
   recovery: {
     totalRequeued: number;
@@ -530,6 +536,7 @@ export interface BrokerObservabilitySummary {
       nodeId: string;
       activeTaskCount: number;
       lastSeenAt: string;
+      lastSeenAgeSec: number;
     }>;
   };
 }
@@ -538,8 +545,11 @@ export interface TaskQueueSummary {
   total: number;
   byStatus: Record<TaskStatus, number>;
   byIntent: Record<string, number>;
-  /** Tasks waiting longest (queued or claimed, sorted by createdAt asc). */
-  oldestPending: Array<Pick<TaskRecord, 'id' | 'intent' | 'status' | 'targetNodeId' | 'assignedWorkerId' | 'createdAt'>>;
+  /** Tasks waiting longest in their current queued/claimed state. */
+  oldestPending: Array<Pick<TaskRecord, 'id' | 'intent' | 'status' | 'targetNodeId' | 'assignedWorkerId' | 'createdAt'> & {
+    statusSinceAt: string;
+    statusAgeSec: number;
+  }>;
 }
 
 export interface TaskHistorySummary {
@@ -574,6 +584,7 @@ export interface WorkerFleetSummary {
     status: 'online' | 'stale';
     activeTaskCount: number;
     lastSeenAt: string;
+    lastSeenAgeSec: number;
   }>;
 }
 
