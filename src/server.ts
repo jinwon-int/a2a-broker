@@ -21,6 +21,7 @@ import {
   extractRequesterIdentity,
   InMemoryRateLimiter,
   rateLimitKey,
+  type RateLimitPressureSnapshot,
   type RequesterIdentity,
 } from "./core/request-security.js";
 import {
@@ -34,6 +35,7 @@ import type {
   A2AExchangeMessageRequest,
   A2AExchangeRequest,
   AuditAction,
+  BrokerDashboard,
   ApplyProposalRequest,
   AttachArtifactRequest,
   CreateProposalRequest,
@@ -63,6 +65,18 @@ import {
 
 interface ThreadedExchangeMessage extends A2AExchangeMessageRecord {
   replies: ThreadedExchangeMessage[];
+}
+
+interface DashboardAttentionItem {
+  code: string;
+  severity: "info" | "warn" | "critical";
+  count: number;
+  summary: string;
+}
+
+interface DashboardAttentionSummary {
+  highestSeverity: "none" | DashboardAttentionItem["severity"];
+  items: DashboardAttentionItem[];
 }
 
 export interface BrokerServerOptions {
@@ -410,13 +424,20 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
           oldestPendingLimit,
           pendingActionLimit,
         });
+        const staleReaper = getStaleReaperStatus();
+        const requestPressure = {
+          general: rateLimiter.snapshot(),
+          worker: workerRateLimiter.snapshot(),
+        };
         return sendJson(res, 200, {
           ...dashboard,
-          staleReaper: getStaleReaperStatus(),
-          requestPressure: {
-            general: rateLimiter.snapshot(),
-            worker: workerRateLimiter.snapshot(),
-          },
+          staleReaper,
+          requestPressure,
+          attention: buildDashboardAttention({
+            dashboard,
+            staleReaper,
+            requestPressure,
+          }),
         });
       }
 
@@ -1210,6 +1231,94 @@ function buildMessageThreads(items: A2AExchangeMessageRecord[]): ThreadedExchang
   });
 
   return roots.map(attachReplies);
+}
+
+function buildDashboardAttention(input: {
+  dashboard: BrokerDashboard;
+  staleReaper: BrokerStaleReaperStatus;
+  requestPressure: {
+    general: RateLimitPressureSnapshot;
+    worker: RateLimitPressureSnapshot;
+  };
+}): DashboardAttentionSummary {
+  const items: DashboardAttentionItem[] = [];
+
+  const staleAssignments = input.dashboard.observability.queuePressure.staleWorkerAssignments;
+  if (staleAssignments > 0) {
+    items.push({
+      code: "stale-worker-assignments",
+      severity: "critical",
+      count: staleAssignments,
+      summary: `${staleAssignments} claimed/running task(s) are assigned to stale workers`,
+    });
+  }
+
+  const staleWorkers = input.dashboard.observability.workerHealth.staleWorkersWithActiveTasks.length;
+  if (staleWorkers > 0) {
+    items.push({
+      code: "stale-workers-with-active-tasks",
+      severity: "critical",
+      count: staleWorkers,
+      summary: `${staleWorkers} stale worker(s) still have active tasks`,
+    });
+  }
+
+  const recentDeadLetters = Math.max(
+    input.dashboard.observability.recovery.recentDeadLetters.length,
+    input.staleReaper.lastDeadLettered ?? 0,
+  );
+  if (recentDeadLetters > 0) {
+    items.push({
+      code: "dead-lettered-tasks",
+      severity: "warn",
+      count: recentDeadLetters,
+      summary: `${recentDeadLetters} task(s) were dead-lettered and need operator review`,
+    });
+  }
+
+  const recentRequeues = input.staleReaper.lastRequeued ?? 0;
+  if (recentRequeues > 0) {
+    items.push({
+      code: "stale-reaper-requeues",
+      severity: "info",
+      count: recentRequeues,
+      summary: `stale reaper requeued ${recentRequeues} task(s) on the last sweep`,
+    });
+  }
+
+  const saturatedGeneralKeys = input.requestPressure.general.busiest.filter((entry) => entry.remaining === 0).length;
+  const saturatedWorkerKeys = input.requestPressure.worker.busiest.filter((entry) => entry.remaining === 0).length;
+  const saturatedKeys = saturatedGeneralKeys + saturatedWorkerKeys;
+  if (saturatedKeys > 0) {
+    items.push({
+      code: "rate-limit-saturation",
+      severity: "warn",
+      count: saturatedKeys,
+      summary: `${saturatedKeys} rate-limit key(s) are currently saturated`,
+    });
+  }
+
+  return {
+    highestSeverity: highestDashboardAttentionSeverity(items),
+    items,
+  };
+}
+
+function highestDashboardAttentionSeverity(items: DashboardAttentionItem[]): DashboardAttentionSummary["highestSeverity"] {
+  let highest: DashboardAttentionSummary["highestSeverity"] = "none";
+  for (const item of items) {
+    if (item.severity === "critical") {
+      return "critical";
+    }
+    if (item.severity === "warn") {
+      highest = highest === "none" || highest === "info" ? "warn" : highest;
+      continue;
+    }
+    if (item.severity === "info" && highest === "none") {
+      highest = "info";
+    }
+  }
+  return highest;
 }
 
 function sendError(res: ServerResponse<IncomingMessage>, error: unknown): void {

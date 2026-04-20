@@ -144,8 +144,19 @@ Requires edge secret authentication (same as other non-health routes).
     "runCount": 12
   },
   "requestPressure": {
-    "general": { "windowSec": 60, "maxRequests": 10, "activeKeys": 1 },
-    "worker": { "windowSec": 60, "maxRequests": 60, "activeKeys": 1 }
+    "general": { "limit": 10, "windowMs": 60000, "activeKeys": 1, "allowedRequests": 42, "deniedRequests": 0, "busiest": [] },
+    "worker": { "limit": 60, "windowMs": 60000, "activeKeys": 1, "allowedRequests": 8, "deniedRequests": 0, "busiest": [] }
+  },
+  "attention": {
+    "highestSeverity": "warn",
+    "items": [
+      {
+        "code": "dead-lettered-tasks",
+        "severity": "warn",
+        "count": 1,
+        "summary": "1 task(s) were dead-lettered and need operator review"
+      }
+    ]
   }
 }
 ```
@@ -159,6 +170,7 @@ Requires edge secret authentication (same as other non-health routes).
 - **observability.queuePressure.oldestClaimed / oldestRunning**: expose `statusSinceAt` and `statusAgeSec` so dashboards can flag stuck work using broker-owned timing, not browser clocks.
 - **staleReaper**: mirrors the runtime reaper status from `/health`, letting dashboard/inspector clients render recovery state without a second fetch.
 - **requestPressure**: mirrors general vs worker bucket snapshots so operator UIs can detect throttling pressure without polling `/health`.
+- **attention**: broker-owned alert projection for dashboard/inspector UIs. Clients can render `highestSeverity` and `items` directly without re-implementing stale-worker, dead-letter, or rate-limit interpretation rules.
 - All limits are configurable via query params to keep responses small on constrained clients.
 - Computed lazily on each request with no extra persistence.
 
