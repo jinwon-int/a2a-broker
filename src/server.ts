@@ -61,6 +61,12 @@ import {
   TradingDialecticReadModelError,
 } from "./trading-dialectic/read-model.js";
 import { projectAlerts } from "./core/alert-projection.js";
+import {
+  isValidOperatorChatTarget,
+  readOperatorChat,
+  renderOperatorChatHtml,
+  sendOperatorChatMessage,
+} from "./operator-chat.js";
 
 interface ThreadedExchangeMessage extends A2AExchangeMessageRecord {
   replies: ThreadedExchangeMessage[];
@@ -308,7 +314,9 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
     try {
       requesterIdentity = extractRequesterIdentity(req);
       const isPublicDiscoveryRoute = req.method === "GET" && path === "/.well-known/agent-card.json";
-      if (path !== "/health" && !isPublicDiscoveryRoute) {
+      const isPublicOperatorRoute =
+        req.method === "GET" && (path === "/" || path === "/operator");
+      if (path !== "/health" && !isPublicDiscoveryRoute && !isPublicOperatorRoute) {
         assertEdgeSecret(req, edgeSecret);
 
         const bucket = classifyRateLimitBucket(req, url);
@@ -361,6 +369,37 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
       if (req.method === "GET" && path === "/.well-known/agent-card.json") {
         return sendJson(res, 200, agentCard, {
           "cache-control": "public, max-age=300",
+        });
+      }
+
+      if (req.method === "GET" && (path === "/" || path === "/operator")) {
+        return sendHtml(res, 200, renderOperatorChatHtml(Boolean(edgeSecret)));
+      }
+
+      if (req.method === "GET" && path === "/operator/chat") {
+        const limit = numberQueryParam(url, "limit");
+        return sendJson(res, 200, readOperatorChat(broker, {
+          requiresEdgeSecret: Boolean(edgeSecret),
+          limit,
+        }));
+      }
+
+      if (req.method === "POST" && path === "/operator/chat") {
+        const body = await readJson<{ target?: string; message?: string }>(req);
+        if (!body?.message?.trim()) {
+          throw new BrokerError("bad_request", "message is required");
+        }
+        if (!isValidOperatorChatTarget(body.target)) {
+          throw new BrokerError("bad_request", "target must be bangtong, dungae, or all");
+        }
+        const deliveries = sendOperatorChatMessage(broker, {
+          target: body.target,
+          message: body.message,
+        });
+        return sendJson(res, 201, {
+          ok: true,
+          target: body.target,
+          deliveries,
         });
       }
 
@@ -1447,4 +1486,18 @@ function sendJson(
     ...headers,
   });
   res.end(json);
+}
+
+function sendHtml(
+  res: ServerResponse<IncomingMessage>,
+  status: number,
+  body: string,
+  headers: Record<string, string> = {},
+): void {
+  res.writeHead(status, {
+    "content-type": "text/html; charset=utf-8",
+    "content-length": Buffer.byteLength(body),
+    ...headers,
+  });
+  res.end(body);
 }

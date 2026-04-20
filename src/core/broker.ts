@@ -8,6 +8,14 @@ import {
   PolicyError,
 } from "./policy.js";
 import {
+  applyKnownA2APartyDisplayName,
+  applyKnownA2AWorkerDisplayName,
+  applyKnownExchangeDisplayNames,
+  applyKnownExchangeMessageDisplayNames,
+  applyKnownProposalDisplayNames,
+  applyKnownTaskDisplayNames,
+} from "./display-names.js";
+import {
   CURRENT_BROKER_STATE_VERSION,
   type BrokerSnapshot,
   type BrokerStateStore,
@@ -309,22 +317,24 @@ export class InMemoryA2ABroker {
   startExchange(request: A2AExchangeRequest): A2AExchangeState {
     const now = isoNow();
     const exchangeId = randomUUID();
+    const requester = applyKnownA2APartyDisplayName(request.requester);
+    const target = applyKnownA2APartyDisplayName(request.target);
     const rootMessage: A2AExchangeMessageRecord = {
       id: randomUUID(),
       exchangeId,
       kind: "root",
       message: request.message,
-      requester: request.requester,
+      requester,
       via: request.via,
-      targetNodeId: request.target.id,
+      targetNodeId: target.id,
       createdAt: now,
       updatedAt: now,
     };
     const exchange: A2AExchangeState = {
       id: exchangeId,
-      requester: request.requester,
-      target: request.target,
-      targetNodeId: request.target.id,
+      requester,
+      target,
+      targetNodeId: target.id,
       message: request.message,
       maxTurns: request.maxTurns ?? 8,
       intent: request.intent ?? "chat",
@@ -344,11 +354,12 @@ export class InMemoryA2ABroker {
   }
 
   getExchange(id: string): A2AExchangeState | null {
-    return this.exchanges.get(id) ?? null;
+    const exchange = this.exchanges.get(id);
+    return exchange ? applyKnownExchangeDisplayNames(exchange) : null;
   }
 
   listExchanges(): A2AExchangeState[] {
-    return sortedCopy(this.exchanges.values(), sortNewestFirst);
+    return sortedCopy(this.exchanges.values(), sortNewestFirst).map(applyKnownExchangeDisplayNames);
   }
 
   listExchangeMessages(
@@ -365,15 +376,19 @@ export class InMemoryA2ABroker {
     );
 
     if (!filters?.parentMessageId) {
-      return items;
+      return items.map(applyKnownExchangeMessageDisplayNames);
     }
 
     this.requireExchangeMessage(exchange.id, filters.parentMessageId);
     if (filters.includeDescendants) {
       const allowedIds = collectThreadMessageIds(items, filters.parentMessageId);
-      return items.filter((message) => allowedIds.has(message.id));
+      return items
+        .filter((message) => allowedIds.has(message.id))
+        .map(applyKnownExchangeMessageDisplayNames);
     }
-    return items.filter((message) => message.parentMessageId === filters.parentMessageId);
+    return items
+      .filter((message) => message.parentMessageId === filters.parentMessageId)
+      .map(applyKnownExchangeMessageDisplayNames);
   }
 
   addExchangeMessage(exchangeId: string, request: A2AExchangeMessageRequest): A2AExchangeMessageRecord {
@@ -399,12 +414,13 @@ export class InMemoryA2ABroker {
     }
 
     const now = isoNow();
+    const actor = applyKnownA2APartyDisplayName(request.actor);
     const message: A2AExchangeMessageRecord = {
       id: randomUUID(),
       exchangeId,
       kind: "thread",
       message: request.message,
-      actor: request.actor,
+      actor,
       via: request.via,
       decision: request.decision,
       targetNodeId: request.targetNodeId ?? exchange.target.id,
@@ -422,14 +438,14 @@ export class InMemoryA2ABroker {
     this.applyExchangeMessageDecision(exchange, message);
     this.exchanges.set(exchange.id, exchange);
     this.appendAuditEvent({
-      actorId: request.actor.id,
+      actorId: actor.id,
       action: "exchange.message.added",
       targetType: "exchange-message",
       targetId: message.id,
       note: request.decision ? `${request.decision}: ${request.message}` : request.message,
     });
     this.persistState();
-    return message;
+    return applyKnownExchangeMessageDisplayNames(message);
   }
 
   registerWorker(request: RegisterWorkerRequest): WorkerRecord {
@@ -437,7 +453,7 @@ export class InMemoryA2ABroker {
 
     const now = isoNow();
     const existing = this.workers.get(request.nodeId);
-    const worker: WorkerRecord = {
+    const worker = applyKnownA2AWorkerDisplayName({
       nodeId: request.nodeId,
       role: request.role,
       displayName: request.displayName,
@@ -447,7 +463,7 @@ export class InMemoryA2ABroker {
       createdAt: existing?.createdAt ?? now,
       updatedAt: now,
       lastSeenAt: now,
-    };
+    } satisfies WorkerRecord);
 
     this.workers.set(worker.nodeId, worker);
     this.appendAuditEvent({
@@ -458,7 +474,7 @@ export class InMemoryA2ABroker {
       note: worker.displayName ?? worker.role,
     });
     this.persistState();
-    return worker;
+    return applyKnownA2AWorkerDisplayName(worker);
   }
 
   heartbeatWorker(nodeId: string, request?: WorkerHeartbeatRequest): WorkerRecord {
@@ -483,11 +499,12 @@ export class InMemoryA2ABroker {
       note: "heartbeat",
     });
     this.persistState();
-    return worker;
+    return applyKnownA2AWorkerDisplayName(worker);
   }
 
   getWorker(nodeId: string): WorkerRecord | null {
-    return this.workers.get(nodeId) ?? null;
+    const worker = this.workers.get(nodeId);
+    return worker ? applyKnownA2AWorkerDisplayName(worker) : null;
   }
 
   listWorkers(filters?: WorkerListFilters): WorkerRecord[] {
@@ -511,7 +528,7 @@ export class InMemoryA2ABroker {
         return true;
       }),
       sortWorkersNewestFirst,
-    );
+    ).map(applyKnownA2AWorkerDisplayName);
   }
 
   listWorkerViews(offlineAfterMs: number, filters?: WorkerListFilters): WorkerView[] {
@@ -543,12 +560,14 @@ export class InMemoryA2ABroker {
     }
 
     const now = isoNow();
+    const source = applyKnownA2APartyDisplayName(request.source);
+    const target = applyKnownA2APartyDisplayName(request.target);
     const proposal: ChangeProposal = {
       id: randomUUID(),
-      source: request.source,
-      target: request.target,
-      sourceNodeId: request.source.id,
-      targetNodeId: request.target.id,
+      source,
+      target,
+      sourceNodeId: source.id,
+      targetNodeId: target.id,
       kind: request.kind,
       summary: request.summary,
       rationale: request.rationale,
@@ -563,7 +582,7 @@ export class InMemoryA2ABroker {
 
     this.proposals.set(proposal.id, proposal);
     this.appendAuditEvent({
-      actorId: request.source.id,
+      actorId: source.id,
       action: "proposal.created",
       targetType: "proposal",
       targetId: proposal.id,
@@ -571,11 +590,12 @@ export class InMemoryA2ABroker {
       note: request.summary,
     });
     this.persistState();
-    return proposal;
+    return applyKnownProposalDisplayNames(proposal);
   }
 
   getProposal(id: string): ChangeProposal | null {
-    return this.proposals.get(id) ?? null;
+    const proposal = this.proposals.get(id);
+    return proposal ? applyKnownProposalDisplayNames(proposal) : null;
   }
 
   listProposals(filters?: ProposalListFilters): ChangeProposal[] {
@@ -596,7 +616,7 @@ export class InMemoryA2ABroker {
         return true;
       }),
       sortNewestFirst,
-    );
+    ).map(applyKnownProposalDisplayNames);
   }
 
   getProposalDetails(id: string): ProposalDetails | null {
@@ -788,15 +808,17 @@ export class InMemoryA2ABroker {
     this.assertTaskProposalLink(request);
 
     const now = isoNow();
+    const requester = applyKnownA2APartyDisplayName(request.requester);
+    const target = applyKnownA2APartyDisplayName(request.target);
     const task: TaskRecord = {
       id: request.id ?? randomUUID(),
       exchangeId: request.exchangeId,
       parentTaskId: request.parentTaskId,
       intent: request.intent,
-      requester: request.requester,
-      target: request.target,
-      targetNodeId: request.target.id,
-      assignedWorkerId: request.assignedWorkerId ?? request.target.id,
+      requester,
+      target,
+      targetNodeId: target.id,
+      assignedWorkerId: request.assignedWorkerId ?? target.id,
       workspace: request.workspace,
       message: request.message,
       proposalId: request.proposalId,
@@ -823,11 +845,12 @@ export class InMemoryA2ABroker {
     });
     this.persistState();
     this.emitTaskUpdate(task, "created");
-    return task;
+    return applyKnownTaskDisplayNames(task);
   }
 
   getTask(id: string): TaskRecord | null {
-    return this.tasks.get(id) ?? null;
+    const task = this.tasks.get(id);
+    return task ? applyKnownTaskDisplayNames(task) : null;
   }
 
   listTasks(filters?: TaskListFilters): TaskRecord[] {
@@ -857,7 +880,7 @@ export class InMemoryA2ABroker {
         return true;
       }),
       sortNewestFirst,
-    );
+    ).map(applyKnownTaskDisplayNames);
   }
 
   reassignTask(taskId: string, request: TaskReassignRequest): TaskRecord {

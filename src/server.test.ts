@@ -352,6 +352,154 @@ test("server exposes a public agent card on the well-known path", async () => {
   }
 });
 
+test("operator chat UI is public while chat data stays edge-secret protected", async () => {
+  const server = await startTestServer({
+    edgeSecret: "test-edge-secret",
+  });
+
+  try {
+    const pageRes = await fetch(`${server.baseUrl}/operator`);
+    assert.equal(pageRes.status, 200);
+    assert.match(pageRes.headers.get("content-type") ?? "", /text\/html/);
+    const html = await pageRes.text();
+    assert.match(html, /A2A operator chat/);
+    assert.match(html, /option value="bangtong"/);
+    assert.match(html, /option value="all"/);
+
+    const unauthorizedRes = await fetch(`${server.baseUrl}/operator/chat`);
+    assert.equal(unauthorizedRes.status, 401);
+
+    const authorizedRes = await fetch(`${server.baseUrl}/operator/chat`, {
+      headers: {
+        "x-a2a-edge-secret": "test-edge-secret",
+      },
+    });
+    assert.equal(authorizedRes.status, 200);
+    const body = await authorizedRes.json();
+    assert.equal(body.actor.id, "seoseo");
+    assert.equal(body.items.length, 0);
+    assert.equal(body.requiresEdgeSecret, true);
+  } finally {
+    await server.close();
+  }
+});
+
+test("operator chat send route fans out, reuses exchanges, and preserves ids", async () => {
+  const server = await startTestServer({
+    edgeSecret: "test-edge-secret",
+  });
+
+  try {
+    await registerTestWorker(server.baseUrl, "bangtong", "live-trader", "test-edge-secret");
+    await registerTestWorker(server.baseUrl, "dungae", "live-trader", "test-edge-secret");
+
+    const sendAllRes = await fetch(`${server.baseUrl}/operator/chat`, {
+      method: "POST",
+      headers: jsonHeaders({
+        "x-a2a-edge-secret": "test-edge-secret",
+      }),
+      body: JSON.stringify({
+        target: "all",
+        message: "sync both nodes",
+      }),
+    });
+    assert.equal(sendAllRes.status, 201);
+    const sendAllBody = await sendAllRes.json();
+    assert.equal(sendAllBody.ok, true);
+    assert.equal(sendAllBody.deliveries.length, 2);
+    assert.ok(sendAllBody.deliveries.every((delivery: { createdExchange: boolean }) => delivery.createdExchange));
+
+    const bangtongDelivery = sendAllBody.deliveries.find(
+      (delivery: { target: { id: string } }) => delivery.target.id === "bangtong",
+    );
+    const dungaeDelivery = sendAllBody.deliveries.find(
+      (delivery: { target: { id: string } }) => delivery.target.id === "dungae",
+    );
+    assert.ok(bangtongDelivery);
+    assert.ok(dungaeDelivery);
+    assert.equal(typeof bangtongDelivery.exchange.id, "string");
+    assert.equal(typeof bangtongDelivery.message.id, "string");
+
+    const sendAgainRes = await fetch(`${server.baseUrl}/operator/chat`, {
+      method: "POST",
+      headers: jsonHeaders({
+        "x-a2a-edge-secret": "test-edge-secret",
+      }),
+      body: JSON.stringify({
+        target: "bangtong",
+        message: "follow up for bangtong",
+      }),
+    });
+    assert.equal(sendAgainRes.status, 201);
+    const sendAgainBody = await sendAgainRes.json();
+    assert.equal(sendAgainBody.deliveries.length, 1);
+    assert.equal(sendAgainBody.deliveries[0].createdExchange, false);
+    assert.equal(sendAgainBody.deliveries[0].exchange.id, bangtongDelivery.exchange.id);
+    assert.equal(sendAgainBody.deliveries[0].message.parentMessageId, bangtongDelivery.message.id);
+
+    const replyRes = await fetch(`${server.baseUrl}/exchanges/${bangtongDelivery.exchange.id}/messages`, {
+      method: "POST",
+      headers: jsonHeaders({
+        "x-a2a-edge-secret": "test-edge-secret",
+        "x-a2a-requester-id": "bangtong",
+        "x-a2a-requester-role": "live-trader",
+      }),
+      body: JSON.stringify({
+        actor: { id: "bangtong", kind: "node", role: "live-trader" },
+        message: "received loud and clear",
+        parentMessageId: sendAgainBody.deliveries[0].message.id,
+      }),
+    });
+    assert.equal(replyRes.status, 201);
+
+    const timelineRes = await fetch(`${server.baseUrl}/operator/chat?limit=10`, {
+      headers: {
+        "x-a2a-edge-secret": "test-edge-secret",
+      },
+    });
+    assert.equal(timelineRes.status, 200);
+    const timelineBody = await timelineRes.json();
+
+    assert.equal(timelineBody.conversations.length, 2);
+    assert.ok(
+      timelineBody.conversations.some(
+        (conversation: { exchangeId: string }) => conversation.exchangeId === bangtongDelivery.exchange.id,
+      ),
+    );
+    assert.ok(
+      timelineBody.conversations.some(
+        (conversation: { exchangeId: string }) => conversation.exchangeId === dungaeDelivery.exchange.id,
+      ),
+    );
+    assert.ok(
+      timelineBody.items.some(
+        (item: { id: string; exchangeId: string; rootMessageId: string }) =>
+          item.id === bangtongDelivery.message.id &&
+          item.exchangeId === bangtongDelivery.exchange.id &&
+          item.rootMessageId === bangtongDelivery.exchange.rootMessageId,
+      ),
+    );
+    assert.ok(
+      timelineBody.items.some(
+        (item: { author: { id: string }; body: string; exchangeId: string }) =>
+          item.author.id === "bangtong" &&
+          item.body === "received loud and clear" &&
+          item.exchangeId === bangtongDelivery.exchange.id,
+      ),
+    );
+    assert.ok(
+      timelineBody.items.some(
+        (item: { author: { id: string }; body: string; id: string }) =>
+          item.author.id === "seoseo" &&
+          item.body === "follow up for bangtong" &&
+          item.id === sendAgainBody.deliveries[0].message.id,
+      ),
+    );
+  } finally {
+    await server.close();
+  }
+});
+
 test("server exposes JSON-RPC SendMessage and task methods behind the A2A facade", async () => {
   const server = await startTestServer({
     edgeSecret: "test-edge-secret",

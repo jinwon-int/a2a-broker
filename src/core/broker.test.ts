@@ -5,10 +5,14 @@ import { InMemoryA2ABroker, type TaskUpdate, type BufferedTaskEvent } from "./br
 import { CURRENT_BROKER_STATE_VERSION, type BrokerSnapshot } from "./store.js";
 import type { WorkerRecord } from "./types.js";
 
-function registerWorker(broker: InMemoryA2ABroker, nodeId: string): void {
+function registerWorker(
+  broker: InMemoryA2ABroker,
+  nodeId: string,
+  role: WorkerRecord["role"] = "analyst",
+): void {
   broker.registerWorker({
     nodeId,
-    role: "analyst",
+    role,
     capabilities: {
       canAnalyze: true,
       canBackfill: false,
@@ -19,6 +23,136 @@ function registerWorker(broker: InMemoryA2ABroker, nodeId: string): void {
     },
   });
 }
+
+test("known A2A node ids use Korean display names on operator-facing records", () => {
+  const broker = new InMemoryA2ABroker();
+  registerWorker(broker, "bangtong", "live-trader");
+  registerWorker(broker, "dungae", "analyst");
+
+  assert.equal(broker.getWorker("bangtong")?.displayName, "방통");
+  assert.equal(broker.getWorker("dungae")?.displayName, "등애");
+
+  const exchange = broker.startExchange({
+    requester: { id: "seoseo", kind: "node", role: "hub" },
+    target: { id: "dungae", kind: "node", role: "analyst" },
+    message: "run analysis",
+    intent: "analyze",
+  });
+  assert.equal(exchange.requester.displayName, "서서");
+  assert.equal(exchange.target.displayName, "등애");
+
+  const threadMessage = broker.addExchangeMessage(exchange.id, {
+    actor: { id: "seoseo", kind: "node", role: "hub" },
+    message: "accepted",
+    decision: "accepted",
+    targetNodeId: "dungae",
+    assignedWorkerId: "dungae",
+  });
+  assert.equal(threadMessage.actor?.displayName, "서서");
+
+  const task = broker.createTask({
+    intent: "analyze",
+    requester: { id: "seoseo", kind: "node", role: "hub" },
+    target: { id: "bangtong", kind: "node", role: "live-trader" },
+    workspace: { nodeId: "bangtong", workspaceId: "bangtong-live" },
+    message: "route to live gate",
+  });
+  assert.equal(task.requester.displayName, "서서");
+  assert.equal(task.target.displayName, "방통");
+
+  const proposal = broker.createProposal({
+    source: { id: "dungae", kind: "node", role: "analyst" },
+    target: { id: "bangtong", kind: "node", role: "live-trader" },
+    kind: "patch",
+    summary: "Tune live thresholds",
+    workspace: { nodeId: "bangtong", workspaceId: "bangtong-live" },
+  });
+  assert.equal(proposal.source.displayName, "등애");
+  assert.equal(proposal.target.displayName, "방통");
+});
+
+test("read APIs backfill Korean display names for stored broker state", () => {
+  const now = "2026-04-20T07:00:00.000Z";
+  const snapshot: BrokerSnapshot = {
+    version: CURRENT_BROKER_STATE_VERSION,
+    exchanges: [
+      {
+        id: "ex-1",
+        requester: { id: "seoseo", kind: "node", role: "hub" },
+        target: { id: "bangtong", kind: "node", role: "live-trader" },
+        targetNodeId: "bangtong",
+        message: "hello",
+        maxTurns: 8,
+        intent: "chat",
+        status: "queued",
+        rootMessageId: "msg-1",
+        latestMessageId: "msg-1",
+        messageCount: 1,
+        lastMessageAt: now,
+        createdAt: now,
+        updatedAt: now,
+      },
+    ],
+    exchangeMessages: [
+      {
+        id: "msg-1",
+        exchangeId: "ex-1",
+        kind: "root",
+        message: "hello",
+        requester: { id: "seoseo", kind: "node", role: "hub" },
+        targetNodeId: "bangtong",
+        createdAt: now,
+        updatedAt: now,
+      },
+    ],
+    proposals: [],
+    artifacts: [],
+    validations: [],
+    auditEvents: [],
+    workers: [
+      {
+        nodeId: "bangtong",
+        role: "live-trader",
+        capabilities: {
+          canAnalyze: true,
+          canBackfill: false,
+          canPatchWorkspace: false,
+          canPromoteLive: true,
+          workspaceIds: ["bangtong-live"],
+          environments: ["staging", "live"],
+        },
+        createdAt: now,
+        updatedAt: now,
+        lastSeenAt: now,
+      },
+    ],
+    tasks: [
+      {
+        id: "task-1",
+        intent: "analyze",
+        requester: { id: "seoseo", kind: "node", role: "hub" },
+        target: { id: "bangtong", kind: "node", role: "live-trader" },
+        targetNodeId: "bangtong",
+        assignedWorkerId: "bangtong",
+        artifactIds: [],
+        payload: {},
+        status: "queued",
+        createdAt: now,
+        updatedAt: now,
+      },
+    ],
+    tombstones: [],
+  };
+
+  const broker = new InMemoryA2ABroker(undefined, snapshot);
+
+  assert.equal(broker.getWorker("bangtong")?.displayName, "방통");
+  assert.equal(broker.getExchange("ex-1")?.requester.displayName, "서서");
+  assert.equal(broker.getExchange("ex-1")?.target.displayName, "방통");
+  assert.equal(broker.listExchangeMessages("ex-1")[0]?.requester?.displayName, "서서");
+  assert.equal(broker.getTask("task-1")?.requester.displayName, "서서");
+  assert.equal(broker.getTask("task-1")?.target.displayName, "방통");
+});
 
 test("accepted exchange thread creates and links an exchange task", () => {
   const broker = new InMemoryA2ABroker();

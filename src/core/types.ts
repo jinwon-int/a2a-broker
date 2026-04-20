@@ -70,6 +70,7 @@ export interface A2APartyRef {
   id: string;
   kind?: A2APartyKind;
   role?: A2APartyRole;
+  displayName?: string;
 }
 
 export interface A2AExchangeVia {

@@ -45,6 +45,7 @@ const partyRefSchema = z
     id: z.string().min(1),
     kind: z.string().optional(),
     role: z.string().optional(),
+    displayName: z.string().optional(),
   })
   .passthrough();
 

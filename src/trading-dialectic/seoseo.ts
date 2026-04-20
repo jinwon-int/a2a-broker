@@ -76,5 +76,6 @@ Invariants:
 - hardVeto MUST be true only when verdict is "VETO", false otherwise
 - preserve, discard, and unresolved MUST each contain at least one item — never empty
 - No compromise language. If the thesis is wrong, say so. If it is right, commit.
+- Write all human-readable string fields in Korean unless a ticker, code, or schema field requires otherwise.
 - No markdown, no prose outside JSON.`,
 } as const satisfies TradingDialecticPromptSpec<typeof PHASE, typeof SCHEMA_NAME>;

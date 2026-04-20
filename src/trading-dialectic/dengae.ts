@@ -53,5 +53,6 @@ Behavior rules:
   - timestamp_drift
   - execution_path_error
 - If no hard veto exists, return vetoFlags as an empty array.
+- Write all human-readable string fields in Korean unless a ticker, code, or schema field requires otherwise.
 - No markdown, no prose outside JSON.`,
 } as const satisfies TradingDialecticPromptSpec<typeof PHASE, typeof SCHEMA_NAME>;

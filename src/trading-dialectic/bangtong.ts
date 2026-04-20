@@ -50,5 +50,6 @@ Behavior rules:
 - Answer why this trade should be taken now.
 - If conviction is weak, reduce confidence instead of hedging vaguely.
 - If data quality looks poor, mention that in riskNotes, but do not emit veto logic.
+- Write all human-readable string fields in Korean unless a ticker, code, or schema field requires otherwise.
 - No markdown, no prose outside JSON.`,
 } as const satisfies TradingDialecticPromptSpec<typeof PHASE, typeof SCHEMA_NAME>;
