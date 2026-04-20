@@ -191,8 +191,37 @@ describe("task diagnostics", () => {
     broker.claimTask(task.id, "worker-1");
 
     const nowMs = Date.now() + 300_000;
-    const diag = broker.getTaskDiagnostics(task.id, { staleAfterMs: 120_000, nowMs });
+    const diag = broker.getTaskDiagnostics(task.id, {
+      staleAfterMs: 120_000,
+      workerOfflineAfterMs: 3_600_000,
+      nowMs,
+    });
     assert.equal(diag.diagnosticStatus, "stale");
+    assert.equal(diag.brokerState, "reconcile_needed");
+    assert.equal(diag.reconcileNeeded, true);
+    assert.equal(diag.interruption?.kind, "stale_lease");
+    assert.equal(diag.brokerHints.staleLease, true);
+  });
+
+  it("getTaskDiagnostics distinguishes stale worker from stale lease", () => {
+    const broker = makeBroker();
+    registerWorker(broker);
+    const task = createTask(broker);
+    broker.claimTask(task.id, "worker-1");
+
+    const nowMs = Date.now() + 300_000;
+    const diag = broker.getTaskDiagnostics(task.id, {
+      staleAfterMs: 120_000,
+      workerOfflineAfterMs: 60_000,
+      nowMs,
+    });
+
+    assert.equal(diag.brokerState, "reconcile_needed");
+    assert.equal(diag.reconcileNeeded, true);
+    assert.equal(diag.interruption?.kind, "stale_worker");
+    assert.equal(diag.interruption?.source, "worker_state");
+    assert.equal(diag.brokerHints.staleWorker, true);
+    assert.ok(diag.brokerHints.workerLastSeenAt);
   });
 
   it("getTaskDiagnostics returns terminal for completed task", () => {
@@ -219,6 +248,42 @@ describe("task diagnostics", () => {
     assert.equal(diag.tombstone!.tombstoneReason, "failed");
     assert.equal(diag.tombstone!.taskId, task.id);
     assert.ok(diag.tombstone!.durationMs >= 0);
+    assert.equal(diag.interruption?.kind, "failed");
+    assert.equal(diag.brokerHints.tombstoneReason, "failed");
+  });
+
+  it("getTaskDiagnostics exposes timeout interruption from broker tombstone", () => {
+    const broker = makeBroker();
+    registerWorker(broker);
+    const task = createTask(broker);
+    broker.claimTask(task.id, "worker-1");
+    broker.startTask(task.id, "worker-1");
+    broker.failTask(task.id, "worker-1", { code: "timeout", message: "took too long" });
+
+    const diag = broker.getTaskDiagnostics(task.id);
+    assert.equal(diag.interruption?.kind, "timeout");
+    assert.equal(diag.interruption?.source, "tombstone");
+    assert.equal(diag.brokerState, "terminal");
+    assert.equal(diag.reconcileNeeded, false);
+  });
+
+  it("getTaskDiagnostics exposes requeue interruption from durable audit state", () => {
+    const broker = makeBroker();
+    registerWorker(broker);
+    const task = createTask(broker);
+    broker.claimTask(task.id, "worker-1");
+    broker.startTask(task.id, "worker-1");
+
+    const result = broker.requeueStaleTasksDetailed(0);
+    assert.equal(result.requeued.length, 1);
+
+    const diag = broker.getTaskDiagnostics(task.id);
+    assert.equal(diag.brokerState, "interrupted");
+    assert.equal(diag.reconcileNeeded, false);
+    assert.equal(diag.interruption?.kind, "requeued");
+    assert.equal(diag.interruption?.source, "audit");
+    assert.equal(diag.brokerHints.requeued, true);
+    assert.ok(diag.brokerHints.lastRequeueAt);
   });
 });
 
