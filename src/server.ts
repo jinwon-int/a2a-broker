@@ -771,6 +771,40 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
         }
       }
 
+      // GET /tasks/:id/transcript — Case Inspector transcript read bridged onto exchange messages
+      if (
+        req.method === "GET" &&
+        segments[0] === "tasks" &&
+        segments[1] &&
+        segments[2] === "transcript" &&
+        segments.length === 3
+      ) {
+        const task = broker.getTask(segments[1]);
+        if (!task) {
+          throw new BrokerError("not_found", "task not found");
+        }
+        if (!task.exchangeId) {
+          throw new BrokerError("not_found", "task has no associated exchange");
+        }
+        const exchange = broker.getExchange(task.exchangeId);
+        if (!exchange) {
+          throw new BrokerError("not_found", "associated exchange not found");
+        }
+        const parentMessageId = optionalString(url.searchParams.get("parentMessageId"));
+        const includeDescendants = booleanQueryParam(url, "includeDescendants") ?? false;
+        const items = broker.listExchangeMessages(task.exchangeId, {
+          parentMessageId,
+          includeDescendants,
+        });
+        return sendJson(res, 200, {
+          taskId: task.id,
+          exchangeId: task.exchangeId,
+          parentMessageId,
+          items,
+          threads: buildMessageThreads(items),
+        });
+      }
+
       // GET /tasks/diagnostics — bulk diagnostic scan (MUST come before /tasks/:id)
       if (req.method === "GET" && path === "/tasks/diagnostics") {
         const staleAfterMs = numberQueryParam(url, "stale_after_ms") ?? 120_000;

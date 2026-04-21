@@ -2260,3 +2260,172 @@ test("trading-dialectic route rejects unsupported version with 400", async () =>
     await server.close();
   }
 });
+
+// ---------------------------------------------------------------------------
+// Task transcript bridge (Case Inspector)
+// ---------------------------------------------------------------------------
+
+test("task transcript bridge returns exchange messages threaded for a task with an exchangeId", async () => {
+  const server = await startTestServer({
+    edgeSecret: "test-edge-secret",
+    enforceRequesterIdentity: true,
+  });
+  try {
+    await registerTestWorker(server.baseUrl, "worker-a", "analyst", "test-edge-secret");
+
+    // Create an exchange
+    const exchangeRes = await fetch(`${server.baseUrl}/exchanges`, {
+      method: "POST",
+      headers: jsonHeaders({
+        "x-a2a-edge-secret": "test-edge-secret",
+        "x-a2a-requester-id": "hub-a",
+        "x-a2a-requester-role": "hub",
+      }),
+      body: JSON.stringify({
+        requester: { id: "hub-a", kind: "node", role: "hub" },
+        target: { id: "worker-a", kind: "node", role: "analyst" },
+        message: "root message",
+        intent: "analyze",
+      }),
+    });
+    assert.equal(exchangeRes.status, 201);
+    const exchange = await exchangeRes.json();
+
+    // Add a thread reply
+    const replyRes = await fetch(`${server.baseUrl}/exchanges/${exchange.id}/messages`, {
+      method: "POST",
+      headers: jsonHeaders({
+        "x-a2a-edge-secret": "test-edge-secret",
+        "x-a2a-requester-id": "worker-a",
+        "x-a2a-requester-role": "analyst",
+      }),
+      body: JSON.stringify({
+        actor: { id: "worker-a", kind: "node", role: "analyst" },
+        message: "analysis reply",
+        decision: "accepted",
+        parentMessageId: exchange.rootMessageId,
+      }),
+    });
+    assert.equal(replyRes.status, 201);
+
+    // Create a task linked to the exchange
+    const taskRes = await fetch(`${server.baseUrl}/tasks`, {
+      method: "POST",
+      headers: jsonHeaders({
+        "x-a2a-edge-secret": "test-edge-secret",
+        "x-a2a-requester-id": "hub-a",
+        "x-a2a-requester-role": "hub",
+      }),
+      body: JSON.stringify({
+        intent: "analyze",
+        requester: { id: "hub-a", kind: "node", role: "hub" },
+        target: { id: "worker-a", kind: "node", role: "analyst" },
+        assignedWorkerId: "worker-a",
+        exchangeId: exchange.id,
+        message: "run analysis",
+      }),
+    });
+    assert.equal(taskRes.status, 201);
+    const task = await taskRes.json();
+
+    // Fetch transcript (full)
+    const transcriptRes = await fetch(`${server.baseUrl}/tasks/${task.id}/transcript`, {
+      headers: {
+        "x-a2a-edge-secret": "test-edge-secret",
+        "x-a2a-requester-id": "hub-a",
+        "x-a2a-requester-role": "hub",
+      },
+    });
+    assert.equal(transcriptRes.status, 200);
+    const transcript = await transcriptRes.json();
+
+    assert.equal(transcript.taskId, task.id);
+    assert.equal(transcript.exchangeId, exchange.id);
+    assert.equal(transcript.items.length, 2);
+    assert.equal(transcript.threads.length, 1);
+    assert.equal(transcript.threads[0].replies.length, 1);
+    assert.equal(transcript.threads[0].replies[0].decision, "accepted");
+
+    // Fetch transcript scoped to root message descendants
+    const scopedRes = await fetch(
+      `${server.baseUrl}/tasks/${task.id}/transcript?parentMessageId=${exchange.rootMessageId}&includeDescendants=true`,
+      {
+        headers: {
+          "x-a2a-edge-secret": "test-edge-secret",
+          "x-a2a-requester-id": "hub-a",
+          "x-a2a-requester-role": "hub",
+        },
+      },
+    );
+    assert.equal(scopedRes.status, 200);
+    const scoped = await scopedRes.json();
+    assert.equal(scoped.parentMessageId, exchange.rootMessageId);
+    assert.equal(scoped.items.length, 2);
+  } finally {
+    await server.close();
+  }
+});
+
+test("task transcript bridge returns 404 when task has no exchangeId", async () => {
+  const server = await startTestServer({
+    edgeSecret: "test-edge-secret",
+    enforceRequesterIdentity: true,
+  });
+  try {
+    await registerTestWorker(server.baseUrl, "worker-a", "analyst", "test-edge-secret");
+
+    const taskRes = await fetch(`${server.baseUrl}/tasks`, {
+      method: "POST",
+      headers: jsonHeaders({
+        "x-a2a-edge-secret": "test-edge-secret",
+        "x-a2a-requester-id": "hub-a",
+        "x-a2a-requester-role": "hub",
+      }),
+      body: JSON.stringify({
+        intent: "analyze",
+        requester: { id: "hub-a", kind: "node", role: "hub" },
+        target: { id: "worker-a", kind: "node", role: "analyst" },
+        assignedWorkerId: "worker-a",
+        message: "orphan task",
+      }),
+    });
+    assert.equal(taskRes.status, 201);
+    const task = await taskRes.json();
+
+    const transcriptRes = await fetch(`${server.baseUrl}/tasks/${task.id}/transcript`, {
+      headers: {
+        "x-a2a-edge-secret": "test-edge-secret",
+        "x-a2a-requester-id": "hub-a",
+        "x-a2a-requester-role": "hub",
+      },
+    });
+    assert.equal(transcriptRes.status, 404);
+    const body = await transcriptRes.json();
+    assert.equal(body.error.code, "not_found");
+    assert.match(body.error.message, /no associated exchange/);
+  } finally {
+    await server.close();
+  }
+});
+
+test("task transcript bridge returns 404 for unknown task", async () => {
+  const server = await startTestServer({
+    edgeSecret: "test-edge-secret",
+    enforceRequesterIdentity: true,
+  });
+  try {
+    const transcriptRes = await fetch(`${server.baseUrl}/tasks/does-not-exist/transcript`, {
+      headers: {
+        "x-a2a-edge-secret": "test-edge-secret",
+        "x-a2a-requester-id": "hub-a",
+        "x-a2a-requester-role": "hub",
+      },
+    });
+    assert.equal(transcriptRes.status, 404);
+    const body = await transcriptRes.json();
+    assert.equal(body.error.code, "not_found");
+    assert.match(body.error.message, /task not found/);
+  } finally {
+    await server.close();
+  }
+});
