@@ -8,6 +8,7 @@ import type {
   TaskDiagnosticReport,
   TaskRecord,
   TaskTombstone,
+  WorkerRecord,
 } from "./types.js";
 
 // ---------------------------------------------------------------------------
@@ -74,6 +75,28 @@ function makeReport(
       claimedAt: task.claimedAt,
       lastHeartbeatAt: task.lastHeartbeatAt,
     },
+    ...overrides,
+  };
+}
+
+function makeWorker(overrides: Partial<WorkerRecord> = {}): WorkerRecord {
+  return {
+    nodeId: "worker-a",
+    role: "analyst",
+    displayName: "Worker A",
+    brokerUrl: undefined,
+    capabilities: {
+      canAnalyze: true,
+      canBackfill: false,
+      canPatchWorkspace: false,
+      canPromoteLive: false,
+      workspaceIds: ["test"],
+      environments: ["research"],
+    },
+    metadata: undefined,
+    createdAt: new Date(Date.now() - 600_000).toISOString(),
+    updatedAt: new Date(Date.now() - 600_000).toISOString(),
+    lastSeenAt: new Date(Date.now() - 60_000).toISOString(),
     ...overrides,
   };
 }
@@ -292,5 +315,27 @@ describe("projectAlerts", () => {
     const r2 = projectAlerts(reports, { nowMs });
     assert.equal(r1.alerts[0]!.id, r2.alerts[0]!.id);
     assert.equal(r1.alerts[0]!.id, "task_stale:task-1");
+  });
+
+  it("projects worker heartbeat_missed alerts from worker.lastSeenAt", () => {
+    const result = projectAlerts([], {
+      nowMs,
+      workers: [
+        makeWorker({
+          nodeId: "worker-stale",
+          lastSeenAt: new Date(nowMs - 180_000).toISOString(),
+        }),
+      ],
+      workerHeartbeatMissedAfterMs: 120_000,
+    });
+
+    assert.equal(result.alerts.length, 1);
+    assert.equal(result.alerts[0]!.kind, "worker.heartbeat_missed");
+    assert.equal(result.alerts[0]!.severity, "warning");
+    assert.equal(result.alerts[0]!.subject.kind, "worker");
+    assert.equal(result.alerts[0]!.subject.id, "worker-stale");
+    assert.equal(result.alerts[0]!.workerId, "worker-stale");
+    assert.equal(result.alerts[0]!.taskId, undefined);
+    assert.equal(result.countsByKind["worker.heartbeat_missed"], 1);
   });
 });

@@ -11,9 +11,8 @@
  */
 import type {
   TaskDiagnosticReport,
-  TaskDiagnosticStatus,
   TaskTombstone,
-  TaskStatus,
+  WorkerRecord,
 } from "./types.js";
 
 // ---------------------------------------------------------------------------
@@ -30,15 +29,26 @@ export type AlertKind =
   | "task_timeout"
   | "task_failed"
   | "task_canceled"
-  | "queue_pressure";
+  | "queue_pressure"
+  | "worker.heartbeat_missed"
+  | "gateway.unhealthy";
+
+export type AlertSubjectKind = "task" | "worker" | "gateway";
 
 export interface Alert {
-  /** Unique alert id (deterministic: `${kind}:${taskId}`). */
+  /** Unique alert id (deterministic: `${kind}:${subject.id}`). */
   id: string;
   kind: AlertKind;
   severity: AlertSeverity;
-  /** The task this alert is about. */
-  taskId: string;
+  /** The broker-owned entity this alert is about. */
+  subject: {
+    kind: AlertSubjectKind;
+    id: string;
+  };
+  /** Present for task-scoped alerts. */
+  taskId?: string;
+  /** Present for worker-scoped alerts. */
+  workerId?: string;
   /** Human-readable summary. */
   summary: string;
   /** ISO timestamp when the condition was detected. */
@@ -79,6 +89,10 @@ export interface AlertProjectionOptions {
   queuePressureWarning?: number;
   /** Queue pressure: number of queued tasks for critical. */
   queuePressureCritical?: number;
+  /** Worker records to scan for missed heartbeats. */
+  workers?: WorkerRecord[];
+  /** Threshold after which a worker heartbeat is considered missed. */
+  workerHeartbeatMissedAfterMs?: number;
   /** Current time override (for testing). */
   nowMs?: number;
 }
@@ -93,6 +107,7 @@ export function projectAlerts(
   const staleCriticalMs = options?.staleCriticalMs ?? 600_000;
   const longRunningWarningMs = options?.longRunningWarningMs ?? 3_600_000;
   const longRunningCriticalMs = options?.longRunningCriticalMs ?? 14_400_000;
+  const workerHeartbeatMissedAfterMs = options?.workerHeartbeatMissedAfterMs ?? staleWarningMs;
 
   const alerts: Alert[] = [];
 
@@ -141,6 +156,23 @@ export function projectAlerts(
         alerts.push(terminalAlert);
       }
     }
+  }
+
+  for (const worker of options?.workers ?? []) {
+    const lastSeenMs = Date.parse(worker.lastSeenAt);
+    if (!Number.isFinite(lastSeenMs)) {
+      continue;
+    }
+    const lastSeenAgeMs = nowMs - lastSeenMs;
+    if (lastSeenAgeMs < workerHeartbeatMissedAfterMs) {
+      continue;
+    }
+    alerts.push(
+      makeWorkerAlert("worker.heartbeat_missed", "warning", worker, now, {
+        summary: `Worker ${worker.nodeId} missed heartbeat (${Math.round(lastSeenAgeMs / 1000)}s since last seen)`,
+        durationMs: lastSeenAgeMs,
+      }),
+    );
   }
 
   // Sort: critical first, then warning, then info
@@ -236,6 +268,10 @@ function makeAlert(
     id: `${kind}:${report.taskId}`,
     kind,
     severity,
+    subject: {
+      kind: "task",
+      id: report.taskId,
+    },
     taskId: report.taskId,
     summary: opts.summary,
     detectedAt,
@@ -245,6 +281,39 @@ function makeAlert(
       targetNodeId: report.task.targetNodeId,
       assignedWorkerId: report.task.assignedWorkerId,
       diagnosticStatus: report.diagnosticStatus,
+      ...opts.extra,
+    },
+  };
+}
+
+function makeWorkerAlert(
+  kind: AlertKind,
+  severity: AlertSeverity,
+  worker: WorkerRecord,
+  detectedAt: string,
+  opts: {
+    summary: string;
+    durationMs?: number;
+    extra?: Record<string, unknown>;
+  },
+): Alert {
+  return {
+    id: `${kind}:${worker.nodeId}`,
+    kind,
+    severity,
+    subject: {
+      kind: "worker",
+      id: worker.nodeId,
+    },
+    workerId: worker.nodeId,
+    summary: opts.summary,
+    detectedAt,
+    durationMs: opts.durationMs,
+    metadata: {
+      workerId: worker.nodeId,
+      role: worker.role,
+      displayName: worker.displayName,
+      lastSeenAt: worker.lastSeenAt,
       ...opts.extra,
     },
   };

@@ -62,7 +62,7 @@ import {
   projectTradingDialecticReadModel,
   TradingDialecticReadModelError,
 } from "./trading-dialectic/read-model.js";
-import { projectAlerts } from "./core/alert-projection.js";
+import { projectAlerts, type Alert, type AlertScanResult } from "./core/alert-projection.js";
 
 interface ThreadedExchangeMessage extends A2AExchangeMessageRecord {
   replies: ThreadedExchangeMessage[];
@@ -79,6 +79,53 @@ interface DashboardAttentionSummary {
   highestSeverity: "none" | DashboardAttentionItem["severity"];
   items: DashboardAttentionItem[];
 }
+
+type OperatorSummary = BrokerDashboard & {
+  staleReaper: BrokerStaleReaperStatus;
+  requestPressure: {
+    general: RateLimitPressureSnapshot;
+    worker: RateLimitPressureSnapshot;
+  };
+  attention: DashboardAttentionSummary;
+};
+
+interface OperatorSnapshotEvent {
+  summary: OperatorSummary;
+  alerts: AlertScanResult;
+}
+
+interface OperatorSummaryUpdateEvent {
+  summary: OperatorSummary;
+  alerts: AlertScanResult;
+}
+
+interface OperatorAlertEvent {
+  alert: Alert;
+}
+
+type OperatorEventName =
+  | "operator-snapshot"
+  | "operator-summary-update"
+  | "operator-alert-opened"
+  | "operator-alert-resolved";
+
+type OperatorEventPayload =
+  | OperatorSnapshotEvent
+  | OperatorSummaryUpdateEvent
+  | OperatorAlertEvent;
+
+interface BufferedOperatorEvent {
+  seq: number;
+  event: OperatorEventName;
+  data: OperatorEventPayload;
+}
+
+const DEFAULT_DASHBOARD_RECENT_HISTORY_LIMIT = 10;
+const DEFAULT_DASHBOARD_OLDEST_PENDING_LIMIT = 5;
+const DEFAULT_DASHBOARD_PENDING_ACTION_LIMIT = 5;
+const DEFAULT_ALERT_STALE_AFTER_MS = 120_000;
+const DEFAULT_ALERT_LONG_RUNNING_AFTER_MS = 3_600_000;
+const DEFAULT_OPERATOR_EVENT_BUFFER_LIMIT = 200;
 
 export interface BrokerServerOptions {
   host?: string;
@@ -252,8 +299,10 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
   let staleReaperTotalDeadLettered = 0;
   let staleReaperLastError: string | undefined;
   let staleReaperRunCount = 0;
+  let suppressOperatorStateBroadcast = false;
 
   const runStaleReaperSweep = (): number => {
+    suppressOperatorStateBroadcast = true;
     try {
       const { requeued, deadLettered } = broker.requeueStaleTasksDetailed(
         staleReaperOlderThanSec * 1000,
@@ -274,6 +323,7 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
             .join(", ")}`,
         );
       }
+      publishOperatorEvents();
       return requeued.length;
     } catch (error) {
       staleReaperLastRunAt = new Date().toISOString();
@@ -283,7 +333,10 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
       staleReaperRunCount += 1;
       // Keep the loop alive: transient persistence errors shouldn't kill the timer.
       console.error(`[a2a-broker] stale reaper sweep failed: ${staleReaperLastError}`);
+      publishOperatorEvents();
       return 0;
+    } finally {
+      suppressOperatorStateBroadcast = false;
     }
   };
 
@@ -305,6 +358,99 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
     totalDeadLettered: staleReaperTotalDeadLettered,
     lastError: staleReaperLastError,
     runCount: staleReaperRunCount,
+  });
+
+  const operatorListeners = new Set<(event: BufferedOperatorEvent) => void>();
+  const operatorEventBuffer: BufferedOperatorEvent[] = [];
+  let operatorEventSeq = 0;
+  let operatorAlertsById = new Map(
+    buildAlertScan({
+      broker,
+      workerHeartbeatMissedAfterMs: workerOfflineAfterSec * 1000,
+    }).alerts.map((alert) => [alert.id, alert] as const),
+  );
+
+  const currentOperatorSnapshot = (): OperatorSnapshotEvent => ({
+    summary: buildDashboardResponse({
+      broker,
+      workerOfflineAfterSec,
+      getStaleReaperStatus,
+      rateLimiter,
+      workerRateLimiter,
+    }),
+    alerts: buildAlertScan({
+      broker,
+      workerHeartbeatMissedAfterMs: workerOfflineAfterSec * 1000,
+    }),
+  });
+
+  const replayOperatorEvents = (afterSeq: number): BufferedOperatorEvent[] =>
+    operatorEventBuffer.filter((event) => event.seq > afterSeq);
+
+  const subscribeToOperatorEvents = (
+    listener: (event: BufferedOperatorEvent) => void,
+  ): (() => void) => {
+    operatorListeners.add(listener);
+    return () => {
+      operatorListeners.delete(listener);
+    };
+  };
+
+  const emitOperatorEvent = (event: OperatorEventName, data: OperatorEventPayload): void => {
+    const buffered: BufferedOperatorEvent = {
+      seq: operatorEventSeq + 1,
+      event,
+      data: structuredClone(data),
+    };
+    operatorEventSeq = buffered.seq;
+    operatorEventBuffer.push(buffered);
+    if (operatorEventBuffer.length > DEFAULT_OPERATOR_EVENT_BUFFER_LIMIT) {
+      operatorEventBuffer.splice(0, operatorEventBuffer.length - DEFAULT_OPERATOR_EVENT_BUFFER_LIMIT);
+    }
+
+    for (const listener of [...operatorListeners]) {
+      try {
+        listener(buffered);
+      } catch (error) {
+        console.error(
+          `[a2a-broker] operator subscriber threw: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      }
+    }
+  };
+
+  const publishOperatorEvents = (): void => {
+    const snapshot = currentOperatorSnapshot();
+    emitOperatorEvent("operator-summary-update", {
+      summary: snapshot.summary,
+      alerts: snapshot.alerts,
+    });
+
+    const nextAlertsById = new Map(snapshot.alerts.alerts.map((alert) => [alert.id, alert] as const));
+    const openedAlerts = snapshot.alerts.alerts
+      .filter((alert) => !operatorAlertsById.has(alert.id))
+      .sort((left, right) => left.id.localeCompare(right.id));
+    const resolvedAlerts = [...operatorAlertsById.values()]
+      .filter((alert) => !nextAlertsById.has(alert.id))
+      .sort((left, right) => left.id.localeCompare(right.id));
+
+    for (const alert of openedAlerts) {
+      emitOperatorEvent("operator-alert-opened", { alert });
+    }
+    for (const alert of resolvedAlerts) {
+      emitOperatorEvent("operator-alert-resolved", { alert });
+    }
+
+    operatorAlertsById = nextAlertsById;
+  };
+
+  const unsubscribeBrokerState = broker.subscribeToState(() => {
+    if (suppressOperatorStateBroadcast) {
+      return;
+    }
+    publishOperatorEvents();
   });
 
   if (staleReaperEnabled) {
@@ -415,46 +561,52 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
         return;
       }
 
+      if (
+        req.method === "GET" &&
+        path === "/a2a/operator/events"
+      ) {
+        if (enforceRequesterIdentity) {
+          assertRequesterHasRole(requesterIdentity, ["hub", "operator"], "operator.subscribe");
+        }
+
+        handleOperatorEventStream(req, res, {
+          currentSnapshot: currentOperatorSnapshot,
+          replayEvents: replayOperatorEvents,
+          subscribe: subscribeToOperatorEvents,
+          currentSeq: () => operatorEventSeq,
+          heartbeatMs: taskSubscribeHeartbeatSec * 1000,
+        });
+        return;
+      }
+
       if (req.method === "GET" && path === "/dashboard") {
         const recentLimit = numberQueryParam(url, "recent_history_limit") ?? 10;
         const oldestPendingLimit = numberQueryParam(url, "oldest_pending_limit") ?? 5;
         const pendingActionLimit = numberQueryParam(url, "pending_action_limit") ?? 5;
-        const dashboard = broker.getDashboard({
-          offlineAfterMs: workerOfflineAfterSec * 1000,
+        return sendJson(res, 200, buildDashboardResponse({
+          broker,
+          workerOfflineAfterSec,
+          getStaleReaperStatus,
+          rateLimiter,
+          workerRateLimiter,
           recentHistoryLimit: recentLimit,
           oldestPendingLimit,
           pendingActionLimit,
-        });
-        const staleReaper = getStaleReaperStatus();
-        const requestPressure = {
-          general: rateLimiter.snapshot(),
-          worker: workerRateLimiter.snapshot(),
-        };
-        return sendJson(res, 200, {
-          ...dashboard,
-          staleReaper,
-          requestPressure,
-          attention: buildDashboardAttention({
-            dashboard,
-            staleReaper,
-            requestPressure,
-          }),
-        });
+        }));
       }
 
       // GET /alerts — monitoring-friendly alert projection
       if (req.method === "GET" && path === "/alerts") {
-        const staleAfterMs = numberQueryParam(url, "stale_after_ms") ?? 120_000;
-        const longRunningAfterMs = numberQueryParam(url, "long_running_after_ms") ?? 3_600_000;
-        const allTasks = broker.listTasks();
-        const reports = allTasks.map((task) =>
-          broker.getTaskDiagnostics(task.id, { staleAfterMs, longRunningAfterMs }),
-        );
-        const result = projectAlerts(reports, {
+        const result = buildAlertScan({
+          broker,
+          staleAfterMs: numberQueryParam(url, "stale_after_ms") ?? DEFAULT_ALERT_STALE_AFTER_MS,
+          longRunningAfterMs: numberQueryParam(url, "long_running_after_ms") ?? DEFAULT_ALERT_LONG_RUNNING_AFTER_MS,
           staleWarningMs: numberQueryParam(url, "stale_warning_ms") ?? undefined,
           staleCriticalMs: numberQueryParam(url, "stale_critical_ms") ?? undefined,
           longRunningWarningMs: numberQueryParam(url, "long_running_warning_ms") ?? undefined,
           longRunningCriticalMs: numberQueryParam(url, "long_running_critical_ms") ?? undefined,
+          workerHeartbeatMissedAfterMs:
+            numberQueryParam(url, "worker_heartbeat_missed_after_ms") ?? workerOfflineAfterSec * 1000,
         });
         return sendJson(res, 200, result);
       }
@@ -902,7 +1054,10 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
   // When the HTTP server closes, ensure the reaper timer is cleaned up. This matters for
   // tests and for any runtime that shuts down via server.close() rather than the SIGINT
   // path in startBrokerServer.
-  server.on("close", stopStaleReaper);
+  server.on("close", () => {
+    stopStaleReaper();
+    unsubscribeBrokerState();
+  });
 
   return {
     server,
@@ -1388,6 +1543,83 @@ function highestDashboardAttentionSeverity(items: DashboardAttentionItem[]): Das
   return highest;
 }
 
+function buildDashboardResponse(input: {
+  broker: InMemoryA2ABroker;
+  workerOfflineAfterSec: number;
+  getStaleReaperStatus: () => BrokerStaleReaperStatus;
+  rateLimiter: InMemoryRateLimiter;
+  workerRateLimiter: InMemoryRateLimiter;
+  recentHistoryLimit?: number;
+  oldestPendingLimit?: number;
+  pendingActionLimit?: number;
+}): OperatorSummary {
+  const dashboard = input.broker.getDashboard({
+    offlineAfterMs: input.workerOfflineAfterSec * 1000,
+    recentHistoryLimit: input.recentHistoryLimit ?? DEFAULT_DASHBOARD_RECENT_HISTORY_LIMIT,
+    oldestPendingLimit: input.oldestPendingLimit ?? DEFAULT_DASHBOARD_OLDEST_PENDING_LIMIT,
+    pendingActionLimit: input.pendingActionLimit ?? DEFAULT_DASHBOARD_PENDING_ACTION_LIMIT,
+  });
+  const staleReaper = input.getStaleReaperStatus();
+  const requestPressure = {
+    general: input.rateLimiter.snapshot(),
+    worker: input.workerRateLimiter.snapshot(),
+  };
+  return {
+    ...dashboard,
+    staleReaper,
+    requestPressure,
+    attention: buildDashboardAttention({
+      dashboard,
+      staleReaper,
+      requestPressure,
+    }),
+  };
+}
+
+function buildAlertScan(input: {
+  broker: InMemoryA2ABroker;
+  staleAfterMs?: number;
+  longRunningAfterMs?: number;
+  staleWarningMs?: number;
+  staleCriticalMs?: number;
+  longRunningWarningMs?: number;
+  longRunningCriticalMs?: number;
+  workerHeartbeatMissedAfterMs: number;
+  nowMs?: number;
+}): AlertScanResult {
+  const staleAfterMs = input.staleAfterMs ?? DEFAULT_ALERT_STALE_AFTER_MS;
+  const longRunningAfterMs = input.longRunningAfterMs ?? DEFAULT_ALERT_LONG_RUNNING_AFTER_MS;
+  const allTasks = input.broker.listTasks();
+  const reports = allTasks.map((task) =>
+    input.broker.getTaskDiagnostics(task.id, { staleAfterMs, longRunningAfterMs }),
+  );
+
+  return projectAlerts(reports, {
+    staleWarningMs: input.staleWarningMs,
+    staleCriticalMs: input.staleCriticalMs,
+    longRunningWarningMs: input.longRunningWarningMs,
+    longRunningCriticalMs: input.longRunningCriticalMs,
+    workers: input.broker.listWorkers(),
+    workerHeartbeatMissedAfterMs: input.workerHeartbeatMissedAfterMs,
+    nowMs: input.nowMs,
+  });
+}
+
+function formatOperatorSseEventId(seq: number): string {
+  return `operator:${seq}`;
+}
+
+function parseOperatorSseEventId(raw: string): number | null {
+  if (!raw.startsWith("operator:")) {
+    return null;
+  }
+  const seq = Number(raw.slice("operator:".length));
+  if (!Number.isFinite(seq) || seq < 0) {
+    return null;
+  }
+  return seq;
+}
+
 function sendError(res: ServerResponse<IncomingMessage>, error: unknown): void {
   if (error instanceof BrokerError) {
     const status = statusCodeFor(error.code);
@@ -1427,17 +1659,7 @@ function statusCodeFor(code: BrokerError["code"]): number {
   }
 }
 
-function handleTaskEventStream(
-  req: IncomingMessage,
-  res: ServerResponse<IncomingMessage>,
-  params: {
-    broker: InMemoryA2ABroker;
-    task: TaskRecord;
-    heartbeatMs: number;
-  },
-): void {
-  const { broker, task, heartbeatMs } = params;
-
+function writeSseResponseHeaders(res: ServerResponse<IncomingMessage>): void {
   res.writeHead(200, {
     "content-type": "text/event-stream; charset=utf-8",
     "cache-control": "no-cache, no-store, no-transform",
@@ -1452,17 +1674,36 @@ function handleTaskEventStream(
 
   // Send retry advisory: wait 3 seconds before reconnecting.
   res.write("retry: 3000\n\n");
+}
 
-  const writeEvent = (event: string, data: unknown, id?: string): void => {
-    if (res.writableEnded) {
-      return;
-    }
-    if (id) {
-      res.write(`id: ${id}\n`);
-    }
-    res.write(`event: ${event}\n`);
-    res.write(`data: ${JSON.stringify(data)}\n\n`);
-  };
+function writeSseEvent(
+  res: ServerResponse<IncomingMessage>,
+  event: string,
+  data: unknown,
+  id?: string,
+): void {
+  if (res.writableEnded) {
+    return;
+  }
+  if (id) {
+    res.write(`id: ${id}\n`);
+  }
+  res.write(`event: ${event}\n`);
+  res.write(`data: ${JSON.stringify(data)}\n\n`);
+}
+
+function handleTaskEventStream(
+  req: IncomingMessage,
+  res: ServerResponse<IncomingMessage>,
+  params: {
+    broker: InMemoryA2ABroker;
+    task: TaskRecord;
+    heartbeatMs: number;
+  },
+): void {
+  const { broker, task, heartbeatMs } = params;
+
+  writeSseResponseHeaders(res);
 
   // Parse Last-Event-ID for reconnect replay.
   const lastEventIdHeader = req.headers["last-event-id"] as string | undefined;
@@ -1478,7 +1719,8 @@ function handleTaskEventStream(
   if (replayAfterSeq >= 0) {
     const missed = broker.replayTaskEvents(task.id, replayAfterSeq);
     for (const buffered of missed) {
-      writeEvent(
+      writeSseEvent(
+        res,
         buffered.event,
         {
           task: projectBrokerTask(buffered.data.task),
@@ -1493,7 +1735,8 @@ function handleTaskEventStream(
   // Always send a fresh snapshot as the opening event.
   const snapshotSeq = broker.replayTaskEvents(task.id, -1).length;
   // Use seq=0 for the initial snapshot if no buffered events exist.
-  writeEvent(
+  writeSseEvent(
+    res,
     "task-snapshot",
     {
       task: projectBrokerTask(task),
@@ -1525,7 +1768,8 @@ function handleTaskEventStream(
   };
 
   unsubscribe = broker.subscribeToTask(task.id, (update) => {
-    writeEvent(
+    writeSseEvent(
+      res,
       "task-status-update",
       {
         task: projectBrokerTask(update.task),
@@ -1558,6 +1802,91 @@ function handleTaskEventStream(
       }
       res.write(`: heartbeat ${new Date().toISOString()}\n\n`);
     }, heartbeatMs);
+    heartbeatTimer.unref?.();
+  }
+}
+
+function handleOperatorEventStream(
+  req: IncomingMessage,
+  res: ServerResponse<IncomingMessage>,
+  params: {
+    currentSnapshot: () => OperatorSnapshotEvent;
+    replayEvents: (afterSeq: number) => BufferedOperatorEvent[];
+    subscribe: (listener: (event: BufferedOperatorEvent) => void) => () => void;
+    currentSeq: () => number;
+    heartbeatMs: number;
+  },
+): void {
+  writeSseResponseHeaders(res);
+
+  const lastEventIdHeader = req.headers["last-event-id"] as string | undefined;
+  let replayAfterSeq = -1;
+  if (lastEventIdHeader) {
+    const parsed = parseOperatorSseEventId(lastEventIdHeader);
+    if (parsed !== null) {
+      replayAfterSeq = parsed;
+    }
+  }
+
+  if (replayAfterSeq >= 0) {
+    const missed = params.replayEvents(replayAfterSeq);
+    for (const buffered of missed) {
+      writeSseEvent(
+        res,
+        buffered.event,
+        buffered.data,
+        formatOperatorSseEventId(buffered.seq),
+      );
+    }
+  }
+
+  const snapshotSeq = params.currentSeq();
+  writeSseEvent(
+    res,
+    "operator-snapshot",
+    params.currentSnapshot(),
+    formatOperatorSseEventId(snapshotSeq > 0 ? snapshotSeq : 0),
+  );
+
+  let heartbeatTimer: NodeJS.Timeout | null = null;
+  let unsubscribe: (() => void) | null = null;
+
+  const cleanup = (): void => {
+    if (heartbeatTimer) {
+      clearInterval(heartbeatTimer);
+      heartbeatTimer = null;
+    }
+    if (unsubscribe) {
+      unsubscribe();
+      unsubscribe = null;
+    }
+  };
+
+  unsubscribe = params.subscribe((event) => {
+    writeSseEvent(
+      res,
+      event.event,
+      event.data,
+      formatOperatorSseEventId(event.seq),
+    );
+  });
+
+  req.on("close", () => {
+    cleanup();
+    if (!res.writableEnded) {
+      res.end();
+    }
+  });
+  req.on("error", cleanup);
+
+  if (params.heartbeatMs > 0) {
+    heartbeatTimer = setInterval(() => {
+      if (res.writableEnded) {
+        cleanup();
+        return;
+      }
+      res.write(`: heartbeat ${new Date().toISOString()}\n\n`);
+    }, params.heartbeatMs);
     heartbeatTimer.unref?.();
   }
 }

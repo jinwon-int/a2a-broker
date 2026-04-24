@@ -150,6 +150,7 @@ export interface BufferedTaskEvent {
 }
 
 export type TaskUpdateListener = (update: TaskUpdate) => void;
+export type BrokerStateListener = () => void;
 
 export class InMemoryA2ABroker {
   private readonly exchanges = new Map<string, A2AExchangeState>();
@@ -164,6 +165,7 @@ export class InMemoryA2ABroker {
   private readonly taskListeners = new Map<string, Set<TaskUpdateListener>>();
   private readonly taskEventBuffers = new Map<string, BufferedTaskEvent[]>();
   private readonly taskEventSeqs = new Map<string, number>();
+  private readonly stateListeners = new Set<BrokerStateListener>();
   private readonly maxBufferedEventsPerTask: number;
 
   constructor(
@@ -212,6 +214,14 @@ export class InMemoryA2ABroker {
       if (current.size === 0) {
         this.taskListeners.delete(taskId);
       }
+    };
+  }
+
+  /** Subscribe to broker-wide state changes after a successful persisted mutation. */
+  subscribeToState(listener: BrokerStateListener): () => void {
+    this.stateListeners.add(listener);
+    return () => {
+      this.stateListeners.delete(listener);
     };
   }
 
@@ -1759,6 +1769,21 @@ export class InMemoryA2ABroker {
   private persistState(): void {
     this.applyRetentionPolicy();
     this.stateStore?.save(this.exportSnapshot());
+    this.emitStateChange();
+  }
+
+  private emitStateChange(): void {
+    for (const listener of [...this.stateListeners]) {
+      try {
+        listener();
+      } catch (error) {
+        console.error(
+          `[a2a-broker] broker state listener threw: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      }
+    }
   }
 
   private appendAuditEvent(input: {

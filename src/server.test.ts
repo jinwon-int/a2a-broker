@@ -46,6 +46,7 @@ async function startTestServer(options: Partial<BrokerServerOptions> = {}) {
     runtime,
     close: async () => {
       runtime.server.close();
+      runtime.server.closeAllConnections?.();
       await once(runtime.server, "close");
     },
   };
@@ -1559,6 +1560,38 @@ interface ParsedSseEvent {
   id?: string;
 }
 
+function parseSseBlock(block: string): ParsedSseEvent | null {
+  if (!block.trim()) {
+    return null;
+  }
+  let event = "message";
+  let data = "";
+  let id: string | undefined;
+  let hasEventField = false;
+  let hasDataField = false;
+  let hasIdField = false;
+  for (const line of block.split("\n")) {
+    if (!line || line.startsWith(":")) {
+      continue;
+    }
+    if (line.startsWith("event:")) {
+      hasEventField = true;
+      event = line.slice(line.startsWith("event: ") ? "event: ".length : "event:".length).trim();
+    } else if (line.startsWith("data:")) {
+      hasDataField = true;
+      const fragment = line.slice(line.startsWith("data: ") ? "data: ".length : "data:".length);
+      data = data ? `${data}\n${fragment}` : fragment;
+    } else if (line.startsWith("id:")) {
+      hasIdField = true;
+      id = line.slice(line.startsWith("id: ") ? "id: ".length : "id:".length).trim();
+    }
+  }
+  if (!hasEventField && !hasDataField && !hasIdField) {
+    return null;
+  }
+  return { event, data, id };
+}
+
 async function readAllSseEvents(response: Response): Promise<ParsedSseEvent[]> {
   const body = response.body;
   assert.ok(body, "SSE response must have a body");
@@ -1576,28 +1609,60 @@ async function readAllSseEvents(response: Response): Promise<ParsedSseEvent[]> {
 
   const events: ParsedSseEvent[] = [];
   for (const block of buffer.split(/\n\n/)) {
-    if (!block.trim()) {
-      continue;
+    const event = parseSseBlock(block);
+    if (event) {
+      events.push(event);
     }
-    let event = "message";
-    let data = "";
-    let id: string | undefined;
-    for (const line of block.split("\n")) {
-      if (!line || line.startsWith(":")) {
-        continue;
-      }
-      if (line.startsWith("event:")) {
-        event = line.slice(line.startsWith("event: ") ? "event: ".length : "event:".length).trim();
-      } else if (line.startsWith("data:")) {
-        const fragment = line.slice(line.startsWith("data: ") ? "data: ".length : "data:".length);
-        data = data ? `${data}\n${fragment}` : fragment;
-      } else if (line.startsWith("id:")) {
-        id = line.slice(line.startsWith("id: ") ? "id: ".length : "id:".length).trim();
-      }
-    }
-    events.push({ event, data, id });
   }
   return events;
+}
+
+async function readSseEventsUntil(
+  response: Response,
+  predicate: (events: ParsedSseEvent[]) => boolean,
+  timeoutMs = 5_000,
+): Promise<ParsedSseEvent[]> {
+  const body = response.body;
+  assert.ok(body, "SSE response must have a body");
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  const events: ParsedSseEvent[] = [];
+  let buffer = "";
+  const deadline = Date.now() + timeoutMs;
+
+  try {
+    while (Date.now() <= deadline) {
+      const remainingMs = deadline - Date.now();
+      const chunk = await Promise.race([
+        reader.read(),
+        new Promise<never>((_, reject) => {
+          setTimeout(() => reject(new Error("timed out waiting for SSE events")), remainingMs);
+        }),
+      ]);
+      if (chunk.done) {
+        break;
+      }
+      buffer += decoder.decode(chunk.value, { stream: true });
+      let boundary = buffer.indexOf("\n\n");
+      while (boundary >= 0) {
+        const block = buffer.slice(0, boundary);
+        buffer = buffer.slice(boundary + 2);
+        const event = parseSseBlock(block);
+        if (event) {
+          events.push(event);
+          if (predicate(events)) {
+            await reader.cancel();
+            return events;
+          }
+        }
+        boundary = buffer.indexOf("\n\n");
+      }
+    }
+  } finally {
+    reader.releaseLock();
+  }
+
+  throw new Error(`timed out waiting for SSE events; received ${events.length}`);
 }
 
 test("SSE /a2a/tasks/:id/events streams snapshot plus lifecycle updates and closes on terminal", async () => {
@@ -1651,7 +1716,7 @@ test("SSE /a2a/tasks/:id/events streams snapshot plus lifecycle updates and clos
     });
     assert.equal(sseRes.status, 200);
     assert.match(sseRes.headers.get("content-type") ?? "", /text\/event-stream/);
-    assert.equal(sseRes.headers.get("cache-control"), "no-cache, no-transform");
+    assert.equal(sseRes.headers.get("cache-control"), "no-cache, no-store, no-transform");
 
     const workerHeaders = jsonHeaders({
       "x-a2a-edge-secret": "test-edge-secret",
@@ -1828,6 +1893,145 @@ test("SSE /a2a/tasks/:id/events rejects unauthorized subscribers", async () => {
     });
     assert.equal(missingRes.status, 404);
     await missingRes.body?.cancel();
+  } finally {
+    await server.close();
+  }
+});
+
+test("SSE /a2a/operator/events streams snapshot with current worker heartbeat alerts", async () => {
+  const server = await startTestServer({
+    edgeSecret: "test-edge-secret",
+    workerOfflineAfterSec: 1,
+  });
+  try {
+    await registerTestWorker(server.baseUrl, "worker-a", "analyst", "test-edge-secret");
+    await new Promise((resolve) => setTimeout(resolve, 1_100));
+
+    const sseController = new AbortController();
+    const sseRes = await fetch(`${server.baseUrl}/a2a/operator/events`, {
+      signal: sseController.signal,
+      headers: {
+        "x-a2a-edge-secret": "test-edge-secret",
+        "x-a2a-requester-id": "ops",
+        "x-a2a-requester-role": "operator",
+        accept: "text/event-stream",
+      },
+    });
+    assert.equal(sseRes.status, 200);
+    assert.match(sseRes.headers.get("content-type") ?? "", /text\/event-stream/);
+
+    const events = await readSseEventsUntil(
+      sseRes,
+      (seen) => seen.some((event) => event.event === "operator-snapshot"),
+    );
+    sseController.abort();
+
+    const snapshotEvent = events.find((event) => event.event === "operator-snapshot");
+    assert.ok(snapshotEvent, "expected operator-snapshot event");
+    const snapshot = JSON.parse(snapshotEvent!.data);
+    assert.equal(snapshot.summary.workers.total, 1);
+    assert.equal(
+      snapshot.alerts.alerts.some(
+        (alert: { kind: string; workerId?: string }) =>
+          alert.kind === "worker.heartbeat_missed" && alert.workerId === "worker-a",
+      ),
+      true,
+    );
+  } finally {
+    await server.close();
+  }
+});
+
+test("SSE /a2a/operator/events replays missed alert opened and resolved events with Last-Event-ID", async () => {
+  const server = await startTestServer({
+    edgeSecret: "test-edge-secret",
+    workerOfflineAfterSec: 1,
+  });
+  try {
+    await registerTestWorker(server.baseUrl, "worker-a", "analyst", "test-edge-secret");
+    await new Promise((resolve) => setTimeout(resolve, 1_100));
+
+    const createRes = await fetch(`${server.baseUrl}/tasks`, {
+      method: "POST",
+      headers: jsonHeaders({
+        "x-a2a-edge-secret": "test-edge-secret",
+        "x-a2a-requester-id": "hub-a",
+        "x-a2a-requester-role": "hub",
+      }),
+      body: JSON.stringify({
+        intent: "analyze",
+        requester: { id: "hub-a", kind: "node", role: "hub" },
+        target: { id: "worker-a", kind: "node", role: "analyst" },
+        assignedWorkerId: "worker-a",
+        message: "operator replay check",
+      }),
+    });
+    assert.equal(createRes.status, 201);
+
+    const heartbeatRes = await fetch(`${server.baseUrl}/workers/worker-a/heartbeat`, {
+      method: "POST",
+      headers: jsonHeaders({
+        "x-a2a-edge-secret": "test-edge-secret",
+        "x-a2a-requester-id": "worker-a",
+        "x-a2a-requester-role": "analyst",
+      }),
+      body: JSON.stringify({}),
+    });
+    assert.equal(heartbeatRes.status, 200);
+
+    const replayController = new AbortController();
+    const replayRes = await fetch(`${server.baseUrl}/a2a/operator/events`, {
+      signal: replayController.signal,
+      headers: {
+        "x-a2a-edge-secret": "test-edge-secret",
+        "x-a2a-requester-id": "ops",
+        "x-a2a-requester-role": "operator",
+        accept: "text/event-stream",
+        "Last-Event-ID": "operator:0",
+      },
+    });
+    assert.equal(replayRes.status, 200);
+
+    const replayEvents = await readSseEventsUntil(
+      replayRes,
+      (events) =>
+        events.some((event) => event.event === "operator-alert-opened") &&
+        events.some((event) => event.event === "operator-alert-resolved") &&
+        events.some((event) => event.event === "operator-snapshot"),
+    );
+    replayController.abort();
+
+    const opened = replayEvents.find((event) => event.event === "operator-alert-opened");
+    assert.ok(opened, "expected replayed operator-alert-opened event");
+    assert.equal(JSON.parse(opened!.data).alert.kind, "worker.heartbeat_missed");
+
+    const resolved = replayEvents.find((event) => event.event === "operator-alert-resolved");
+    assert.ok(resolved, "expected replayed operator-alert-resolved event");
+    assert.equal(JSON.parse(resolved!.data).alert.workerId, "worker-a");
+
+    const replaySnapshot = JSON.parse(replayEvents.find((event) => event.event === "operator-snapshot")!.data);
+    assert.equal(
+      replaySnapshot.alerts.alerts.some((alert: { kind: string }) => alert.kind === "worker.heartbeat_missed"),
+      false,
+    );
+  } finally {
+    await server.close();
+  }
+});
+
+test("SSE /a2a/operator/events rejects non-operator subscribers", async () => {
+  const server = await startTestServer({ edgeSecret: "test-edge-secret" });
+  try {
+    const res = await fetch(`${server.baseUrl}/a2a/operator/events`, {
+      headers: {
+        "x-a2a-edge-secret": "test-edge-secret",
+        "x-a2a-requester-id": "researcher-1",
+        "x-a2a-requester-role": "researcher",
+      },
+    });
+    assert.equal(res.status, 401);
+    const body = await res.json();
+    assert.match(body.error.message, /operator\.subscribe requester role must be one of/);
   } finally {
     await server.close();
   }
