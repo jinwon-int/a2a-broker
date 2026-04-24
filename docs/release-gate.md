@@ -83,3 +83,24 @@ This gate is the **operator-facing entry point**. The underlying details remain 
 - `docs/smoke-compose.md` — compose smoke reference
 - `docs/restart-recovery-smoke.md` — recovery drill reference
 - `scripts/restart-recovery-smoke.mjs` — recovery automation (standalone)
+
+## Phase 7b Gate Checklist
+
+Use this checklist when Phase 7b operator-stream work changes:
+
+1. `GET /alerts` emits `worker.heartbeat_missed` once a worker's
+   `lastSeenAt` crosses the offline / missed-heartbeat threshold.
+2. `GET /a2a/operator/events` opens with an `operator-snapshot`
+   event whose `summary` matches the broker-owned dashboard shape and
+   whose `alerts` match the current alert scan.
+3. A worker that goes stale, then heartbeats again, produces
+   `operator-alert-opened` followed by
+   `operator-alert-resolved` for `worker.heartbeat_missed`.
+4. Reconnecting `GET /a2a/operator/events` with `Last-Event-ID`
+   replays missed operator events before sending a fresh
+   `operator-snapshot`.
+5. SSE heartbeats still arrive as `: heartbeat ...` comments so idle
+   operator streams survive proxy timeouts.
+6. `gateway.unhealthy` stays schema-only unless gateway runtime work
+   is explicitly in scope; this phase must not add a synthetic gateway
+   entity or health loop.

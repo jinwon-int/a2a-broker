@@ -219,7 +219,9 @@ Authorization:
   `{ task: A2ATaskProjection }`. `ListTasks` accepts the same
   filters.
 - Live: `GET /a2a/tasks/:id/events` (SSE) and the JSON-RPC
-  `SubscribeToTask` advisory call. See "Event model" below.
+  `SubscribeToTask` advisory call, plus `GET /a2a/operator/events`
+  for operator summary subscribers. See "Event model" and
+  "Operator Event Model" below.
 
 The legacy `loadA2ATaskProtocolStatusById` corresponds to either
 `GET /tasks/:id` (raw record) or JSON-RPC `GetTask` (A2A projection),
@@ -268,6 +270,54 @@ broker. The legacy library exposed one because it ran the reducer
 in-process; this broker owns the reducer and only emits projections.
 A consumer that needs to fan events into its own UI should consume
 the SSE stream and render `A2ATaskProjection` directly.
+
+## Operator Event Model
+
+Operator-facing summary consumers use a separate closed SSE surface at
+`GET /a2a/operator/events`.
+
+This stream reuses the task-subscription transport rules:
+
+- `text/event-stream` response with `retry: 3000`
+- one opening snapshot event on connect
+- `: heartbeat ...` comments every
+  `TASK_SUBSCRIBE_HEARTBEAT_SEC`
+- `Last-Event-ID` replay with broker-owned monotonic sequence ids,
+  then a fresh snapshot before live delivery resumes
+
+The payload shapes are intentionally closed to four schemas:
+
+- `operator-snapshot` — fired once at connect time. Payload:
+  `{ summary, alerts }`, where `summary` is the same broker-owned
+  shape returned by `GET /dashboard` and `alerts` is the same
+  `AlertScanResult` shape returned by `GET /alerts`.
+- `operator-summary-update` — fired when the broker-owned operator
+  summary changes. Payload: `{ summary, alerts }`, where `summary`
+  has the same shape as `GET /dashboard` and `alerts` is the current
+  `AlertScanResult`.
+- `operator-alert-opened` — fired when an alert newly enters the
+  current alert set. Payload: `{ alert }`.
+- `operator-alert-resolved` — fired when an alert leaves the current
+  alert set. Payload: `{ alert }`, carrying the last broker-owned
+  alert snapshot that was open before resolution.
+
+Alert kind notes:
+
+- `worker.heartbeat_missed` is broker-projected from worker
+  `lastSeenAt` crossing the configured offline / missed-heartbeat
+  threshold. This is based on existing worker state only; consumers do
+  not infer it client-side.
+- `gateway.unhealthy` is part of the closed operator alert vocabulary
+  so gateway operators have a stable schema to target, but this broker
+  does **not** synthesize a new gateway entity, health monitor, or
+  runtime from it. Treat it as reserved unless an upstream gateway
+  publisher is explicitly added.
+
+As with task SSE, clients should treat the broker as authoritative and
+apply events in increasing SSE `id:` order. If a single broker state
+change affects both the summary and the alert set, the stream may emit
+one `operator-summary-update` plus zero or more alert-opened /
+alert-resolved events for that revision.
 
 ## Library export surface — retired
 
