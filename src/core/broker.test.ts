@@ -1372,3 +1372,155 @@ test("failTask on already-succeeded returns task without mutation", () => {
   const result = broker.failTask(task.id, "worker-a", { message: "boom" });
   assert.equal(result.status, "succeeded");
 });
+
+test("accepted-task wake planning is durable and duplicate-safe", () => {
+  const broker = new InMemoryA2ABroker();
+  registerWorker(broker, "worker-a");
+
+  const task = broker.createTask({
+    id: "task-wake-1",
+    intent: "chat",
+    requester: { id: "hub-a", kind: "node", role: "hub" },
+    target: { id: "worker-a", kind: "node", role: "analyst" },
+    assignedWorkerId: "worker-a",
+    message: "wake target",
+    payload: {
+      waitRunId: "wait-1",
+      correlationId: "corr-1",
+      parentRunId: "parent-1",
+    },
+  });
+
+  const firstPlan = broker.planAcceptedTaskWake(task.id, {
+    targetSessionKey: "agent:worker-a",
+    targetNodeId: "worker-a",
+    waitRunId: "wait-1",
+    correlationId: "corr-1",
+    parentRunId: "parent-1",
+  });
+  assert.equal(firstPlan.shouldDispatch, true);
+  assert.equal(firstPlan.replayed, false);
+  assert.equal(firstPlan.wake.status, "planned");
+  assert.equal(firstPlan.wake.wakeKey, "corr-1:wait-1");
+  assert.equal(firstPlan.wake.idempotencyKey, "a2a-wake:corr-1:wait-1");
+
+  const scheduled = broker.recordTaskWakeDecision(task.id, {
+    status: "scheduled",
+    runtimeRunId: "run-1",
+    coalesced: false,
+    message: "queued for target wake",
+  });
+  assert.equal(scheduled.wake?.status, "scheduled");
+  assert.equal(scheduled.wake?.runtimeRunId, "run-1");
+
+  const replay = broker.planAcceptedTaskWake(task.id, {
+    targetSessionKey: "agent:worker-a",
+    targetNodeId: "worker-a",
+    waitRunId: "wait-1",
+    correlationId: "corr-1",
+    parentRunId: "parent-1",
+  });
+  assert.equal(replay.replayed, true);
+  assert.equal(replay.shouldDispatch, false);
+  assert.equal(replay.wake.status, "scheduled");
+  assert.equal(replay.wake.replayCount, 1);
+
+  assert.equal(
+    broker.listAuditEvents({ targetId: task.id, action: "task.wake.planned" }).length,
+    1,
+  );
+  assert.equal(
+    broker.listAuditEvents({ targetId: task.id, action: "task.wake.scheduled" }).length,
+    1,
+  );
+});
+
+test("accepted-task wake replay after restart preserves pending and decided state", () => {
+  const broker = new InMemoryA2ABroker();
+  registerWorker(broker, "worker-a");
+
+  const task = broker.createTask({
+    id: "task-wake-restart",
+    intent: "chat",
+    requester: { id: "hub-a", kind: "node", role: "hub" },
+    target: { id: "worker-a", kind: "node", role: "analyst" },
+    assignedWorkerId: "worker-a",
+    message: "wake target",
+  });
+  broker.planAcceptedTaskWake(task.id, {
+    targetSessionKey: "agent:worker-a",
+    targetNodeId: "worker-a",
+    waitRunId: "wait-restart",
+    correlationId: "corr-restart",
+  });
+
+  const restarted = new InMemoryA2ABroker(undefined, broker.exportSnapshot());
+  const replayPlan = restarted.planAcceptedTaskWake(task.id, {
+    targetSessionKey: "agent:worker-a",
+    targetNodeId: "worker-a",
+    waitRunId: "wait-restart",
+    correlationId: "corr-restart",
+  });
+  assert.equal(replayPlan.replayed, true);
+  assert.equal(replayPlan.shouldDispatch, true);
+  assert.equal(replayPlan.wake.status, "planned");
+  assert.equal(replayPlan.wake.replayCount, 1);
+
+  restarted.recordTaskWakeDecision(task.id, {
+    status: "skipped",
+    code: "wake_disabled",
+    message: "Wake-on-Task disabled by default",
+  });
+  const secondRestart = new InMemoryA2ABroker(undefined, restarted.exportSnapshot());
+  const persisted = secondRestart.getTask(task.id);
+  assert.equal(persisted?.wake?.status, "skipped");
+  assert.equal(persisted?.wake?.code, "wake_disabled");
+
+  const replayAfterDecision = secondRestart.planAcceptedTaskWake(task.id, {
+    targetSessionKey: "agent:worker-a",
+    targetNodeId: "worker-a",
+    waitRunId: "wait-restart",
+    correlationId: "corr-restart",
+  });
+  assert.equal(replayAfterDecision.replayed, true);
+  assert.equal(replayAfterDecision.shouldDispatch, false);
+  assert.equal(replayAfterDecision.wake.status, "skipped");
+});
+
+test("accepted-task wake failure is durable and operator-visible", () => {
+  const broker = new InMemoryA2ABroker();
+  registerWorker(broker, "worker-a");
+
+  const task = broker.createTask({
+    id: "task-wake-failure",
+    intent: "chat",
+    requester: { id: "hub-a", kind: "node", role: "hub" },
+    target: { id: "worker-a", kind: "node", role: "analyst" },
+    assignedWorkerId: "worker-a",
+    message: "wake target",
+  });
+  broker.planAcceptedTaskWake(task.id, {
+    targetSessionKey: "agent:worker-a",
+    targetNodeId: "worker-a",
+    waitRunId: "wait-fail",
+    correlationId: "corr-fail",
+  });
+  broker.recordTaskWakeDecision(task.id, {
+    status: "failed",
+    code: "wake_dispatch_failed",
+    message: "runtime unavailable",
+  });
+
+  const restarted = new InMemoryA2ABroker(undefined, broker.exportSnapshot());
+  const persisted = restarted.getTask(task.id);
+  assert.equal(persisted?.wake?.status, "failed");
+  assert.equal(persisted?.wake?.code, "wake_dispatch_failed");
+  assert.equal(persisted?.wake?.message, "runtime unavailable");
+
+  const failures = restarted.listAuditEvents({
+    targetId: task.id,
+    action: "task.wake.failed",
+  });
+  assert.equal(failures.length, 1);
+  assert.match(failures[0].note ?? "", /runtime unavailable/);
+});

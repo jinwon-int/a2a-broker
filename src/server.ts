@@ -54,6 +54,8 @@ import type {
   TaskReassignRequest,
   TaskRecord,
   TaskStatus,
+  TaskWakeDecisionRequest,
+  TaskWakePlanRequest,
   WorkerHeartbeatRequest,
   WorkerListFilters,
   A2AWorkerEnvironment,
@@ -945,6 +947,44 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
           broker.getTaskDiagnostics(task.id, { staleAfterMs, longRunningAfterMs }),
         );
         return sendJson(res, 200, { items: reports, generatedAt: new Date().toISOString() });
+      }
+
+      if (
+        req.method === "POST" &&
+        segments[0] === "tasks" &&
+        segments[1] &&
+        segments[2] === "wake" &&
+        segments[3] === "plan" &&
+        segments.length === 4
+      ) {
+        const body = await readJson<TaskWakePlanRequest>(req);
+        if (!body?.targetSessionKey) {
+          throw new BrokerError("bad_request", "targetSessionKey is required");
+        }
+        if (enforceRequesterIdentity) {
+          assertRequesterHasRole(requesterIdentity, ["hub", "operator"], "task.wake.plan");
+        }
+        const result = broker.planAcceptedTaskWake(segments[1], body);
+        return sendJson(res, result.replayed ? 200 : 201, result);
+      }
+
+      if (
+        req.method === "POST" &&
+        segments[0] === "tasks" &&
+        segments[1] &&
+        segments[2] === "wake" &&
+        segments[3] === "decision" &&
+        segments.length === 4
+      ) {
+        const body = await readJson<TaskWakeDecisionRequest>(req);
+        if (!body?.status) {
+          throw new BrokerError("bad_request", "status is required");
+        }
+        if (enforceRequesterIdentity) {
+          assertRequesterHasRole(requesterIdentity, ["hub", "operator"], "task.wake.decision");
+        }
+        const task = broker.recordTaskWakeDecision(segments[1], body);
+        return sendJson(res, 200, task);
       }
 
       if (req.method === "GET" && segments[0] === "tasks" && segments[1] && segments.length === 2) {
