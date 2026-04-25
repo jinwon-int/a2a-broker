@@ -43,6 +43,10 @@ import type {
   TaskReassignRequest,
   TaskResult,
   TaskStatus,
+  TaskWakeDecisionRequest,
+  TaskWakePlanRequest,
+  TaskWakePlanResult,
+  TaskWakeState,
   ValidationResult,
   WorkerFleetSummary,
   WorkerHeartbeatRequest,
@@ -131,7 +135,11 @@ export type TaskUpdateReason =
   | "canceled"
   | "reassigned"
   | "requeued"
-  | "dead_lettered";
+  | "dead_lettered"
+  | "wake_planned"
+  | "wake_scheduled"
+  | "wake_skipped"
+  | "wake_failed";
 
 export interface TaskUpdate {
   task: TaskRecord;
@@ -842,6 +850,110 @@ export class InMemoryA2ABroker {
     });
     this.persistState();
     this.emitTaskUpdate(task, "created");
+    return task;
+  }
+
+  planAcceptedTaskWake(taskId: string, request: TaskWakePlanRequest): TaskWakePlanResult {
+    const task = this.requireTask(taskId);
+    if (!request.targetSessionKey?.trim()) {
+      throw new BrokerError("bad_request", "targetSessionKey is required");
+    }
+    if (isTerminalTaskStatus(task.status)) {
+      throw new BrokerError("invalid_transition", `cannot plan wake for terminal task ${task.status}`);
+    }
+
+    const wakeKey = buildTaskWakeKey(task, request);
+    const idempotencyKey = normalizeWakeString(request.idempotencyKey) ?? `a2a-wake:${wakeKey}`;
+    const existing = task.wake;
+    if (existing) {
+      if (existing.wakeKey !== wakeKey) {
+        throw new BrokerError("invalid_transition", "task wake already planned with a different wake key");
+      }
+      task.wake = {
+        ...existing,
+        replayCount: (existing.replayCount ?? 0) + 1,
+        updatedAt: isoNow(),
+      };
+      this.tasks.set(task.id, task);
+      this.persistState();
+      return {
+        task,
+        wake: task.wake,
+        shouldDispatch: existing.status === "planned",
+        replayed: true,
+      };
+    }
+
+    const now = isoNow();
+    const wake: TaskWakeState = {
+      status: "planned",
+      wakeKey,
+      idempotencyKey,
+      targetSessionKey: request.targetSessionKey.trim(),
+      ...(normalizeWakeString(request.targetNodeId) ? { targetNodeId: normalizeWakeString(request.targetNodeId) } : {}),
+      ...(normalizeWakeString(request.waitRunId) ? { waitRunId: normalizeWakeString(request.waitRunId) } : {}),
+      ...(normalizeWakeString(request.correlationId) ? { correlationId: normalizeWakeString(request.correlationId) } : {}),
+      ...(normalizeWakeString(request.parentRunId) ? { parentRunId: normalizeWakeString(request.parentRunId) } : {}),
+      ...(normalizeWakeString(request.message) ? { message: normalizeWakeString(request.message) } : {}),
+      plannedAt: now,
+      updatedAt: now,
+      replayCount: 0,
+    };
+
+    task.wake = wake;
+    task.updatedAt = now;
+    this.tasks.set(task.id, task);
+    this.appendAuditEvent({
+      actorId: task.requester.id,
+      action: "task.wake.planned",
+      targetType: "task",
+      targetId: task.id,
+      proposalId: task.proposalId,
+      note: wake.message ?? wake.wakeKey,
+    });
+    this.persistState();
+    this.emitTaskUpdate(task, "wake_planned");
+    return { task, wake, shouldDispatch: true, replayed: false };
+  }
+
+  recordTaskWakeDecision(taskId: string, request: TaskWakeDecisionRequest): TaskRecord {
+    const task = this.requireTask(taskId);
+    if (!task.wake) {
+      throw new BrokerError("invalid_transition", "task wake has not been planned");
+    }
+    const existing = task.wake;
+    if (existing.status !== "planned") {
+      if (existing.status === request.status) {
+        return task;
+      }
+      throw new BrokerError("invalid_transition", `task wake already decided as ${existing.status}`);
+    }
+
+    const now = isoNow();
+    const message = normalizeWakeString(request.message) ?? defaultWakeDecisionMessage(request.status);
+    task.wake = {
+      ...existing,
+      status: request.status,
+      ...(request.coalesced !== undefined ? { coalesced: request.coalesced } : {}),
+      ...(normalizeWakeString(request.runtimeRunId) ? { runtimeRunId: normalizeWakeString(request.runtimeRunId) } : {}),
+      ...(normalizeWakeString(request.code) ? { code: normalizeWakeString(request.code) } : {}),
+      message,
+      decidedAt: now,
+      updatedAt: now,
+    };
+    task.updatedAt = now;
+    this.tasks.set(task.id, task);
+    const action = wakeDecisionAuditAction(request.status);
+    this.appendAuditEvent({
+      actorId: "broker",
+      action,
+      targetType: "task",
+      targetId: task.id,
+      proposalId: task.proposalId,
+      note: `${request.status}: ${message}`,
+    });
+    this.persistState();
+    this.emitTaskUpdate(task, wakeDecisionUpdateReason(request.status));
     return task;
   }
 
@@ -3110,6 +3222,70 @@ function normalizeTaskError(error: TaskError | undefined): TaskError {
   };
 }
 
+function normalizeWakeString(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function buildTaskWakeKey(task: TaskRecord, request: TaskWakePlanRequest): string {
+  const explicit = normalizeWakeString(request.wakeKey);
+  if (explicit) {
+    return explicit;
+  }
+  const stableCorrelation =
+    normalizeWakeString(request.correlationId) ??
+    normalizeWakeString(task.payload.correlationId) ??
+    task.id;
+  const stableRun =
+    normalizeWakeString(request.waitRunId) ??
+    normalizeWakeString(task.payload.waitRunId) ??
+    normalizeWakeString(request.targetSessionKey) ??
+    task.targetNodeId;
+  return `${stableCorrelation}:${stableRun}`;
+}
+
+function defaultWakeDecisionMessage(status: Exclude<TaskWakeState["status"], "planned">): string {
+  switch (status) {
+    case "scheduled":
+      return "Wake-on-Task scheduled.";
+    case "skipped":
+      return "Wake-on-Task skipped.";
+    case "failed":
+      return "Wake-on-Task failed.";
+  }
+}
+
+function wakeDecisionAuditAction(status: Exclude<TaskWakeState["status"], "planned">): AuditAction {
+  switch (status) {
+    case "scheduled":
+      return "task.wake.scheduled";
+    case "skipped":
+      return "task.wake.skipped";
+    case "failed":
+      return "task.wake.failed";
+  }
+}
+
+function wakeDecisionUpdateReason(status: Exclude<TaskWakeState["status"], "planned">): TaskUpdateReason {
+  switch (status) {
+    case "scheduled":
+      return "wake_scheduled";
+    case "skipped":
+      return "wake_skipped";
+    case "failed":
+      return "wake_failed";
+  }
+}
+
+function normalizeTaskWakeState(wake: TaskWakeState | undefined): TaskWakeState | undefined {
+  if (!wake) {
+    return undefined;
+  }
+  return {
+    ...wake,
+    replayCount: wake.replayCount ?? 0,
+  };
+}
+
 function normalizeTaskRecord(task: TaskRecord): TaskRecord {
   return {
     ...task,
@@ -3120,6 +3296,7 @@ function normalizeTaskRecord(task: TaskRecord): TaskRecord {
     result: task.result ? normalizeTaskResult(task.result) : undefined,
     error: task.error ? normalizeTaskError(task.error) : undefined,
     attemptId: task.attemptId,
+    wake: normalizeTaskWakeState(task.wake),
   };
 }
 

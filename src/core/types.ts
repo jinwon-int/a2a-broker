@@ -61,6 +61,10 @@ export type AuditAction =
   | "task.failed"
   | "task.canceled"
   | "task.tombstoned"
+  | "task.wake.planned"
+  | "task.wake.scheduled"
+  | "task.wake.skipped"
+  | "task.wake.failed"
   | "worker.registered"
   | "worker.heartbeat";
 export type A2AWorkerEnvironment = "research" | "staging" | "live";
@@ -207,6 +211,53 @@ export interface TaskCancellationInfo {
   sourceTaskId?: string;
 }
 
+export type TaskWakeStatus = "planned" | "scheduled" | "skipped" | "failed";
+
+export interface TaskWakeState {
+  status: TaskWakeStatus;
+  wakeKey: string;
+  idempotencyKey: string;
+  targetSessionKey: string;
+  targetNodeId?: string;
+  waitRunId?: string;
+  correlationId?: string;
+  parentRunId?: string;
+  coalesced?: boolean;
+  runtimeRunId?: string;
+  code?: string;
+  message?: string;
+  plannedAt: string;
+  updatedAt: string;
+  decidedAt?: string;
+  replayCount?: number;
+}
+
+export interface TaskWakePlanRequest {
+  targetSessionKey: string;
+  targetNodeId?: string;
+  waitRunId?: string;
+  correlationId?: string;
+  parentRunId?: string;
+  wakeKey?: string;
+  idempotencyKey?: string;
+  message?: string;
+}
+
+export interface TaskWakeDecisionRequest {
+  status: Exclude<TaskWakeStatus, "planned">;
+  coalesced?: boolean;
+  runtimeRunId?: string;
+  code?: string;
+  message?: string;
+}
+
+export interface TaskWakePlanResult {
+  task: TaskRecord;
+  wake: TaskWakeState;
+  shouldDispatch: boolean;
+  replayed: boolean;
+}
+
 export interface TaskRecord extends A2ATaskRequest {
   intent: TaskKind;
   status: TaskStatus;
@@ -237,6 +288,8 @@ export interface TaskRecord extends A2ATaskRequest {
    * Reset on requeue/reassign. Each attempt represents a discrete execution window.
    */
   attemptId?: string;
+  /** Durable Wake-on-Task decision state for accepted-task replay/idempotency. */
+  wake?: TaskWakeState;
 }
 
 export interface TaskClaimRequest {

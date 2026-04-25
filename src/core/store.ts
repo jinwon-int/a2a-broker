@@ -15,7 +15,7 @@ import type {
   WorkerRecord,
 } from "./types.js";
 
-export const CURRENT_BROKER_STATE_VERSION = 6;
+export const CURRENT_BROKER_STATE_VERSION = 7;
 export const DEFAULT_BROKER_STATE_MAX_BYTES = 50 * 1024 * 1024;
 
 export interface BrokerSnapshot {
@@ -153,6 +153,28 @@ const taskPolicyContextSchema = z
   })
   .passthrough();
 
+
+const taskWakeSchema = z
+  .object({
+    status: z.enum(["planned", "scheduled", "skipped", "failed"]),
+    wakeKey: z.string().min(1),
+    idempotencyKey: z.string().min(1),
+    targetSessionKey: z.string().min(1),
+    targetNodeId: z.string().min(1).optional(),
+    waitRunId: z.string().min(1).optional(),
+    correlationId: z.string().min(1).optional(),
+    parentRunId: z.string().min(1).optional(),
+    coalesced: z.boolean().optional(),
+    runtimeRunId: z.string().min(1).optional(),
+    code: z.string().min(1).optional(),
+    message: z.string().optional(),
+    plannedAt: z.string().min(1),
+    updatedAt: z.string().min(1),
+    decidedAt: z.string().min(1).optional(),
+    replayCount: z.number().int().nonnegative().optional(),
+  })
+  .passthrough();
+
 const taskSchema = z
   .object({
     id: z.string().min(1),
@@ -182,6 +204,7 @@ const taskSchema = z
     requeueCount: z.number().int().nonnegative().optional(),
     lastHeartbeatAt: z.string().optional(),
     attemptId: z.string().min(1).optional(),
+    wake: taskWakeSchema.optional(),
   })
   .passthrough();
 

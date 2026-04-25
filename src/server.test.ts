@@ -2519,3 +2519,75 @@ test("trading-dialectic route rejects unsupported version with 400", async () =>
     await server.close();
   }
 });
+
+test("server persists task wake plan and decision through HTTP", async () => {
+  const server = await startTestServer();
+  try {
+    await registerTestWorker(server.baseUrl, "worker-a", "analyst");
+    const hubHeaders = jsonHeaders({
+      "x-a2a-requester-id": "hub-a",
+      "x-a2a-requester-role": "hub",
+    });
+
+    const createRes = await fetch(`${server.baseUrl}/tasks`, {
+      method: "POST",
+      headers: hubHeaders,
+      body: JSON.stringify({
+        id: "task-wake-http",
+        intent: "chat",
+        requester: { id: "hub-a", kind: "node", role: "hub" },
+        target: { id: "worker-a", kind: "node", role: "analyst" },
+        assignedWorkerId: "worker-a",
+        message: "wake target",
+        payload: { waitRunId: "wait-http", correlationId: "corr-http" },
+      }),
+    });
+    assert.equal(createRes.status, 201);
+
+    const planRes = await fetch(`${server.baseUrl}/tasks/task-wake-http/wake/plan`, {
+      method: "POST",
+      headers: hubHeaders,
+      body: JSON.stringify({
+        targetSessionKey: "agent:worker-a",
+        targetNodeId: "worker-a",
+        waitRunId: "wait-http",
+        correlationId: "corr-http",
+      }),
+    });
+    assert.equal(planRes.status, 201);
+    const plan = await planRes.json() as Record<string, unknown>;
+    assert.equal(plan.shouldDispatch, true);
+    assert.equal((plan.wake as Record<string, unknown>).wakeKey, "corr-http:wait-http");
+
+    const decisionRes = await fetch(`${server.baseUrl}/tasks/task-wake-http/wake/decision`, {
+      method: "POST",
+      headers: hubHeaders,
+      body: JSON.stringify({
+        status: "skipped",
+        code: "wake_disabled",
+        message: "default off",
+      }),
+    });
+    assert.equal(decisionRes.status, 200);
+    const task = await decisionRes.json() as Record<string, unknown>;
+    assert.equal((task.wake as Record<string, unknown>).status, "skipped");
+    assert.equal((task.wake as Record<string, unknown>).code, "wake_disabled");
+
+    const replayRes = await fetch(`${server.baseUrl}/tasks/task-wake-http/wake/plan`, {
+      method: "POST",
+      headers: hubHeaders,
+      body: JSON.stringify({
+        targetSessionKey: "agent:worker-a",
+        targetNodeId: "worker-a",
+        waitRunId: "wait-http",
+        correlationId: "corr-http",
+      }),
+    });
+    assert.equal(replayRes.status, 200);
+    const replay = await replayRes.json() as Record<string, unknown>;
+    assert.equal(replay.replayed, true);
+    assert.equal(replay.shouldDispatch, false);
+  } finally {
+    await server.close();
+  }
+});
