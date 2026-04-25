@@ -722,6 +722,10 @@ JSON-RPC 2.0 endpoint. Supported methods:
 - `CancelTask` — cancel a task owned by the caller. If the task has descendants linked by
   `parentTaskId`, the broker fans the cancel out to every non-terminal child task recursively.
   Repeated cancel calls are idempotent and return the original terminal task snapshot unchanged.
+  Direct cancel requests accept `{ taskId, actor?, reason? }`. The resulting broker task includes
+  `cancellation: { requestedAt, requestedBy, reason?, sourceTaskId? }`; `sourceTaskId` appears only
+  on fan-out descendants and points to the immediate parent that caused the child cancel. Terminal
+  descendants are not mutated or re-emitted.
 - `SubscribeToTask` — return the current snapshot and the SSE URL clients should
   connect to for live updates. The actual stream is served at
   `GET /a2a/tasks/:id/events` because JSON-RPC over a single POST cannot carry a

@@ -139,6 +139,7 @@ Operational note:
 - Local apply remains target-node or operator only, even after approval.
 - Task lineage uses optional `parentTaskId`. Canceling a parent task now fans out to every non-terminal descendant.
 - Repeated `CancelTask` / `POST /tasks/:id/cancel` calls are idempotent. The broker returns the existing terminal task unchanged and keeps the original cancellation record.
+- Cancel terminal metadata is stored on `TaskRecord.cancellation` as `requestedAt`, `requestedBy`, optional `reason`, and optional `sourceTaskId`. `sourceTaskId` is set only for fan-out descendants and points to the immediate parent task that caused the child cancel.
 
 ## Stale-task reaper
 
