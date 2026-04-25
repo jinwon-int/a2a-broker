@@ -71,6 +71,7 @@ Equivalence rules a v1 envelope must satisfy:
 | `assignedWorkerId` | `A2ATaskRequest.assignedWorkerId` | Optional pin at create time. |
 | `workspace` | `A2ATaskRequest.workspace` | `WorkspaceRef` for proposal / apply intents. |
 | `payload` | `TaskRecord.payload` | Structured fields the worker reads. |
+| `parentTaskId` | `TaskRecord.parentTaskId` | Optional lineage link. Canceling a parent task fans out to non-terminal descendants. |
 | `message` | `A2ATaskRequest.message` | Free-text prompt. |
 | `proposalId`, `artifactIds` | `A2ATaskRequest.*` | Set when the task references a proposal lifecycle. |
 | `via` | `A2ATaskRequest.via` | Transport / channel / trace context. |
@@ -78,6 +79,7 @@ Equivalence rules a v1 envelope must satisfy:
 | `status` | `TaskRecord.status` | Broker-owned. See state model below. |
 | `result` | `TaskRecord.result` | Worker-supplied on `complete`. |
 | `error` | `TaskRecord.error` | Worker-supplied on `fail`, or broker-supplied on dead-letter. |
+| `cancellation` | `TaskRecord.cancellation` | Broker-written terminal cancel metadata: `requestedAt`, `requestedBy`, optional `reason`, optional `sourceTaskId`. |
 
 For the read-side projection a JSON-RPC client receives, see
 `projectBrokerTask` in `src/a2a/task-projection.ts` — it returns
@@ -200,6 +202,55 @@ Wire forms:
 - JSON-RPC: `CancelTask` with `{ taskId, actor?, reason? }`. The
   caller resolves `runId` from `GetTask` / `ListTasks` / its stored
   `contextId -> runId` mapping first.
+
+Canonical cancel fields:
+
+| Field | Writer | Meaning |
+|---|---|---|
+| `actor.id` | caller | Requester, worker, hub, or operator identity asking for cancel. |
+| `actor.kind` | caller | Optional `session`, `node`, `user`, or `service` hint. |
+| `actor.role` | caller | Optional role; `hub` and `operator` may cancel any non-terminal task. |
+| `reason` | caller | Optional human-readable reason. Stored on the terminal `cancellation` record and audit note. |
+| `cancellation.requestedAt` | broker | Terminal timestamp for the cancel transition. |
+| `cancellation.requestedBy` | broker | The accepted `actor.id`. |
+| `cancellation.reason` | broker | The accepted reason, if supplied. |
+| `cancellation.sourceTaskId` | broker | Present only on fan-out descendants; points to the immediate parent task whose cancellation caused this task to cancel. |
+
+Fan-out contract:
+
+- Cancel is task-scoped. The top-level task named in the request is
+  canceled first, then the broker recursively walks `parentTaskId`
+  lineage and cancels every non-terminal descendant.
+- Terminal descendants (`succeeded`, `failed`, `canceled`) are left
+  unchanged. They do not receive new audit events, tombstones, or SSE
+  updates.
+- A direct cancel has no `cancellation.sourceTaskId`. For fan-out, each
+  child stores the immediate parent task id as `sourceTaskId`; a
+  grandchild therefore points to its parent child, not necessarily to
+  the original top-level request.
+- Repeated cancel on a terminal task is idempotent. The broker returns
+  the existing task snapshot and preserves the first `cancellation`
+  record, `completedAt`, audit event, tombstone, and final SSE event.
+- A successful cancel clears transient execution fields (`claimedBy`,
+  `claimedAt`, `result`, `error`), sets `completedAt`, writes a
+  `task.canceled` audit event, emits a final task SSE update, writes a
+  cancel tombstone, and syncs an exchange-linked task back to a queued
+  exchange state so waiters do not remain orphaned.
+
+Timeout and cleanup boundary:
+
+- Broker stale recovery is not a cancel. Stale claimed/running tasks may
+  requeue, and tasks that exceed the requeue cap dead-letter to
+  `failed` with `error.code = "exceeded_requeue_limit"`.
+- A plugin-owned timeout watchdog may call the broker cancel route to
+  clean up an in-flight delegated task, while projecting a higher-level
+  OpenClaw execution status such as `timed_out`. Broker consumers should
+  use the broker terminal status (`canceled`) plus `cancellation.reason`
+  for broker state, and should not infer timeout solely from a canceled
+  broker task.
+- Worker-reported timeout failures remain explicit failures: a worker
+  that calls `failTask` with a timeout-flavored error produces broker
+  `status = "failed"`, not `"canceled"`.
 
 Authorization:
 
