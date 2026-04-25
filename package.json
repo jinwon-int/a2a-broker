@@ -6,7 +6,7 @@
   "description": "Minimal standalone A2A broker scaffold",
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "test": "npm run build && node --test dist/*.test.js dist/core/*.test.js dist/a2a/*.test.js",
+    "test": "npm run build && node --test dist/*.test.js dist/core/*.test.js dist/a2a/*.test.js dist/github/*.test.js",
     "test:worker": "npm run build && node --test dist/worker.test.js",
     "start": "node dist/server.js",
     "start:worker": "node dist/worker.js",
