@@ -4,7 +4,12 @@ import assert from "node:assert/strict";
 import { InMemoryA2ABroker } from "../core/broker.js";
 import type { WorkerRecord } from "../core/types.js";
 import { executeA2AJsonRpc, type ExecuteJsonRpcOptions, type JsonRpcSuccess, type JsonRpcFailure } from "./json-rpc.js";
-import { PeerStatusService, type PeerStatusResponse, type PeerStatusError } from "./peer-status.js";
+import {
+  PEER_STATUS_VERBOSE_SCOPE,
+  PeerStatusService,
+  type PeerStatusResponse,
+  type PeerStatusError,
+} from "./peer-status.js";
 import { createBrokerAgentCard } from "./agent-card.js";
 
 // ---------------------------------------------------------------------------
@@ -117,6 +122,57 @@ test("PeerStatus returns unauthenticated without caller identity", () => {
   assert.ok("error" in result);
   if (!("error" in result)) return;
   assert.equal((result.error?.data as Record<string, unknown>)?.brokerCode, "unauthenticated");
+});
+
+test("PeerStatus denies verbose queries without explicit scope", () => {
+  const broker = createBroker();
+  registerWorker(broker, "worker-a");
+  const options = createJsonRpcOptions(broker);
+
+  const result = executeA2AJsonRpc(
+    {
+      jsonrpc: "2.0",
+      id: 1,
+      method: "PeerStatus",
+      params: { target: "worker-a", verbose: true },
+    },
+    options,
+  );
+  assert.ok("error" in result, "should be an error response");
+  if (!("error" in result)) return;
+
+  assert.equal(result.error.code, -32003);
+  assert.equal((result.error?.data as Record<string, unknown>)?.brokerCode, "scope_denied");
+  assert.equal((result.error?.data as Record<string, unknown>)?.requiredScope, PEER_STATUS_VERBOSE_SCOPE);
+});
+
+test("PeerStatus accepts verbose queries with explicit scope", () => {
+  const broker = createBroker();
+  registerWorker(broker, "worker-a");
+  const options = createJsonRpcOptions(broker, {
+    requesterIdentity: {
+      id: "caller-node",
+      kind: "node",
+      role: "hub",
+      scopes: [PEER_STATUS_VERBOSE_SCOPE],
+    },
+  });
+
+  const result = executeA2AJsonRpc(
+    {
+      jsonrpc: "2.0",
+      id: 1,
+      method: "PeerStatus",
+      params: { target: "worker-a", verbose: true },
+    },
+    options,
+  );
+  assert.ok("result" in result, "should be a success response");
+  if (!("result" in result)) return;
+
+  const data = result.result as PeerStatusResponse;
+  assert.equal(data.target, "worker-a");
+  assert.equal(data.health, "ok");
 });
 
 test("PeerStatus returns method not found without peerStatusService", () => {
@@ -252,7 +308,7 @@ test("rate limiting is per (caller, target) pair", () => {
 // Tests: Privacy
 // ---------------------------------------------------------------------------
 
-test("response contains no sensitive fields", () => {
+test("default summary response stays allow-listed and contains no sensitive fields", () => {
   const broker = createBroker();
   registerWorker(broker, "worker-a");
   const service = new PeerStatusService(broker);
@@ -260,10 +316,26 @@ test("response contains no sensitive fields", () => {
   const result = service.query({ target: "worker-a" }, "caller");
   assert.ok(isPeerStatusResponse(result));
 
+  const response = result as PeerStatusResponse;
+  assert.deepEqual(
+    Object.keys(response).sort(),
+    ["cacheAgeMs", "gateway", "health", "observedAt", "rateLimit", "schemaVersion", "target", "tasks", "worker"],
+  );
+  assert.ok(
+    Object.keys(response.gateway).every((key) => ["reachable", "version", "mode"].includes(key)),
+    "gateway shape should stay within the read-only summary contract",
+  );
+  assert.ok(
+    Object.keys(response.worker).every((key) => ["registered", "lastHeartbeatAt", "capacity"].includes(key)),
+    "worker shape should stay within the read-only summary contract",
+  );
+  assert.deepEqual(Object.keys(response.tasks).sort(), ["active", "queued", "stale"]);
+
   const responseStr = JSON.stringify(result);
 
   // These should never appear
   const forbidden = [
+    "message", "promptTokens", "completionTokens", "costUsd", "exchangeId", "taskId", "contextId",
     "sessionId", "sessionLabel", "transcript",
     "toolCall", "toolResult", "prompt", "systemPrompt",
     "memory", "telegram", "password", "token", "secret",

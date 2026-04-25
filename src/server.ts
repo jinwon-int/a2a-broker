@@ -121,6 +121,11 @@ interface BufferedOperatorEvent {
   data: OperatorEventPayload;
 }
 
+interface OperatorReplayWindow {
+  oldestBufferedSeq: number | null;
+  currentSeq: number;
+}
+
 const DEFAULT_DASHBOARD_RECENT_HISTORY_LIMIT = 10;
 const DEFAULT_DASHBOARD_OLDEST_PENDING_LIMIT = 5;
 const DEFAULT_DASHBOARD_PENDING_ACTION_LIMIT = 5;
@@ -399,6 +404,11 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
   const replayOperatorEvents = (afterSeq: number): BufferedOperatorEvent[] =>
     operatorEventBuffer.filter((event) => event.seq > afterSeq);
 
+  const currentOperatorReplayWindow = (): OperatorReplayWindow => ({
+    oldestBufferedSeq: operatorEventBuffer[0]?.seq ?? null,
+    currentSeq: operatorEventSeq,
+  });
+
   const subscribeToOperatorEvents = (
     listener: (event: BufferedOperatorEvent) => void,
   ): (() => void) => {
@@ -586,7 +596,7 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
           currentSnapshot: currentOperatorSnapshot,
           replayEvents: replayOperatorEvents,
           subscribe: subscribeToOperatorEvents,
-          currentSeq: () => operatorEventSeq,
+          replayWindow: currentOperatorReplayWindow,
           heartbeatMs: taskSubscribeHeartbeatSec * 1000,
         });
         return;
@@ -1634,6 +1644,28 @@ function parseOperatorSseEventId(raw: string): number | null {
   return seq;
 }
 
+function resolveOperatorReplayAfterSeq(
+  rawLastEventId: string | undefined,
+  replayWindow: OperatorReplayWindow,
+): number | null {
+  if (!rawLastEventId) {
+    return null;
+  }
+
+  const parsed = parseOperatorSseEventId(rawLastEventId);
+  if (parsed === null) {
+    return null;
+  }
+  if (parsed > replayWindow.currentSeq) {
+    return null;
+  }
+  if (replayWindow.oldestBufferedSeq !== null && parsed < replayWindow.oldestBufferedSeq - 1) {
+    return null;
+  }
+
+  return parsed;
+}
+
 function sendError(res: ServerResponse<IncomingMessage>, error: unknown): void {
   if (error instanceof BrokerError) {
     const status = statusCodeFor(error.code);
@@ -1827,22 +1859,18 @@ function handleOperatorEventStream(
     currentSnapshot: () => OperatorSnapshotEvent;
     replayEvents: (afterSeq: number) => BufferedOperatorEvent[];
     subscribe: (listener: (event: BufferedOperatorEvent) => void) => () => void;
-    currentSeq: () => number;
+    replayWindow: () => OperatorReplayWindow;
     heartbeatMs: number;
   },
 ): void {
   writeSseResponseHeaders(res);
 
-  const lastEventIdHeader = req.headers["last-event-id"] as string | undefined;
-  let replayAfterSeq = -1;
-  if (lastEventIdHeader) {
-    const parsed = parseOperatorSseEventId(lastEventIdHeader);
-    if (parsed !== null) {
-      replayAfterSeq = parsed;
-    }
-  }
+  const replayAfterSeq = resolveOperatorReplayAfterSeq(
+    req.headers["last-event-id"] as string | undefined,
+    params.replayWindow(),
+  );
 
-  if (replayAfterSeq >= 0) {
+  if (replayAfterSeq !== null) {
     const missed = params.replayEvents(replayAfterSeq);
     for (const buffered of missed) {
       writeSseEvent(
@@ -1854,7 +1882,7 @@ function handleOperatorEventStream(
     }
   }
 
-  const snapshotSeq = params.currentSeq();
+  const snapshotSeq = params.replayWindow().currentSeq;
   writeSseEvent(
     res,
     "operator-snapshot",

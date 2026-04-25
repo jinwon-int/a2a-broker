@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { IncomingMessage } from "node:http";
 
-import { rateLimitKey } from "./request-security.js";
+import { extractRequesterIdentity, rateLimitKey } from "./request-security.js";
 
 function createRequest(params: {
   headers?: Record<string, string>;
@@ -45,5 +45,32 @@ test("rateLimitKey always prefers requester identity over proxy headers", () => 
       { trustedProxy: true },
     ),
     "requester:worker-a",
+  );
+});
+
+test("extractRequesterIdentity parses requester scopes from headers", () => {
+  const request = createRequest({
+    headers: {
+      "x-a2a-requester-id": "worker-a",
+      "x-a2a-requester-scopes": "z.scope,a2a.peer.status.verbose z.scope",
+    },
+  });
+
+  assert.deepEqual(extractRequesterIdentity(request), {
+    id: "worker-a",
+    scopes: ["a2a.peer.status.verbose", "z.scope"],
+  });
+});
+
+test("extractRequesterIdentity rejects scopes headers without requester id", () => {
+  const request = createRequest({
+    headers: {
+      "x-a2a-requester-scopes": "a2a.peer.status.verbose",
+    },
+  });
+
+  assert.throws(
+    () => extractRequesterIdentity(request),
+    /x-a2a-requester-id is required/,
   );
 });

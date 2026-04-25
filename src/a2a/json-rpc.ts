@@ -2,7 +2,7 @@ import { BrokerError, type InMemoryA2ABroker } from "../core/broker.js";
 import type { RequesterIdentity } from "../core/request-security.js";
 import type { A2AExchangeVia, TaskListFilters } from "../core/types.js";
 import type { AgentCard } from "./agent-card.js";
-import { PeerStatusService, type PeerStatusRequest } from "./peer-status.js";
+import { PEER_STATUS_VERBOSE_SCOPE, PeerStatusService, type PeerStatusRequest } from "./peer-status.js";
 import { projectBrokerTask } from "./task-projection.js";
 
 export type JsonRpcId = string | number | null;
@@ -139,6 +139,16 @@ export function executeA2AJsonRpc(
           throw new Error("target is required");
         }
 
+        if (
+          peerRequest.verbose &&
+          !options.requesterIdentity.scopes?.includes(PEER_STATUS_VERBOSE_SCOPE)
+        ) {
+          return failure(id, -32003, `missing required scope: ${PEER_STATUS_VERBOSE_SCOPE}`, {
+            brokerCode: "scope_denied",
+            requiredScope: PEER_STATUS_VERBOSE_SCOPE,
+          });
+        }
+
         // Check that target worker exists
         const targetWorker = options.broker.getWorker(peerRequest.target);
         if (!targetWorker) {
@@ -147,15 +157,22 @@ export function executeA2AJsonRpc(
           });
         }
 
-        const result = options.peerStatusService.query(peerRequest, options.requesterIdentity.id);
+        const result = options.peerStatusService.query(peerRequest, {
+          callerId: options.requesterIdentity.id,
+          scopes: options.requesterIdentity.scopes,
+        });
 
         if ("errorCode" in result) {
           const errorData: Record<string, unknown> = { brokerCode: result.errorCode };
           if (result.retryAfterMs !== undefined) {
             errorData.retryAfterMs = result.retryAfterMs;
           }
+          if (result.requiredScope !== undefined) {
+            errorData.requiredScope = result.requiredScope;
+          }
           const rpcCode = result.errorCode === "rate_limited" ? -32029
             : result.errorCode === "unauthenticated" ? -32001
+            : result.errorCode === "scope_denied" ? -32003
             : -32602;
           return failure(id, rpcCode, result.message, errorData);
         }

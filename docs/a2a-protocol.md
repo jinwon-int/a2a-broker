@@ -285,6 +285,14 @@ This stream reuses the task-subscription transport rules:
 - `Last-Event-ID` replay with broker-owned monotonic sequence ids,
   then a fresh snapshot before live delivery resumes
 
+Replay boundary note:
+
+- replay only occurs when `Last-Event-ID` is both well-formed and still
+  inside the broker's retained operator-event buffer. If the id is too
+  old (gap already trimmed) or ahead of the broker's current sequence,
+  the stream resets to a fresh `operator-snapshot` without partial
+  replay.
+
 The payload shapes are intentionally closed to four schemas:
 
 - `operator-snapshot` — fired once at connect time. Payload:

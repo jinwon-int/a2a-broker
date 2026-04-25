@@ -107,6 +107,17 @@ Rationale: peers that can already request tasks can already observe liveness ind
 
 Unauthenticated callers receive `errorCode: "unauthenticated"`. Out-of-scope callers receive `"scope_denied"` with the required scope name.
 
+Compatibility note for the standalone broker rollout:
+
+- requester scopes are currently carried as requester-identity metadata
+  (`x-a2a-requester-scopes`, surfaced as `RequesterIdentity.scopes`)
+  rather than a separate auth exchange.
+- Round 8 enforces `a2a.peer.status.verbose` before honoring
+  `verbose=true`.
+- The default summary remains the only wire shape emitted today even
+  when verbose scope is present; verbose additive fields stay deferred
+  until a later contract expansion.
+
 ## 5. Caching
 
 Query storms are the primary risk. Policy:
