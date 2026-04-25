@@ -2,6 +2,7 @@ import { BrokerError, type InMemoryA2ABroker } from "../core/broker.js";
 import type { RequesterIdentity } from "../core/request-security.js";
 import type { A2AExchangeVia, TaskListFilters } from "../core/types.js";
 import type { AgentCard } from "./agent-card.js";
+import { PeerStatusService, type PeerStatusRequest } from "./peer-status.js";
 import { projectBrokerTask } from "./task-projection.js";
 
 export type JsonRpcId = string | number | null;
@@ -39,6 +40,10 @@ export interface ExecuteJsonRpcOptions {
   publicBaseUrl?: string;
   requesterIdentity: RequesterIdentity | null;
   enforceRequesterIdentity: boolean;
+  /**
+   * Optional peer status service instance. If provided, enables the PeerStatus RPC method.
+   */
+  peerStatusService?: PeerStatusService;
 }
 
 export function executeA2AJsonRpc(
@@ -105,6 +110,57 @@ export function executeA2AJsonRpc(
 
       case "GetExtendedAgentCard": {
         return success(id, options.agentCard);
+      }
+
+      case "a2a.peer.status":
+      case "PeerStatus": {
+        if (!options.peerStatusService) {
+          return failure(id, -32601, `method not found: ${method}`);
+        }
+
+        // Auth check
+        if (!options.requesterIdentity?.id) {
+          return failure(id, -32001, `${method} requires caller identity`, {
+            brokerCode: "unauthenticated",
+          });
+        }
+
+        if (!isRecord(params)) {
+          throw new Error("params must be an object");
+        }
+
+        const peerRequest: PeerStatusRequest = {
+          target: optionalString(params.target) ?? "",
+          maxCacheAgeMs: typeof params.maxCacheAgeMs === "number" ? params.maxCacheAgeMs : undefined,
+          verbose: typeof params.verbose === "boolean" ? params.verbose : undefined,
+        };
+
+        if (!peerRequest.target) {
+          throw new Error("target is required");
+        }
+
+        // Check that target worker exists
+        const targetWorker = options.broker.getWorker(peerRequest.target);
+        if (!targetWorker) {
+          return failure(id, -32004, `target unknown: ${peerRequest.target}`, {
+            brokerCode: "target_unknown",
+          });
+        }
+
+        const result = options.peerStatusService.query(peerRequest, options.requesterIdentity.id);
+
+        if ("errorCode" in result) {
+          const errorData: Record<string, unknown> = { brokerCode: result.errorCode };
+          if (result.retryAfterMs !== undefined) {
+            errorData.retryAfterMs = result.retryAfterMs;
+          }
+          const rpcCode = result.errorCode === "rate_limited" ? -32029
+            : result.errorCode === "unauthenticated" ? -32001
+            : -32602;
+          return failure(id, rpcCode, result.message, errorData);
+        }
+
+        return success(id, result);
       }
 
       default:

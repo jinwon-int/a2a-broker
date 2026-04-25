@@ -2,6 +2,7 @@ import { createServer, type IncomingMessage, type RequestListener, type Server, 
 
 import { createBrokerAgentCard, type AgentCard } from "./a2a/agent-card.js";
 import { executeA2AJsonRpc } from "./a2a/json-rpc.js";
+import { PeerStatusService } from "./a2a/peer-status.js";
 import { projectBrokerTask } from "./a2a/task-projection.js";
 import {
   BrokerError,
@@ -161,6 +162,11 @@ export interface BrokerServerOptions {
    * `TASK_SUBSCRIBE_HEARTBEAT_SEC`.
    */
   taskSubscribeHeartbeatSec?: number;
+  /**
+   * Enables the read-only `a2a.peer.status` JSON-RPC method. Default-off until
+   * canary proof validates the Round 7 wake-layer rollout. Env: `A2A_PEER_STATUS_ENABLED`.
+   */
+  peerStatusEnabled?: boolean;
 }
 
 export interface BrokerStaleReaperStatus {
@@ -207,6 +213,7 @@ export interface BrokerServerRuntime {
     staleReaperOlderThanSec: number;
     maxRequeueAttempts: number;
     taskSubscribeHeartbeatSec: number;
+    peerStatusEnabled: boolean;
   };
 }
 
@@ -262,6 +269,8 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
     0,
     resolveIntegerOption(options.taskSubscribeHeartbeatSec, process.env.TASK_SUBSCRIBE_HEARTBEAT_SEC, 15),
   );
+  const peerStatusEnabled =
+    options.peerStatusEnabled ?? resolveBooleanEnv(process.env.A2A_PEER_STATUS_ENABLED, false);
 
   const stateStore =
     options.stateStore ?? new JsonFileBrokerStateStore(stateFile, { maxBytes: maxSnapshotBytes });
@@ -287,6 +296,9 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
       supportsStreaming: true,
       supportsPushNotifications: false,
     });
+  const peerStatusService = peerStatusEnabled
+    ? new PeerStatusService(broker, { workerOfflineAfterMs: workerOfflineAfterSec * 1000 })
+    : undefined;
 
   // In-broker periodic stale-task reaper. Without this, claimed/running tasks pointing at a
   // dead worker stay stuck until an operator manually hits POST /tasks/requeue_stale. The
@@ -532,6 +544,7 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
           publicBaseUrl,
           requesterIdentity,
           enforceRequesterIdentity,
+          peerStatusService,
         });
         return sendJson(res, 200, response);
       }
@@ -1087,6 +1100,7 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
       staleReaperOlderThanSec,
       maxRequeueAttempts,
       taskSubscribeHeartbeatSec,
+      peerStatusEnabled,
     },
   };
 }
