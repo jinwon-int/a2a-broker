@@ -1,12 +1,19 @@
 /**
  * GitHub-side ingestion: parse `/a2a assign` commands from issue/comment
- * bodies and turn them into broker parent/child tasks.
+ * bodies and turn them into broker parent/child tasks. Also drive lifecycle
+ * transitions (close/reopen/merge) back into the broker so the GitHub thread
+ * remains the user-visible source of intent.
  *
- * Idempotency strategy:
+ * Idempotency / replay strategy:
  *   - Each delivery's `X-GitHub-Delivery` id is recorded; replays are dropped.
  *   - Task ids are deterministic from `(repo, issue, [comment, intent#])`,
  *     so even cross-delivery duplicates collapse onto the same broker task
  *     via the broker's id-based idempotency.
+ *   - Per `(repoFullName, issueNumber)` we maintain a `lastSeenAt` watermark
+ *     plus a monotonic `lastSeq`. Events whose delivery `receivedAt` is at or
+ *     before the recorded watermark are treated as stale replays and dropped.
+ *   - Lifecycle events also bump a separate `lifecycleWatermark` so a stale
+ *     close/reopen/merge cannot overwrite a newer terminal state.
  *
  * The broker is the source of truth for tasks. This module only translates
  * GitHub events into broker calls — it does not post to GitHub. Projection
@@ -18,6 +25,8 @@ import type {
   A2AExchangeIntent,
   CreateTaskRequest,
   TaskRecord,
+  TaskResult,
+  TaskStatus,
 } from "../core/types.js";
 import type {
   GitHubDeliveryContext,
@@ -26,6 +35,7 @@ import type {
   GitHubIssueRef,
   GitHubPullRequestCommentEvent,
   GitHubPullRequestEvent,
+  GitHubPullRequestRef,
   GitHubRepoRef,
   GitHubWebhookEvent,
 } from "./types.js";
@@ -154,17 +164,87 @@ export type IngestionSkippedReason =
   | "duplicate_delivery"
   | "no_assignment_command"
   | "unknown_worker"
-  | "unsupported_event";
+  | "unsupported_event"
+  | "no_parent_task"
+  | "stale_lifecycle"
+  | "reconciliation_needed";
+
+export type LifecycleAction = "issue_closed" | "issue_reopened" | "pr_merged" | "pr_closed";
+
+export interface LifecycleTransition {
+  /** Task status before the lifecycle event was applied. */
+  from: TaskStatus;
+  /**
+   * Status after the lifecycle event. When `reconciled` is true the broker
+   * was NOT mutated and `to` reflects the status the event *would* have
+   * imposed; downstream consumers must reconcile out-of-band.
+   */
+  to: TaskStatus;
+  /**
+   * True when the broker rejected the requested transition (already terminal,
+   * or no public API path) and downstream consumers must reconcile.
+   */
+  reconciled: boolean;
+}
 
 export interface IngestionResult {
   /** True if the delivery id was seen before and the event was a no-op. */
   deduped: boolean;
+  /**
+   * True when the event was dropped because a newer event for the same
+   * `(repo, issue)` was already processed (stale replay / out-of-order).
+   */
+  replaySkipped: boolean;
   /** Parent task id, when one exists or was created. */
   parentTaskId?: string;
   /** Child task ids, ordered by occurrence in the source body. */
   childTaskIds: string[];
-  /** Populated when no tasks were created, to aid debugging. */
+  /** Populated when no tasks were created/transitioned, to aid debugging. */
   skippedReason?: IngestionSkippedReason;
+  /** Populated for lifecycle events (closed/reopened/merged). */
+  lifecycleTransition: LifecycleTransition | null;
+}
+
+interface ReplayState {
+  /** Monotonic counter of accepted events for a `(repo, issue)` pair. */
+  lastSeq: number;
+  /** Delivery `receivedAt` of the last accepted event for the pair. */
+  lastSeenAt: string;
+  /** Delivery `receivedAt` of the last accepted lifecycle event. */
+  lifecycleWatermark?: string;
+}
+
+export interface ReplayStats {
+  /** Number of `(repo, issue)` pairs being tracked. */
+  trackedPairs: number;
+  /** Total events accepted across all pairs. */
+  totalEvents: number;
+  /** Total events skipped because their timestamp was older than the watermark. */
+  staleSkipped: number;
+  /** Total deliveries deduped against the X-GitHub-Delivery seen-set. */
+  duplicateDeliveries: number;
+  /** Number of pairs that have at least one lifecycle action recorded. */
+  lifecycleWatermarks: number;
+}
+
+const TERMINAL_STATUSES: ReadonlySet<TaskStatus> = new Set<TaskStatus>([
+  "succeeded",
+  "failed",
+  "canceled",
+]);
+
+function isTerminal(status: TaskStatus): boolean {
+  return TERMINAL_STATUSES.has(status);
+}
+
+function emptyResult(overrides: Partial<IngestionResult> = {}): IngestionResult {
+  return {
+    deduped: false,
+    replaySkipped: false,
+    childTaskIds: [],
+    lifecycleTransition: null,
+    ...overrides,
+  };
 }
 
 export class GitHubIngestionService {
@@ -172,6 +252,12 @@ export class GitHubIngestionService {
   private readonly defaultIntent: A2AExchangeIntent;
   private readonly requesterId: string;
   private readonly seenDeliveries = new Set<string>();
+  private readonly replayState = new Map<string, ReplayState>();
+  private replayCounters = {
+    totalEvents: 0,
+    staleSkipped: 0,
+    duplicateDeliveries: 0,
+  };
 
   constructor(options: GitHubIngestionOptions) {
     this.broker = options.broker;
@@ -181,9 +267,21 @@ export class GitHubIngestionService {
 
   ingest(event: GitHubWebhookEvent, ctx: GitHubDeliveryContext): IngestionResult {
     if (this.seenDeliveries.has(ctx.deliveryId)) {
-      return { deduped: true, childTaskIds: [], skippedReason: "duplicate_delivery" };
+      this.replayCounters.duplicateDeliveries++;
+      return emptyResult({ deduped: true, skippedReason: "duplicate_delivery" });
     }
     this.seenDeliveries.add(ctx.deliveryId);
+
+    const pair = pairKeyForEvent(event);
+    if (pair) {
+      const accepted = this.acceptEvent(pair, ctx.receivedAt);
+      if (!accepted) {
+        return emptyResult({
+          replaySkipped: true,
+          skippedReason: "stale_lifecycle",
+        });
+      }
+    }
 
     switch (event.kind) {
       case "issues":
@@ -195,8 +293,103 @@ export class GitHubIngestionService {
       case "pull_request_review_comment":
         return this.ingestPullRequestComment(event, ctx);
       default:
-        return { deduped: false, childTaskIds: [], skippedReason: "unsupported_event" };
+        return emptyResult({ skippedReason: "unsupported_event" });
     }
+  }
+
+  // -------------------------------------------------------------------------
+  // Public lifecycle handlers — callable directly when an upstream component
+  // already knows what kind of transition it wants to apply, e.g. when
+  // backfilling state from a poll rather than from a webhook.
+  // -------------------------------------------------------------------------
+
+  handleIssueClosed(
+    repo: GitHubRepoRef,
+    issue: GitHubIssueRef,
+    ctx: GitHubDeliveryContext,
+  ): IngestionResult {
+    const gate = this.gateLifecycleEntry(repo, issue.number, ctx);
+    if (gate) return gate;
+    return this.applyLifecycle({
+      repo,
+      issue,
+      targetStatus: "canceled",
+      transition: (task) => this.cancelExistingTask(task, "issue closed"),
+    });
+  }
+
+  handleIssueReopened(
+    repo: GitHubRepoRef,
+    issue: GitHubIssueRef,
+    ctx: GitHubDeliveryContext,
+  ): IngestionResult {
+    const gate = this.gateLifecycleEntry(repo, issue.number, ctx);
+    if (gate) return gate;
+    return this.applyLifecycle({
+      repo,
+      issue,
+      targetStatus: "queued",
+      // The broker has no public path that promotes a canceled task back to
+      // `queued`. Surface every reopen as `reconciliation_needed` so the
+      // operator can decide whether to recreate or reassign.
+      transition: () => null,
+    });
+  }
+
+  handlePullRequestMerged(
+    repo: GitHubRepoRef,
+    pr: GitHubPullRequestRef,
+    ctx: GitHubDeliveryContext,
+  ): IngestionResult {
+    const gate = this.gateLifecycleEntry(repo, pr.number, ctx);
+    if (gate) return gate;
+    const prResult: TaskResult = {
+      summary: `merged ${pr.prUrl}`,
+      output: {
+        pullRequestUrl: pr.prUrl,
+        pullRequestNumber: pr.number,
+        merged: true,
+      },
+    };
+    return this.applyLifecycle({
+      repo,
+      issue: pr,
+      targetStatus: "succeeded",
+      transition: (task) => this.completeExistingTask(task, prResult),
+    });
+  }
+
+  handlePullRequestClosed(
+    repo: GitHubRepoRef,
+    pr: GitHubPullRequestRef,
+    ctx: GitHubDeliveryContext,
+  ): IngestionResult {
+    const gate = this.gateLifecycleEntry(repo, pr.number, ctx);
+    if (gate) return gate;
+    return this.applyLifecycle({
+      repo,
+      issue: pr,
+      targetStatus: "canceled",
+      transition: (task) => this.cancelExistingTask(task, "pull request closed without merge"),
+    });
+  }
+
+  // -------------------------------------------------------------------------
+  // Diagnostics
+  // -------------------------------------------------------------------------
+
+  getReplayStats(): ReplayStats {
+    let lifecycleWatermarks = 0;
+    for (const state of this.replayState.values()) {
+      if (state.lifecycleWatermark) lifecycleWatermarks++;
+    }
+    return {
+      trackedPairs: this.replayState.size,
+      totalEvents: this.replayCounters.totalEvents,
+      staleSkipped: this.replayCounters.staleSkipped,
+      duplicateDeliveries: this.replayCounters.duplicateDeliveries,
+      lifecycleWatermarks,
+    };
   }
 
   // -------------------------------------------------------------------------
@@ -204,15 +397,22 @@ export class GitHubIngestionService {
   // -------------------------------------------------------------------------
 
   private ingestIssue(event: GitHubIssueEvent, ctx: GitHubDeliveryContext): IngestionResult {
+    if (event.action === "closed") {
+      return this.handleIssueClosed(event.repo, event.issue, ctx);
+    }
+    if (event.action === "reopened") {
+      return this.handleIssueReopened(event.repo, event.issue, ctx);
+    }
+
     const intents = parseAssignmentIntents(event.issue.body);
     if (intents.length === 0) {
-      return { deduped: false, childTaskIds: [], skippedReason: "no_assignment_command" };
+      return emptyResult({ skippedReason: "no_assignment_command" });
     }
 
     const [primary, ...rest] = intents;
     const parentTask = this.ensureParentTask(event.repo, event.issue, primary!, ctx);
     if (!parentTask) {
-      return { deduped: false, childTaskIds: [], skippedReason: "unknown_worker" };
+      return emptyResult({ skippedReason: "unknown_worker" });
     }
 
     const childTaskIds: string[] = [];
@@ -229,7 +429,7 @@ export class GitHubIngestionService {
       });
       if (child) childTaskIds.push(child.id);
     }
-    return { deduped: false, parentTaskId: parentTask.id, childTaskIds };
+    return emptyResult({ parentTaskId: parentTask.id, childTaskIds });
   }
 
   private ingestIssueComment(
@@ -237,11 +437,11 @@ export class GitHubIngestionService {
     ctx: GitHubDeliveryContext,
   ): IngestionResult {
     if (event.action === "deleted") {
-      return { deduped: false, childTaskIds: [], skippedReason: "unsupported_event" };
+      return emptyResult({ skippedReason: "unsupported_event" });
     }
     const intents = parseAssignmentIntents(event.comment.body);
     if (intents.length === 0) {
-      return { deduped: false, childTaskIds: [], skippedReason: "no_assignment_command" };
+      return emptyResult({ skippedReason: "no_assignment_command" });
     }
 
     const parentTask = this.ensureParentTask(
@@ -252,7 +452,7 @@ export class GitHubIngestionService {
       ctx,
     );
     if (!parentTask) {
-      return { deduped: false, childTaskIds: [], skippedReason: "unknown_worker" };
+      return emptyResult({ skippedReason: "unknown_worker" });
     }
 
     const childTaskIds: string[] = [];
@@ -269,16 +469,26 @@ export class GitHubIngestionService {
       });
       if (child) childTaskIds.push(child.id);
     }
-    return { deduped: false, parentTaskId: parentTask.id, childTaskIds };
+    return emptyResult({ parentTaskId: parentTask.id, childTaskIds });
   }
 
   private ingestPullRequest(
     event: GitHubPullRequestEvent,
     ctx: GitHubDeliveryContext,
   ): IngestionResult {
-    // Pull requests reuse the issue-shaped flow: the PR body can carry an
-    // /a2a assign command, and the broker treats the PR number identically
-    // to the issue number for idempotent task ids.
+    if (event.action === "closed") {
+      if (event.pullRequest.merged) {
+        return this.handlePullRequestMerged(event.repo, event.pullRequest, ctx);
+      }
+      return this.handlePullRequestClosed(event.repo, event.pullRequest, ctx);
+    }
+    if (event.action === "reopened") {
+      return this.handleIssueReopened(event.repo, event.pullRequest, ctx);
+    }
+
+    // Pull requests reuse the issue-shaped flow for opened/edited/etc. The
+    // PR body can carry an /a2a assign command, and the broker treats the
+    // PR number identically to the issue number for idempotent task ids.
     return this.ingestIssue(
       {
         kind: "issues",
@@ -386,6 +596,200 @@ export class GitHubIngestionService {
     };
     return this.broker.createTask(request);
   }
+
+  // -------------------------------------------------------------------------
+  // Lifecycle plumbing
+  // -------------------------------------------------------------------------
+
+  /**
+   * Pre-flight for a public lifecycle handler: enforce per-pair watermark and
+   * per-pair lifecycle watermark, advancing both when the event is accepted.
+   * Returns a result when the event should be short-circuited as stale;
+   * returns `null` when the caller should proceed with the transition.
+   *
+   * Re-entry from `ingest()` is detected by `lastSeenAt === receivedAt`
+   * (the outer dispatch already advanced state to this same timestamp) and
+   * does not double-advance the pair counter.
+   */
+  private gateLifecycleEntry(
+    repo: GitHubRepoRef,
+    issueNumber: number,
+    ctx: GitHubDeliveryContext,
+  ): IngestionResult | null {
+    const pairKey = makePairKey(repo, issueNumber);
+    const state = this.replayState.get(pairKey);
+
+    // Lifecycle watermark check first so a stale lifecycle event never
+    // double-increments counters via the pair-watermark path.
+    if (state?.lifecycleWatermark && ctx.receivedAt < state.lifecycleWatermark) {
+      this.replayCounters.staleSkipped++;
+      return emptyResult({ replaySkipped: true, skippedReason: "stale_lifecycle" });
+    }
+
+    const isReentry = !!state && ctx.receivedAt === state.lastSeenAt;
+    if (state && !isReentry && ctx.receivedAt < state.lastSeenAt) {
+      this.replayCounters.staleSkipped++;
+      return emptyResult({ replaySkipped: true, skippedReason: "stale_lifecycle" });
+    }
+
+    if (!state) {
+      this.replayState.set(pairKey, {
+        lastSeq: 1,
+        lastSeenAt: ctx.receivedAt,
+        lifecycleWatermark: ctx.receivedAt,
+      });
+      this.replayCounters.totalEvents++;
+      return null;
+    }
+    if (!isReentry) {
+      state.lastSeq++;
+      state.lastSeenAt = ctx.receivedAt;
+      this.replayCounters.totalEvents++;
+    }
+    if (!state.lifecycleWatermark || ctx.receivedAt > state.lifecycleWatermark) {
+      state.lifecycleWatermark = ctx.receivedAt;
+    }
+    return null;
+  }
+
+  private applyLifecycle(args: {
+    repo: GitHubRepoRef;
+    issue: GitHubIssueRef;
+    /** What the lifecycle event would impose on the task. */
+    targetStatus: TaskStatus;
+    /**
+     * Mutator invoked when the existing task is non-terminal. Returns the
+     * post-mutation task, or null when the broker public API offers no path
+     * to apply the requested transition.
+     */
+    transition: (task: TaskRecord) => TaskRecord | null;
+  }): IngestionResult {
+    const { repo, issue, targetStatus, transition } = args;
+    const id = parentTaskId(repo, issue);
+    const task = this.broker.getTask(id);
+    if (!task) {
+      return emptyResult({ skippedReason: "no_parent_task" });
+    }
+
+    const fromStatus = task.status;
+
+    // Already at the requested status — benign re-run (e.g. closing twice
+    // when the task is already canceled, or reopening a still-queued task).
+    if (fromStatus === targetStatus) {
+      return emptyResult({
+        parentTaskId: task.id,
+        lifecycleTransition: { from: fromStatus, to: fromStatus, reconciled: false },
+      });
+    }
+
+    // Different terminal status — broker won't let us re-transition.
+    if (isTerminal(fromStatus)) {
+      return emptyResult({
+        parentTaskId: task.id,
+        skippedReason: "reconciliation_needed",
+        lifecycleTransition: { from: fromStatus, to: targetStatus, reconciled: true },
+      });
+    }
+
+    const post = transition(task);
+    if (!post) {
+      // Non-terminal but the broker offers no public path to drive this
+      // particular transition (e.g. reopen back to queued). Surface for
+      // operator reconciliation rather than silently dropping the event.
+      return emptyResult({
+        parentTaskId: task.id,
+        skippedReason: "reconciliation_needed",
+        lifecycleTransition: { from: fromStatus, to: targetStatus, reconciled: true },
+      });
+    }
+
+    return emptyResult({
+      parentTaskId: post.id,
+      lifecycleTransition: { from: fromStatus, to: post.status, reconciled: false },
+    });
+  }
+
+  private cancelExistingTask(task: TaskRecord, reason: string): TaskRecord {
+    return this.broker.cancelTask(task.id, {
+      actor: { id: this.requesterId, kind: "service", role: "operator" },
+      reason,
+    });
+  }
+
+  /**
+   * Best-effort completion driven by a PR merge. The broker's `completeTask`
+   * requires the task to already be in `claimed` or `running` and to be
+   * called with the assigned worker's identity. When those preconditions
+   * don't hold we can't drive the transition through the public API, so the
+   * caller surfaces `reconciliation_needed` instead.
+   */
+  private completeExistingTask(task: TaskRecord, result: TaskResult): TaskRecord | null {
+    if (task.status !== "claimed" && task.status !== "running") {
+      return null;
+    }
+    const workerId = task.claimedBy ?? task.assignedWorkerId ?? task.targetNodeId;
+    if (!workerId || !this.broker.getWorker(workerId)) {
+      return null;
+    }
+    try {
+      return this.broker.completeTask(task.id, workerId, result);
+    } catch {
+      return null;
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // Replay state helpers
+  // -------------------------------------------------------------------------
+
+  /**
+   * Advance the per-pair watermark. Returns true when the event should be
+   * processed; false when it is older than the recorded watermark (stale
+   * replay / out-of-order).
+   *
+   * Equal-timestamp events are accepted: cross-delivery duplicates collapse
+   * downstream via the seenDeliveries set and the broker's deterministic
+   * task ids; lifecycle handlers are independently idempotent.
+   */
+  private acceptEvent(pairKey: string, receivedAt: string): boolean {
+    const state = this.replayState.get(pairKey);
+    if (!state) {
+      this.replayState.set(pairKey, { lastSeq: 1, lastSeenAt: receivedAt });
+      this.replayCounters.totalEvents++;
+      return true;
+    }
+    if (receivedAt < state.lastSeenAt) {
+      this.replayCounters.staleSkipped++;
+      return false;
+    }
+    if (receivedAt > state.lastSeenAt) {
+      state.lastSeq++;
+      state.lastSeenAt = receivedAt;
+    }
+    this.replayCounters.totalEvents++;
+    return true;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Pair-key helpers
+// ---------------------------------------------------------------------------
+
+function pairKeyForEvent(event: GitHubWebhookEvent): string | null {
+  switch (event.kind) {
+    case "issues":
+    case "issue_comment":
+      return makePairKey(event.repo, event.issue.number);
+    case "pull_request":
+    case "pull_request_review_comment":
+      return makePairKey(event.repo, event.pullRequest.number);
+    default:
+      return null;
+  }
+}
+
+function makePairKey(repo: GitHubRepoRef, issueNumber: number): string {
+  return `${repo.fullName}#${issueNumber}`;
 }
 
 // ---------------------------------------------------------------------------
