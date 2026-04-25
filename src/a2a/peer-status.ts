@@ -6,7 +6,7 @@
  */
 
 import type { InMemoryA2ABroker } from "../core/broker.js";
-import type { TaskRecord, WorkerRecord } from "../core/types.js";
+import type { TaskRecord } from "../core/types.js";
 
 // ---------------------------------------------------------------------------
 // Types (RFC §2)
@@ -58,7 +58,16 @@ export interface PeerStatusError {
   errorCode: string;
   message: string;
   retryAfterMs?: number;
+  requiredScope?: string;
 }
+
+export interface PeerStatusCallerContext {
+  callerId: string | null;
+  scopes?: readonly string[];
+}
+
+export const PEER_STATUS_READ_SCOPE = "a2a.peer.status.read";
+export const PEER_STATUS_VERBOSE_SCOPE = "a2a.peer.status.verbose";
 
 // ---------------------------------------------------------------------------
 // Cache
@@ -120,20 +129,32 @@ export class PeerStatusService {
    */
   query(
     request: PeerStatusRequest,
-    callerId: string | null,
+    caller: string | PeerStatusCallerContext | null,
   ): PeerStatusResponse | PeerStatusError {
+    const { callerId, scopes } = normalizeCaller(caller);
+
     if (!request.target || typeof request.target !== "string" || !request.target.trim()) {
       return { errorCode: "bad_request", message: "target is required" };
     }
 
     const target = request.target.trim();
 
+    if (!callerId) {
+      return { errorCode: "unauthenticated", message: "caller identity is required" };
+    }
+
+    if (request.verbose && !hasScope(scopes, PEER_STATUS_VERBOSE_SCOPE)) {
+      return {
+        errorCode: "scope_denied",
+        message: `missing required scope: ${PEER_STATUS_VERBOSE_SCOPE}`,
+        requiredScope: PEER_STATUS_VERBOSE_SCOPE,
+      };
+    }
+
     // Rate-limit check (only for authenticated callers)
-    if (callerId) {
-      const rateError = this.checkRateLimit(callerId, target);
-      if (rateError) {
-        return rateError;
-      }
+    const rateError = this.checkRateLimit(callerId, target);
+    if (rateError) {
+      return rateError;
     }
 
     const maxCacheAge = request.maxCacheAgeMs ?? DEFAULT_CACHE_TTL_MS;
@@ -142,15 +163,7 @@ export class PeerStatusService {
     const cached = this.cache.get(target);
     const now = Date.now();
     if (cached && now - cached.computedAt <= maxCacheAge) {
-      const response = {
-        ...cached.response,
-        cacheAgeMs: now - cached.computedAt,
-      };
-      // Attach rate-limit info
-      if (callerId) {
-        response.rateLimit = this.getRateLimitInfo(callerId, target);
-      }
-      return response;
+      return this.buildDefaultResponse(cached.response, now - cached.computedAt, callerId, target);
     }
 
     // Stampede protection: check if there's already an in-flight computation
@@ -159,32 +172,16 @@ export class PeerStatusService {
     const recompute = this.tryAcquireGlobalRecomputeSlot(now);
     if (!recompute && cached) {
       // Serve stale cache when global cap is hit
-      const response = {
-        ...cached.response,
-        cacheAgeMs: now - cached.computedAt,
-      };
-      if (callerId) {
-        response.rateLimit = this.getRateLimitInfo(callerId, target);
-      }
-      return response;
+      return this.buildDefaultResponse(cached.response, now - cached.computedAt, callerId, target);
     }
 
     // Compute fresh status
-    const response = this.computeStatus(target, now);
+    const response = this.buildDefaultResponse(this.computeStatus(target, now), 0, callerId, target);
 
     // Store in cache
     this.cache.set(target, { response, computedAt: now });
 
-    const finalResponse: PeerStatusResponse = {
-      ...response,
-      cacheAgeMs: 0,
-    };
-
-    if (callerId) {
-      finalResponse.rateLimit = this.getRateLimitInfo(callerId, target);
-    }
-
-    return finalResponse;
+    return response;
   }
 
   /** Clear all cached entries. Useful for testing. */
@@ -323,4 +320,59 @@ export class PeerStatusService {
     this.globalRecomputeCount++;
     return true;
   }
+
+  private buildDefaultResponse(
+    response: PeerStatusResponse,
+    cacheAgeMs: number,
+    callerId: string,
+    target: string,
+  ): PeerStatusResponse {
+    const safeResponse: PeerStatusResponse = {
+      schemaVersion: 1,
+      target: response.target,
+      observedAt: response.observedAt,
+      cacheAgeMs,
+      gateway: {
+        reachable: response.gateway.reachable,
+        ...(response.gateway.version !== undefined ? { version: response.gateway.version } : {}),
+        ...(response.gateway.mode !== undefined ? { mode: response.gateway.mode } : {}),
+      },
+      worker: {
+        registered: response.worker.registered,
+        ...(response.worker.lastHeartbeatAt !== undefined
+          ? { lastHeartbeatAt: response.worker.lastHeartbeatAt }
+          : {}),
+        ...(response.worker.capacity
+          ? {
+            capacity: {
+              slotsTotal: response.worker.capacity.slotsTotal,
+              slotsBusy: response.worker.capacity.slotsBusy,
+            },
+          }
+          : {}),
+      },
+      tasks: {
+        active: response.tasks.active,
+        queued: response.tasks.queued,
+        stale: response.tasks.stale,
+      },
+      health: response.health,
+      rateLimit: this.getRateLimitInfo(callerId, target),
+    };
+
+    return safeResponse;
+  }
+}
+
+function normalizeCaller(
+  caller: string | PeerStatusCallerContext | null,
+): PeerStatusCallerContext {
+  if (typeof caller === "string" || caller === null) {
+    return { callerId: caller };
+  }
+  return caller;
+}
+
+function hasScope(scopes: readonly string[] | undefined, requiredScope: string): boolean {
+  return Array.isArray(scopes) && scopes.includes(requiredScope);
 }

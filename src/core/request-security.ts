@@ -12,6 +12,7 @@ export interface RequesterIdentity {
   id: string;
   kind?: A2APartyKind;
   role?: A2APartyRole;
+  scopes?: string[];
 }
 
 export type RateLimitBucket = "general" | "worker";
@@ -117,12 +118,13 @@ export function extractRequesterIdentity(req: IncomingMessage): RequesterIdentit
   const id = headerValue(req, "x-a2a-requester-id");
   const rawKind = headerValue(req, "x-a2a-requester-kind");
   const rawRole = headerValue(req, "x-a2a-requester-role");
+  const rawScopes = headerValue(req, "x-a2a-requester-scopes") ?? headerValue(req, "x-a2a-requester-scope");
 
   if (!id) {
-    if (rawKind || rawRole) {
+    if (rawKind || rawRole || rawScopes) {
       throw new BrokerError(
         "bad_request",
-        "x-a2a-requester-id is required when requester kind or role headers are present",
+        "x-a2a-requester-id is required when requester kind, role, or scopes headers are present",
       );
     }
     return null;
@@ -130,11 +132,13 @@ export function extractRequesterIdentity(req: IncomingMessage): RequesterIdentit
 
   const kind = parseRequesterKind(rawKind);
   const role = parseRequesterRole(rawRole);
+  const scopes = parseRequesterScopes(rawScopes);
 
   return {
     id,
-    kind,
-    role,
+    ...(kind ? { kind } : {}),
+    ...(role ? { role } : {}),
+    ...(scopes ? { scopes } : {}),
   };
 }
 
@@ -376,4 +380,19 @@ function parseRequesterRole(value: string | undefined): A2APartyRole | undefined
     );
   }
   return parsed.data;
+}
+
+function parseRequesterScopes(value: string | undefined): string[] | undefined {
+  if (!value) {
+    return undefined;
+  }
+
+  const scopes = [...new Set(
+    value
+      .split(/[\s,]+/)
+      .map((entry) => entry.trim())
+      .filter((entry) => entry.length > 0),
+  )].sort((left, right) => left.localeCompare(right));
+
+  return scopes.length > 0 ? scopes : undefined;
 }
