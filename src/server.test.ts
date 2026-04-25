@@ -2037,6 +2037,61 @@ test("SSE /a2a/operator/events rejects non-operator subscribers", async () => {
   }
 });
 
+test("server keeps peer status default-off and exposes a2a.peer.status when enabled", async () => {
+  const defaultOffServer = await startTestServer({ edgeSecret: "test-edge-secret" });
+  try {
+    await registerTestWorker(defaultOffServer.baseUrl, "worker-a", "analyst", "test-edge-secret");
+    const disabledRes = await fetch(`${defaultOffServer.baseUrl}/a2a/jsonrpc`, {
+      method: "POST",
+      headers: jsonHeaders({
+        "x-a2a-edge-secret": "test-edge-secret",
+        "x-a2a-requester-id": "hub-a",
+        "x-a2a-requester-role": "hub",
+      }),
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: "disabled",
+        method: "a2a.peer.status",
+        params: { target: "worker-a" },
+      }),
+    });
+    const disabled = await disabledRes.json();
+    assert.equal(disabled.error.code, -32601);
+  } finally {
+    await defaultOffServer.close();
+  }
+
+  const enabledServer = await startTestServer({
+    edgeSecret: "test-edge-secret",
+    peerStatusEnabled: true,
+  });
+  try {
+    await registerTestWorker(enabledServer.baseUrl, "worker-a", "analyst", "test-edge-secret");
+    const enabledRes = await fetch(`${enabledServer.baseUrl}/a2a/jsonrpc`, {
+      method: "POST",
+      headers: jsonHeaders({
+        "x-a2a-edge-secret": "test-edge-secret",
+        "x-a2a-requester-id": "hub-a",
+        "x-a2a-requester-role": "hub",
+      }),
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: "enabled",
+        method: "a2a.peer.status",
+        params: { target: "worker-a" },
+      }),
+    });
+    const enabled = await enabledRes.json();
+    assert.equal(enabled.result.schemaVersion, 1);
+    assert.equal(enabled.result.target, "worker-a");
+    assert.equal(enabled.result.gateway.reachable, true);
+    assert.equal(enabled.result.worker.registered, true);
+    assert.equal(enabled.result.health, "ok");
+  } finally {
+    await enabledServer.close();
+  }
+});
+
 test("JSON-RPC SubscribeToTask returns current task plus SSE subscription URL", async () => {
   const server = await startTestServer({
     edgeSecret: "test-edge-secret",

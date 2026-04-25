@@ -112,14 +112,15 @@ export function executeA2AJsonRpc(
         return success(id, options.agentCard);
       }
 
+      case "a2a.peer.status":
       case "PeerStatus": {
         if (!options.peerStatusService) {
-          return failure(id, -32601, "method not found: PeerStatus");
+          return failure(id, -32601, `method not found: ${method}`);
         }
 
         // Auth check
         if (!options.requesterIdentity?.id) {
-          return failure(id, -32001, "unauthenticated: PeerStatus requires caller identity", {
+          return failure(id, -32001, `${method} requires caller identity`, {
             brokerCode: "unauthenticated",
           });
         }
