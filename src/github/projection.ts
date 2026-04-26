@@ -6,6 +6,13 @@
  * functional: it produces the marker and the rendered body. Posting
  * (the GitHub API call) is intentionally left to a downstream adapter.
  *
+ * GitHub-origin tasks are tagged in the broker read model with
+ * `taskOrigin: "github"` (set by the ingestion service when projecting
+ * `/a2a assign` commands). Downstream consumers can filter on that field
+ * via `listTasks({ taskOrigin: "github" })` to distinguish GitHub-driven
+ * collaboration from API/sessions_send-origin tasks; this module itself
+ * is origin-agnostic and renders any task that is handed to it.
+ *
  * Status → marker mapping:
  *   - `queued`               → no marker (null projection — nothing to post)
  *   - `claimed` | `running`  → `Start`

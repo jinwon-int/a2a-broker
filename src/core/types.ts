@@ -69,6 +69,13 @@ export type AuditAction =
   | "worker.heartbeat";
 export type A2AWorkerEnvironment = "research" | "staging" | "live";
 export type WorkerStatus = "online" | "stale";
+/**
+ * Where a task entered the broker. `unknown` is the backward-compatible default
+ * for tasks created before this field existed or by callers that don't tag the
+ * source. Downstream consumers use this to distinguish GitHub-driven
+ * collaboration from API/sessions_send invocations.
+ */
+export type TaskOrigin = "github" | "api" | "sessions_send" | "unknown";
 
 export interface A2APartyRef {
   id: string;
@@ -172,6 +179,7 @@ export interface CreateTaskRequest extends Omit<A2ATaskRequest, "id" | "createdA
   id?: string;
   createdAt?: string;
   payload?: Record<string, unknown>;
+  taskOrigin?: TaskOrigin;
 }
 
 export interface TaskValidationPayload {
@@ -290,6 +298,13 @@ export interface TaskRecord extends A2ATaskRequest {
   attemptId?: string;
   /** Durable Wake-on-Task decision state for accepted-task replay/idempotency. */
   wake?: TaskWakeState;
+  /**
+   * Where this task originated. `"github"` is set by the GitHub ingestion
+   * service when projecting `/a2a assign` commands; non-GitHub callers default
+   * to `"unknown"` unless they pass an explicit value through the create
+   * request. Optional/additive for backward compatibility.
+   */
+  taskOrigin?: TaskOrigin;
 }
 
 export interface TaskClaimRequest {
@@ -326,6 +341,7 @@ export interface TaskListFilters {
   intent?: TaskKind;
   claimedBy?: string;
   assignedWorkerId?: string;
+  taskOrigin?: TaskOrigin;
 }
 
 export interface ChangeProposal {

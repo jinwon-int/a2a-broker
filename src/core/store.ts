@@ -205,6 +205,7 @@ const taskSchema = z
     lastHeartbeatAt: z.string().optional(),
     attemptId: z.string().min(1).optional(),
     wake: taskWakeSchema.optional(),
+    taskOrigin: z.enum(["github", "api", "sessions_send", "unknown"]).optional(),
   })
   .passthrough();
 
