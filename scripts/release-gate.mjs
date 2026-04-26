@@ -33,6 +33,24 @@ import { fileURLToPath } from 'node:url';
 // helpers
 // ---------------------------------------------------------------------------
 
+class SetupError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = 'SetupError';
+    this.setupError = true;
+  }
+}
+
+function gateFailure(gate, err, durationMs) {
+  return {
+    gate,
+    ok: false,
+    error: err.message,
+    ...(err.setupError ? { setupError: true } : {}),
+    durationMs,
+  };
+}
+
 const scriptPath = fileURLToPath(import.meta.url);
 const scriptDir = dirname(scriptPath);
 const brokerRoot = resolve(scriptDir, '..');
@@ -121,7 +139,7 @@ async function resolveComposeRunner() {
     } catch {}
   }
 
-  throw new Error('docker compose is required for compose smoke (tried "docker compose" and "docker-compose")');
+  throw new SetupError('docker compose is required for compose smoke (tried "docker compose" and "docker-compose")');
 }
 
 // ---------------------------------------------------------------------------
@@ -453,7 +471,7 @@ async function findFreePort(preferred) {
       return port;
     } catch {}
   }
-  throw new Error('no free port found');
+  throw new SetupError('no free port found');
 }
 
 // ---------------------------------------------------------------------------
@@ -489,7 +507,7 @@ async function main() {
       report.durationMs = Date.now() - t0;
       results.push(report);
     } catch (err) {
-      results.push({ gate: 'compose-smoke', ok: false, error: err.message, durationMs: Date.now() - t0 });
+      results.push(gateFailure('compose-smoke', err, Date.now() - t0));
       console.error(`[compose] ❌ FAILED: ${err.message}`);
     }
   }
@@ -507,14 +525,15 @@ async function main() {
       console.log('   Set BROKER_URL and BROKER_EDGE_SECRET, then re-run with --skip-compose');
       console.log('   Example: BROKER_URL=http://127.0.0.1:8787 BROKER_EDGE_SECRET=xxx node scripts/release-gate.mjs --skip-compose\n');
       results.push({
-        gate: 'restart-recovery', ok: false, skipped: true,
+        gate: 'restart-recovery', ok: true, skipped: true,
+        nonBlocking: true,
         reason: 'compose stack torn down; run with --skip-compose and BROKER_URL',
       });
     } else {
       baseUrl = process.env.BROKER_URL || process.env.A2A_BROKER_URL;
       if (!baseUrl) {
         console.error('error: BROKER_URL required for restart-recovery (no compose stack available)');
-        results.push({ gate: 'restart-recovery', ok: false, skipped: true, reason: 'BROKER_URL not set' });
+        results.push({ gate: 'restart-recovery', ok: false, skipped: true, setupError: true, reason: 'BROKER_URL not set' });
       } else {
         const t0 = Date.now();
         try {
@@ -522,7 +541,7 @@ async function main() {
           report.durationMs = Date.now() - t0;
           results.push(report);
         } catch (err) {
-          results.push({ gate: 'restart-recovery', ok: false, error: err.message, durationMs: Date.now() - t0 });
+          results.push(gateFailure('restart-recovery', err, Date.now() - t0));
           console.error(`[recovery] ❌ FAILED: ${err.message}`);
         }
       }
@@ -535,6 +554,8 @@ async function main() {
   console.log('='.repeat(60));
 
   const allPassed = results.every(r => r.ok);
+  const hasSetupError = results.some(r => r.setupError);
+  const hasNonBlockingSkip = results.some(r => r.ok && r.skipped && r.nonBlocking);
   for (const r of results) {
     const icon = r.ok ? '✅' : '❌';
     const label = r.skipped ? '⏭️' : icon;
@@ -543,8 +564,12 @@ async function main() {
   }
 
   console.log('='.repeat(60));
-  if (allPassed) {
+  if (allPassed && hasNonBlockingSkip) {
+    console.log('RESULT: GATES PASSED — broker is ready for compose-smoke cut (restart-recovery skipped)');
+  } else if (allPassed) {
     console.log('RESULT: ALL GATES PASSED — broker is ready for the next cut');
+  } else if (hasSetupError) {
+    console.log('RESULT: SETUP ERROR — install/configure required dependencies before shipping');
   } else {
     console.log('RESULT: ONE OR MORE GATES FAILED — do not ship');
   }
@@ -553,7 +578,7 @@ async function main() {
   console.log('\n--- JSON ---');
   console.log(JSON.stringify({ timestamp: new Date().toISOString(), results }, null, 2));
 
-  process.exit(allPassed ? 0 : 1);
+  process.exit(allPassed ? 0 : (hasSetupError ? 2 : 1));
 }
 
 main().catch(err => {

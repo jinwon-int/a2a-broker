@@ -7,7 +7,7 @@ One command to prove the broker is ready for the next release cut.
 ```bash
 cd a2a-broker
 
-# Run both gates (compose smoke only — recovery needs a persistent broker)
+# Run the default gate (compose smoke; recovery is marked non-blocking unless BROKER_URL is set)
 npm run release_gate
 
 # Run only compose smoke
@@ -53,11 +53,11 @@ Requires a **persistent broker instance** (cannot reuse the compose stack since 
 ## Pass/Fail Signals
 
 The script exits with:
-- `0` — all enabled gates passed
+- `0` — all enabled gates passed, or only non-blocking recovery was skipped after compose smoke passed
 - `1` — one or more gates failed
-- `2` — setup error (missing deps, port conflict)
+- `2` — setup error (missing deps, port conflict, or missing `BROKER_URL` for an explicit recovery-only run)
 
-A human-readable summary and a machine-readable JSON block are printed at the end.
+A human-readable summary and a machine-readable JSON block are printed at the end. Setup failures include `setupError: true`; non-blocking recovery skips include `nonBlocking: true`.
 
 ## Expected Artifacts
 
