@@ -108,6 +108,22 @@ function streamLogs(child, label) {
   child.stderr.on('data', c => { const t = c.toString().trim(); if (t) console.error(`[${label}:err] ${t}`); });
 }
 
+async function resolveComposeRunner() {
+  const candidates = [
+    { cmd: 'docker', args: ['compose'] },
+    { cmd: 'docker-compose', args: [] },
+  ];
+
+  for (const candidate of candidates) {
+    try {
+      await run(candidate.cmd, [...candidate.args, 'version']);
+      return candidate;
+    } catch {}
+  }
+
+  throw new Error('docker compose is required for compose smoke (tried "docker compose" and "docker-compose")');
+}
+
 // ---------------------------------------------------------------------------
 // Gate: Compose Smoke (happy path)
 // ---------------------------------------------------------------------------
@@ -138,8 +154,9 @@ async function gateComposeSmoke({ edgeSecret, timeoutMs }) {
   await writeFile(overrideFile, JSON.stringify(override, null, 2));
 
   const baseUrl = `http://127.0.0.1:${port}`;
+  let compose;
   const composeArgs = (sub) => [
-    'docker', 'compose',
+    ...compose.args,
     '-p', projectName,
     '-f', composeFile,
     '-f', overrideFile,
@@ -149,9 +166,11 @@ async function gateComposeSmoke({ edgeSecret, timeoutMs }) {
   const report = { gate: 'compose-smoke', ok: false, baseUrl, composeProject: projectName };
 
   try {
+    compose = await resolveComposeRunner();
+
     // 1. Build + start
     console.log(`[compose] starting stack (project=${projectName}, port=${port})…`);
-    await run('docker', [...composeArgs('up'), '--build', '-d']);
+    await run(compose.cmd, [...composeArgs('up'), '--build', '-d']);
 
     // 2. Wait for broker health
     console.log('[compose] waiting for broker health…');
@@ -228,11 +247,13 @@ async function gateComposeSmoke({ edgeSecret, timeoutMs }) {
 
   } finally {
     // always tear down
-    try {
-      console.log('[compose] tearing down…');
-      await run('docker', [...composeArgs('down'), '--volumes']);
-    } catch (e) {
-      console.error(`[compose] teardown error: ${e.message}`);
+    if (compose) {
+      try {
+        console.log('[compose] tearing down…');
+        await run(compose.cmd, [...composeArgs('down'), '--volumes']);
+      } catch (e) {
+        console.error(`[compose] teardown error: ${e.message}`);
+      }
     }
     // clean override
     try { await run('rm', ['-rf', overrideDir]); } catch {}
