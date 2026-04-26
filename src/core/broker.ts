@@ -13,6 +13,7 @@ import {
   type BrokerStateStore,
 } from "./store.js";
 import { TaskEventStream } from "./task-event-stream.js";
+import { ConferenceRoomManager } from "./conference-room.js";
 import type {
   ApplyProposalRequest,
   ArtifactRecord,
@@ -183,6 +184,7 @@ export class InMemoryA2ABroker {
   private readonly stateListeners = new Set<BrokerStateListener>();
   private readonly maxBufferedEventsPerTask: number;
   private readonly taskEventStream: TaskEventStream;
+  private readonly conferenceManager: ConferenceRoomManager;
 
   constructor(
     private readonly stateStore?: BrokerStateStore,
@@ -193,6 +195,7 @@ export class InMemoryA2ABroker {
     this.maxRequeueAttempts = normalizeMaxRequeueAttempts(options.maxRequeueAttempts);
     this.maxBufferedEventsPerTask = options.maxBufferedEventsPerTask ?? 100;
     this.taskEventStream = new TaskEventStream({ maxEvents: options.maxTaskStatusEvents });
+    this.conferenceManager = new ConferenceRoomManager();
     if (snapshot) {
       this.loadSnapshot(snapshot);
     }
@@ -206,6 +209,15 @@ export class InMemoryA2ABroker {
    */
   getTaskEventStream(): TaskEventStream {
     return this.taskEventStream;
+  }
+
+  /**
+   * Manager for agent teleconference rooms. Each room is anchored to a parent
+   * task id and tracks participant status transitions using the same bounded
+   * cursor/replay substrate as the task status stream. See `docs/conference-room.md`.
+   */
+  getConferenceManager(): ConferenceRoomManager {
+    return this.conferenceManager;
   }
 
   private readonly retentionPolicy: BrokerRetentionPolicy;

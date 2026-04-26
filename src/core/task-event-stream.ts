@@ -1,3 +1,4 @@
+import { CursorEventBuffer } from "./event-buffer.js";
 import type { AuditAction, AuditEvent, TaskRecord } from "./types.js";
 import type {
   TaskStatusEvent,
@@ -50,14 +51,13 @@ const ACTION_TO_KIND: Partial<Record<AuditAction, TaskStatusEventKind>> = {
  * shape suitable for parent aggregates and dashboards.
  */
 export class TaskEventStream {
-  private readonly events: TaskStatusEvent[] = [];
-  private readonly maxEvents: number;
-  private nextId = 0;
+  private readonly buffer: CursorEventBuffer<TaskStatusEvent>;
 
   constructor(options: TaskEventStreamOptions = {}) {
     const requested = options.maxEvents;
-    this.maxEvents =
+    const maxEvents =
       requested !== undefined && requested > 0 ? requested : DEFAULT_TASK_EVENT_RETENTION;
+    this.buffer = new CursorEventBuffer<TaskStatusEvent>(maxEvents);
   }
 
   /**
@@ -74,11 +74,7 @@ export class TaskEventStream {
     if (!kind) return null;
 
     const event = this.buildEvent(kind, audit, task);
-    this.events.push(event);
-    if (this.events.length > this.maxEvents) {
-      this.events.splice(0, this.events.length - this.maxEvents);
-    }
-    return event;
+    return this.buffer.push(event);
   }
 
   /**
@@ -86,27 +82,25 @@ export class TaskEventStream {
    * every event currently retained in chronological order.
    */
   subscribe(options: TaskEventSubscribeOptions = {}): TaskStatusEvent[] {
-    const afterId = options.afterId ?? 0;
-    const limit = options.limit;
-    const result: TaskStatusEvent[] = [];
-    for (const event of this.events) {
-      if (event.id <= afterId) continue;
-      if (options.taskId && event.taskId !== options.taskId) continue;
-      if (options.parentTaskId && event.parentTaskId !== options.parentTaskId) continue;
-      result.push(event);
-      if (limit !== undefined && result.length >= limit) break;
-    }
-    return result;
+    return this.buffer.subscribe({
+      afterId: options.afterId,
+      limit: options.limit,
+      matches: (event) => {
+        if (options.taskId && event.taskId !== options.taskId) return false;
+        if (options.parentTaskId && event.parentTaskId !== options.parentTaskId) return false;
+        return true;
+      },
+    });
   }
 
   /** Largest event id ever assigned. Useful as the initial cursor. */
   get latestId(): number {
-    return this.nextId;
+    return this.buffer.latestId;
   }
 
   /** Number of events currently retained (post FIFO eviction). */
   get size(): number {
-    return this.events.length;
+    return this.buffer.size;
   }
 
   private buildEvent(
@@ -114,8 +108,6 @@ export class TaskEventStream {
     audit: AuditEvent,
     task: TaskRecord,
   ): TaskStatusEvent {
-    this.nextId += 1;
-
     const metadata: TaskStatusEventMetadata = {};
     if (task.taskOrigin) metadata.taskOrigin = task.taskOrigin;
     if (task.targetNodeId) metadata.targetNodeId = task.targetNodeId;
@@ -128,7 +120,7 @@ export class TaskEventStream {
     if (typeof issue === "number" && Number.isFinite(issue)) metadata.issueNumber = issue;
 
     const event: TaskStatusEvent = {
-      id: this.nextId,
+      id: this.buffer.allocateId(),
       timestamp: audit.createdAt,
       taskId: task.id,
       status: task.status,
