@@ -12,15 +12,20 @@
  */
 
 import type {
+  AuditEvent,
   TaskRecord,
   TaskStatus,
-  BrokerSnapshot,
 } from "../core/types.js";
 import type { AssignmentMode } from "../fixtures/team-assignment.js";
 import type {
   HandoffScenarioId,
   HandoffOutcome,
 } from "./handoff-types.js";
+
+export interface BrokerSnapshot {
+  tasks: TaskRecord[];
+  auditEvents: AuditEvent[];
+}
 
 // ---------------------------------------------------------------------------
 // Proof verdict
