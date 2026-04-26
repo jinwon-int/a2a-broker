@@ -54,6 +54,44 @@ test("accepted exchange thread creates and links an exchange task", () => {
   assert.equal(linkedTask.status, "queued");
 });
 
+test("live-impact task creation requires an operator or hub requester", () => {
+  const broker = new InMemoryA2ABroker();
+  registerWorker(broker, "worker-a");
+
+  assert.throws(
+    () => broker.createTask({
+      intent: "apply_local_change",
+      requester: { id: "analyst-a", kind: "node", role: "analyst" },
+      target: { id: "worker-a", kind: "node", role: "live-trader" },
+      workspace: { nodeId: "worker-a", workspaceId: "test" },
+      message: "apply live patch",
+    }),
+    {
+      name: "BrokerError",
+      code: "policy_denied",
+      message: "live-impact task creation requires an operator or hub requester",
+    },
+  );
+});
+
+test("dangerous task creation records explicit human-gate policy context", () => {
+  const broker = new InMemoryA2ABroker();
+  registerWorker(broker, "worker-a");
+
+  const task = broker.createTask({
+    intent: "promote_to_live",
+    requester: { id: "operator-a", kind: "node", role: "operator" },
+    target: { id: "worker-a", kind: "node", role: "analyst" },
+    message: "promote after review",
+  });
+
+  assert.deepEqual(task.policyContext, {
+    requiresApproval: true,
+    liveImpact: true,
+    targetEnvironment: "live",
+  });
+});
+
 test("needs_clarification cancels active exchange task and returns exchange to queued", () => {
   const broker = new InMemoryA2ABroker();
   registerWorker(broker, "worker-a");

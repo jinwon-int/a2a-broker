@@ -1,10 +1,12 @@
 import { randomUUID } from "node:crypto";
 
 import {
+  assertTaskHumanGateAllowed,
   assertProposalApplyAllowed,
   assertProposalCreationAllowed,
   assertProposalReviewAllowed,
   assertValidationSubmissionAllowed,
+  normalizeTaskPolicyContext,
   PolicyError,
 } from "./policy.js";
 import {
@@ -835,6 +837,12 @@ export class InMemoryA2ABroker {
       }
     }
 
+    try {
+      assertTaskHumanGateAllowed(request);
+    } catch (error) {
+      throw normalizePolicyError(error);
+    }
+
     if (request.exchangeId) {
       this.requireExchange(request.exchangeId);
     }
@@ -859,7 +867,7 @@ export class InMemoryA2ABroker {
       proposalId: request.proposalId,
       artifactIds: uniqueIds(request.artifactIds ?? []),
       via: request.via,
-      policyContext: request.policyContext,
+      policyContext: normalizeTaskPolicyContext(request),
       payload: normalizeTaskPayload(request.payload),
       status: "queued",
       createdAt: request.createdAt ?? now,

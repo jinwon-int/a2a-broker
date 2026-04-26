@@ -87,6 +87,18 @@ For the read-side projection a JSON-RPC client receives, see
 "working", "completed", "failed", "canceled") plus an internal-status
 metadata field, so consumers do not have to handcraft the mapping.
 
+### Live-impact task gate
+
+The broker treats `apply_local_change`, `promote_to_live`, `rollback_live`,
+and any task explicitly marked `policyContext.liveImpact` or
+`targetEnvironment: "live"` as human-gated live-impact work. Such tasks must
+be created by a requester with role `operator` or `hub`; other requester roles
+are rejected before the task enters the queue. Accepted live-impact tasks carry
+an explicit `policyContext.requiresApproval: true` marker, and inferred live
+tasks also carry `liveImpact: true` / `targetEnvironment: "live"` so workers,
+dashboards, and closeout tools can surface the operational risk without
+re-parsing intent names.
+
 ## State model
 
 `TaskStatus` values and the only legal transitions:

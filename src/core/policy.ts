@@ -1,6 +1,8 @@
 import type {
   A2APartyRef,
+  A2AWorkerEnvironment,
   ChangeProposal,
+  CreateTaskRequest,
   ProposalActorRequest,
   SubmitValidationRequest,
 } from "./types.js";
@@ -87,4 +89,75 @@ export function assertValidationSubmissionAllowed(
   }
 
   throw new PolicyError("validation may only be submitted by the source or target node in phase 1");
+}
+
+const LIVE_IMPACT_INTENTS = new Set(["promote_to_live", "rollback_live"]);
+const DANGEROUS_TASK_INTENTS = new Set([
+  "apply_local_change",
+  "promote_to_live",
+  "rollback_live",
+]);
+
+export interface NormalizedTaskPolicyContext {
+  requiresApproval?: boolean;
+  liveImpact?: boolean;
+  targetEnvironment?: A2AWorkerEnvironment;
+}
+
+export function normalizeTaskPolicyContext(
+  request: CreateTaskRequest,
+): NormalizedTaskPolicyContext | undefined {
+  const inferredLiveImpact = isLiveImpactTask(request);
+  const requiresGate = taskRequiresHumanGate(request);
+  const context = { ...(request.policyContext ?? {}) };
+
+  if (inferredLiveImpact && context.liveImpact === undefined) {
+    context.liveImpact = true;
+  }
+  if (inferredLiveImpact && context.targetEnvironment === undefined) {
+    context.targetEnvironment = "live";
+  }
+  if (requiresGate && context.requiresApproval === undefined) {
+    context.requiresApproval = true;
+  }
+
+  return Object.keys(context).length > 0 ? context : undefined;
+}
+
+export function assertTaskHumanGateAllowed(request: CreateTaskRequest): void {
+  if (!taskRequiresHumanGate(request)) {
+    return;
+  }
+
+  const requesterRole = request.requester.role;
+  if (requesterRole === "operator" || requesterRole === "hub") {
+    return;
+  }
+
+  throw new PolicyError(
+    "live-impact task creation requires an operator or hub requester",
+  );
+}
+
+function taskRequiresHumanGate(request: CreateTaskRequest): boolean {
+  return (
+    DANGEROUS_TASK_INTENTS.has(request.intent) ||
+    request.policyContext?.requiresApproval === true ||
+    request.policyContext?.liveImpact === true ||
+    request.policyContext?.targetEnvironment === "live" ||
+    isLiveImpactTask(request)
+  );
+}
+
+function isLiveImpactTask(request: CreateTaskRequest): boolean {
+  if (LIVE_IMPACT_INTENTS.has(request.intent)) {
+    return true;
+  }
+  if (request.policyContext?.liveImpact === true) {
+    return true;
+  }
+  if (request.policyContext?.targetEnvironment === "live") {
+    return true;
+  }
+  return request.intent === "apply_local_change" && request.target.role === "live-trader";
 }
