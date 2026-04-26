@@ -6,19 +6,13 @@
  * and a redacted transcript artifact.
  */
 
-import type { TaskStatus } from "./types.js";
-import type {
-  CloseoutDecision,
-  CloseoutVerdict,
-} from "./closeout-reconciler.js";
-
 // ---------------------------------------------------------------------------
 // Participant and contribution types
 // ---------------------------------------------------------------------------
 
 export type ParticipantRole = "chair" | "presenter" | "reviewer" | "observer";
 
-export type ParticipantStatus = "joined" | "contributing" | "idle" | "left" | "timed_out";
+export type ParticipantStatus = "joined" | "contributing" | "idle" | "left" | "blocked" | "timed_out";
 
 export interface ConferenceParticipant {
   nodeId: string;
@@ -33,7 +27,7 @@ export interface ConferenceParticipant {
 export interface Contribution {
   id: string;
   participantId: string;
-  /** Redacted summary — no raw private text. */
+  /** Operator summary. Transcript output always passes this through the default redactor. */
   summary: string;
   /** Contribution category. */
   category: "analysis" | "decision" | "question" | "artifact" | "correction";
@@ -47,6 +41,16 @@ export interface Contribution {
 
 export type QuorumDecision = "ready" | "waiting" | "blocked" | "failed";
 
+export type ConferenceTimeInput = string | number | Date;
+
+export interface ConferenceJoinInput {
+  nodeId: string;
+  displayName?: string;
+  role: ParticipantRole;
+  joinedAt?: ConferenceTimeInput;
+  lastActiveAt?: ConferenceTimeInput;
+}
+
 // ---------------------------------------------------------------------------
 // Conference config
 // ---------------------------------------------------------------------------
@@ -56,18 +60,33 @@ export interface ConferenceConfig {
   minQuorum?: number;
   /** Chair must contribute before closeout. Default: true. */
   requireChairContribution?: boolean;
-  /** Timeout in ms for idle participants. Default: 300000 (5min). */
+  /** Timeout in ms for active, unsettled participants. Default: 300000 (5min). */
   idleTimeoutMs?: number;
   /** Max contributions per participant. Default: no limit. */
   maxContributionsPerParticipant?: number;
+  /** Redaction boundary applied to every transcript summary. */
+  redactSummary?: (summary: string) => string;
 }
 
-const DEFAULT_CONF: Required<ConferenceConfig> = {
+type ResolvedConferenceConfig = {
+  minQuorum: number;
+  requireChairContribution: boolean;
+  idleTimeoutMs: number;
+  maxContributionsPerParticipant: number;
+  redactSummary: (summary: string) => string;
+};
+
+const DEFAULT_CONF: ResolvedConferenceConfig = {
   minQuorum: 2,
   requireChairContribution: true,
   idleTimeoutMs: 300_000,
-  maxContributionsPerParticipant: Infinity,
+  maxContributionsPerParticipant: Number.POSITIVE_INFINITY,
+  redactSummary: defaultRedactSummary,
 };
+
+const TERMINAL_STATUSES = new Set<ParticipantStatus>(["left", "blocked", "timed_out"]);
+const SETTLED_STATUSES = new Set<ParticipantStatus>(["idle", "left", "blocked", "timed_out"]);
+const EPOCH_MS = Date.UTC(2026, 0, 1, 0, 0, 0, 0);
 
 // ---------------------------------------------------------------------------
 // Conference fan-in reconciler
@@ -82,6 +101,7 @@ export interface ConferenceVerdict {
     contributing: number;
     idle: number;
     left: number;
+    blocked: number;
     timed_out: number;
   };
   contributionCounts: {
@@ -102,7 +122,9 @@ export class ConferenceFanIn {
   private readonly contributions: Contribution[] = [];
   private readonly idempotencyKeys = new Set<string>();
   private seq = 0;
-  private readonly config: Required<ConferenceConfig>;
+  private logicalMs = EPOCH_MS;
+  private lastDecisionAt = toIso(EPOCH_MS);
+  private readonly config: ResolvedConferenceConfig;
 
   constructor(config?: ConferenceConfig) {
     this.config = { ...DEFAULT_CONF, ...config };
@@ -113,39 +135,66 @@ export class ConferenceFanIn {
   // -------------------------------------------------------------------------
 
   /** Register a participant joining the conference. */
-  joinParticipant(p: Omit<ConferenceParticipant, "status" | "joinedAt" | "lastActiveAt">): ConferenceVerdict {
-    const now = new Date().toISOString();
+  joinParticipant(p: ConferenceJoinInput): ConferenceVerdict {
+    const joinedAt = normalizeTime(p.joinedAt ?? this.nextTimestamp());
+    const lastActiveAt = normalizeTime(p.lastActiveAt ?? joinedAt);
     this.participants.set(p.nodeId, {
-      ...p,
+      nodeId: p.nodeId,
+      displayName: p.displayName,
+      role: p.role,
       status: "joined",
-      joinedAt: now,
-      lastActiveAt: now,
+      joinedAt,
+      lastActiveAt,
     });
-    this.seq++;
+    this.recordMutation(lastActiveAt);
     return this.computeVerdict();
   }
 
   /** Update participant status. */
-  updateParticipant(nodeId: string, status: ParticipantStatus): ConferenceVerdict {
+  updateParticipant(nodeId: string, status: ParticipantStatus, at?: ConferenceTimeInput): ConferenceVerdict {
     const p = this.participants.get(nodeId);
     if (!p) return this.computeVerdict();
+    const timestamp = normalizeTime(at ?? this.nextTimestamp());
     p.status = status;
-    p.lastActiveAt = new Date().toISOString();
-    if (status === "left" || status === "timed_out") {
-      p.leftAt = new Date().toISOString();
+    p.lastActiveAt = timestamp;
+    if (TERMINAL_STATUSES.has(status)) {
+      p.leftAt = timestamp;
     }
-    this.seq++;
+    this.recordMutation(timestamp);
     return this.computeVerdict();
   }
 
   /** Mark participant as contributing. */
-  markContributing(nodeId: string): ConferenceVerdict {
+  markContributing(nodeId: string, at?: ConferenceTimeInput): ConferenceVerdict {
     const p = this.participants.get(nodeId);
     if (!p) return this.computeVerdict();
+    const timestamp = normalizeTime(at ?? this.nextTimestamp());
     p.status = "contributing";
-    p.lastActiveAt = new Date().toISOString();
-    this.seq++;
+    p.lastActiveAt = timestamp;
+    this.recordMutation(timestamp);
     return this.computeVerdict();
+  }
+
+  /** Reconcile elapsed idleTimeoutMs into concrete timed_out participant states. */
+  reconcileTimeouts(at: ConferenceTimeInput = this.lastDecisionAt): ConferenceVerdict {
+    const asOf = normalizeTime(at);
+    let changed = false;
+
+    for (const p of this.participants.values()) {
+      if (!this.isTimeoutEligible(p)) continue;
+      if (elapsedMs(p.lastActiveAt, asOf) >= this.config.idleTimeoutMs) {
+        p.status = "timed_out";
+        p.leftAt = asOf;
+        p.lastActiveAt = asOf;
+        changed = true;
+      }
+    }
+
+    if (changed) {
+      this.recordMutation(asOf);
+    }
+
+    return this.computeVerdict(asOf);
   }
 
   // -------------------------------------------------------------------------
@@ -157,27 +206,27 @@ export class ConferenceFanIn {
    * Returns the updated verdict.
    */
   addContribution(c: Contribution): { verdict: ConferenceVerdict; accepted: boolean; reason?: string } {
-    // Idempotency
     const key = `${c.participantId}:${c.id}`;
     if (this.idempotencyKeys.has(key)) {
       return { verdict: this.computeVerdict(), accepted: false, reason: "duplicate" };
     }
 
-    // Participant must exist
     const p = this.participants.get(c.participantId);
     if (!p) {
       return { verdict: this.computeVerdict(), accepted: false, reason: "unknown_participant" };
     }
 
-    // Max contributions check
     const pCount = this.contributions.filter(x => x.participantId === c.participantId).length;
     if (pCount >= this.config.maxContributionsPerParticipant) {
       return { verdict: this.computeVerdict(), accepted: false, reason: "max_contributions" };
     }
 
+    const createdAt = normalizeTime(c.createdAt);
     this.idempotencyKeys.add(key);
-    this.contributions.push(c);
-    this.markContributing(c.participantId);
+    this.contributions.push({ ...c, createdAt });
+    p.status = "contributing";
+    p.lastActiveAt = createdAt;
+    this.recordMutation(createdAt);
     return { verdict: this.computeVerdict(), accepted: true };
   }
 
@@ -186,19 +235,20 @@ export class ConferenceFanIn {
   // -------------------------------------------------------------------------
 
   getParticipants(): ConferenceParticipant[] {
-    return [...this.participants.values()];
+    return sortParticipants([...this.participants.values()]).map(p => ({ ...p }));
   }
 
   getContributions(): Contribution[] {
-    return [...this.contributions];
+    return sortContributions(this.contributions).map(c => ({ ...c, artifactIds: sortedUnique(c.artifactIds ?? []) }));
   }
 
   getParticipant(nodeId: string): ConferenceParticipant | undefined {
-    return this.participants.get(nodeId);
+    const p = this.participants.get(nodeId);
+    return p ? { ...p } : undefined;
   }
 
-  currentVerdict(): ConferenceVerdict {
-    return this.computeVerdict();
+  currentVerdict(asOf?: ConferenceTimeInput): ConferenceVerdict {
+    return this.computeVerdict(asOf ? normalizeTime(asOf) : undefined);
   }
 
   getParticipantCount(): number {
@@ -210,6 +260,8 @@ export class ConferenceFanIn {
     this.contributions.length = 0;
     this.idempotencyKeys.clear();
     this.seq = 0;
+    this.logicalMs = EPOCH_MS;
+    this.lastDecisionAt = toIso(EPOCH_MS);
   }
 
   // -------------------------------------------------------------------------
@@ -217,18 +269,17 @@ export class ConferenceFanIn {
   // -------------------------------------------------------------------------
 
   /**
-   * Produce a redacted transcript artifact.
-   * No raw session text — only structured summaries.
+   * Produce a deterministic, redacted transcript artifact.
+   * No raw session text is emitted; every summary crosses a redaction boundary.
    */
   buildTranscriptArtifact(): TranscriptArtifact {
-    const contributions = [...this.contributions].sort(
-      (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime(),
-    );
+    const contributions = sortContributions(this.contributions);
+    const participants = sortParticipants([...this.participants.values()]);
 
     return {
       type: "teleconference-transcript",
-      generatedAt: new Date().toISOString(),
-      participants: this.getParticipants().map(p => ({
+      generatedAt: this.artifactTimestamp(contributions, participants),
+      participants: participants.map(p => ({
         nodeId: p.nodeId,
         displayName: p.displayName,
         role: p.role,
@@ -238,15 +289,15 @@ export class ConferenceFanIn {
       contributions: contributions.map(c => ({
         id: c.id,
         participantId: c.participantId,
-        summary: c.summary,
+        summary: this.config.redactSummary(c.summary),
         category: c.category,
-        artifactIds: c.artifactIds,
+        artifactIds: sortedUnique(c.artifactIds ?? []),
         replyTo: c.replyTo,
-        createdAt: c.createdAt,
+        createdAt: normalizeTime(c.createdAt),
       })),
       decisionCategories: this.summarizeCategories(),
       threadCount: contributions.filter(c => c.replyTo).length,
-      uniqueArtifacts: [...new Set(contributions.flatMap(c => c.artifactIds ?? []))],
+      uniqueArtifacts: sortedUnique(contributions.flatMap(c => c.artifactIds ?? [])),
     };
   }
 
@@ -254,86 +305,120 @@ export class ConferenceFanIn {
   // Internal
   // -------------------------------------------------------------------------
 
-  private computeVerdict(): ConferenceVerdict {
-    const parts = [...this.participants.values()];
+  private computeVerdict(asOf?: string): ConferenceVerdict {
+    const decisionAt = asOf ?? this.lastDecisionAt;
+    const parts = this.effectiveParticipants(decisionAt, asOf !== undefined);
     const total = parts.length;
 
     if (total === 0) {
-      return this.verdict("waiting", "No participants", { total: 0, joined: 0, contributing: 0, idle: 0, left: 0, timed_out: 0 }, { total: 0, analysis: 0, decision: 0, question: 0, artifact: 0, correction: 0 }, []);
+      return this.verdict("waiting", "No participants", emptyParticipantCounts(), emptyContributionCounts(), [], decisionAt);
     }
 
-    let joined = 0, contributing = 0, idle = 0, left = 0, timed_out = 0;
+    const participantCounts = this.countParticipants(parts);
+    const contributionCounts = this.summarizeCategories();
     const signals: string[] = [];
 
-    for (const p of parts) {
-      switch (p.status) {
-        case "joined": joined++; break;
-        case "contributing": contributing++; break;
-        case "idle": idle++; break;
-        case "left": left++; break;
-        case "timed_out": timed_out++; break;
-      }
-    }
-
-    // Blocked: chair required but absent
     if (this.config.requireChairContribution) {
-      const chair = parts.find(p => p.role === "chair");
+      const chair = sortParticipants(parts.filter(p => p.role === "chair"))[0];
       if (!chair) {
-        return this.verdict("blocked", "Chair required but not present", { total, joined, contributing, idle, left, timed_out }, this.summarizeCategories(), signals);
+        return this.verdict("blocked", "Chair required but not present", participantCounts, contributionCounts, signals, decisionAt);
       }
-      const chairContrib = this.contributions.some(c => c.participantId === chair.nodeId);
-      if (!chairContrib && (contributing + joined > 0)) {
+      const chairContrib = this.hasContribution(chair.nodeId);
+      if (!chairContrib) {
         signals.push(`chair:${chair.nodeId}:no_contribution`);
       }
     }
 
-    // Blocked: timed-out participants
-    if (timed_out > 0) {
-      const timedOutParts = parts.filter(p => p.status === "timed_out");
+    if (participantCounts.blocked > 0) {
+      const blockedParts = sortParticipants(parts.filter(p => p.status === "blocked"));
+      signals.push(...blockedParts.map(p => `blocked:${p.nodeId}`));
+      return this.verdict("blocked", `${participantCounts.blocked} participant(s) blocked`, participantCounts, contributionCounts, signals, decisionAt);
+    }
+
+    if (participantCounts.timed_out > 0) {
+      const timedOutParts = sortParticipants(parts.filter(p => p.status === "timed_out"));
       signals.push(...timedOutParts.map(p => `timeout:${p.nodeId}`));
-      return this.verdict("blocked", `${timed_out} participant(s) timed out`, { total, joined, contributing, idle, left, timed_out }, this.summarizeCategories(), signals);
+      return this.verdict("blocked", `${participantCounts.timed_out} participant(s) timed out`, participantCounts, contributionCounts, signals, decisionAt);
     }
 
-    // Failed: quorum cannot be reached
-    const active = joined + contributing + idle;
+    const availableForQuorum = parts.filter(p => !TERMINAL_STATUSES.has(p.status)).length;
     const minRequired = this.config.minQuorum;
-    if (active < minRequired && left > 0) {
-      return this.verdict("failed", `Quorum unreachable: ${active} active (need ${minRequired}), ${left} left`, { total, joined, contributing, idle, left, timed_out }, this.summarizeCategories(), signals);
+    if (availableForQuorum < minRequired && participantCounts.left > 0) {
+      return this.verdict(
+        "failed",
+        `Quorum unreachable: ${availableForQuorum} available (need ${minRequired}), ${participantCounts.left} left`,
+        participantCounts,
+        contributionCounts,
+        signals,
+        decisionAt,
+      );
     }
 
-    // Waiting: quorum not yet met
-    if (active < minRequired) {
-      return this.verdict("waiting", `Quorum: ${active}/${minRequired} active`, { total, joined, contributing, idle, left, timed_out }, this.summarizeCategories(), signals);
+    if (availableForQuorum < minRequired) {
+      return this.verdict("waiting", `Quorum: ${availableForQuorum}/${minRequired} available`, participantCounts, contributionCounts, signals, decisionAt);
     }
 
-    // Waiting: quorum met but no contributions yet
     if (this.contributions.length === 0) {
-      return this.verdict("waiting", `Quorum met (${active} active) but no contributions`, { total, joined, contributing, idle, left, timed_out }, this.summarizeCategories(), signals);
+      return this.verdict("waiting", `Quorum met (${availableForQuorum} available) but no contributions`, participantCounts, contributionCounts, signals, decisionAt);
     }
 
-    // Chair contribution required but not yet received
     if (this.config.requireChairContribution) {
-      const chair = parts.find(p => p.role === "chair");
-      if (chair && !this.contributions.some(c => c.participantId === chair.nodeId)) {
-        return this.verdict("waiting", `Quorum met but chair (${chair.nodeId}) has not contributed`, { total, joined, contributing, idle, left, timed_out }, this.summarizeCategories(), signals);
+      const chair = sortParticipants(parts.filter(p => p.role === "chair"))[0];
+      if (chair && !this.hasContribution(chair.nodeId)) {
+        return this.verdict("waiting", `Quorum met but chair (${chair.nodeId}) has not contributed`, participantCounts, contributionCounts, signals, decisionAt);
       }
     }
 
-    // Waiting: some participants still active (contributing)
-    if (contributing > 0) {
-      return this.verdict("waiting", `Quorum met, ${contributing} still contributing`, { total, joined, contributing, idle, left, timed_out }, this.summarizeCategories(), signals);
+    const awaiting = sortParticipants(
+      parts.filter(p => !TERMINAL_STATUSES.has(p.status) && !this.isSettledForReady(p)),
+    );
+    if (awaiting.length > 0) {
+      signals.push(...awaiting.map(p => `awaiting:${p.nodeId}`));
+      const stillContributing = awaiting.filter(p => p.status === "contributing").length;
+      const reason = stillContributing > 0
+        ? `Quorum met, ${stillContributing} still contributing`
+        : `Quorum met, awaiting ${awaiting.length} participant(s)`;
+      return this.verdict("waiting", reason, participantCounts, contributionCounts, signals, decisionAt);
     }
 
-    // Ready: quorum met, all active participants have contributed or are idle
-    if (signals.length === 0 || signals.every(s => s.startsWith("chair:"))) {
-      return this.verdict("ready", `Quorum met, ${this.contributions.length} contributions received`, { total, joined, contributing, idle, left, timed_out }, this.summarizeCategories(), signals);
-    }
-
-    return this.verdict("waiting", "Quorum met, awaiting completion", { total, joined, contributing, idle, left, timed_out }, this.summarizeCategories(), signals);
+    return this.verdict("ready", `Quorum met, ${this.contributions.length} contributions received`, participantCounts, contributionCounts, signals, decisionAt);
   }
 
-  private summarizeCategories() {
-    const counts = { total: this.contributions.length, analysis: 0, decision: 0, question: 0, artifact: 0, correction: 0 };
+  private effectiveParticipants(asOf: string, applyTimeouts: boolean): ConferenceParticipant[] {
+    return sortParticipants([...this.participants.values()].map(p => {
+      if (applyTimeouts && this.isTimeoutEligible(p) && elapsedMs(p.lastActiveAt, asOf) >= this.config.idleTimeoutMs) {
+        return { ...p, status: "timed_out", leftAt: asOf, lastActiveAt: asOf };
+      }
+      return { ...p };
+    }));
+  }
+
+  private isTimeoutEligible(p: ConferenceParticipant): boolean {
+    return !TERMINAL_STATUSES.has(p.status) && p.status !== "idle";
+  }
+
+  private isSettledForReady(p: ConferenceParticipant): boolean {
+    if (SETTLED_STATUSES.has(p.status)) return true;
+    if (!this.hasContribution(p.nodeId)) return false;
+    return p.status !== "contributing";
+  }
+
+  private hasContribution(nodeId: string): boolean {
+    return this.contributions.some(c => c.participantId === nodeId);
+  }
+
+  private countParticipants(parts: ConferenceParticipant[]): ConferenceVerdict["participantCounts"] {
+    const counts = emptyParticipantCounts();
+    counts.total = parts.length;
+    for (const p of parts) {
+      counts[p.status]++;
+    }
+    return counts;
+  }
+
+  private summarizeCategories(): ConferenceVerdict["contributionCounts"] {
+    const counts = emptyContributionCounts();
+    counts.total = this.contributions.length;
     for (const c of this.contributions) {
       counts[c.category]++;
     }
@@ -346,8 +431,30 @@ export class ConferenceFanIn {
     participantCounts: ConferenceVerdict["participantCounts"],
     contributionCounts: ConferenceVerdict["contributionCounts"],
     signals: string[],
+    decidedAt: string,
   ): ConferenceVerdict {
-    return { decision, reason, participantCounts, contributionCounts, signals, decidedAt: new Date().toISOString(), seq: this.seq };
+    return { decision, reason, participantCounts, contributionCounts, signals: [...signals].sort(), decidedAt: normalizeTime(decidedAt), seq: this.seq };
+  }
+
+  private nextTimestamp(): string {
+    this.logicalMs += 1;
+    return toIso(this.logicalMs);
+  }
+
+  private recordMutation(at: string): void {
+    this.seq++;
+    if (timestampMs(at) >= timestampMs(this.lastDecisionAt)) {
+      this.lastDecisionAt = normalizeTime(at);
+    }
+  }
+
+  private artifactTimestamp(contributions: readonly Contribution[], participants: readonly ConferenceParticipant[]): string {
+    const timestamps = [
+      this.lastDecisionAt,
+      ...contributions.map(c => c.createdAt),
+      ...participants.flatMap(p => [p.joinedAt, p.lastActiveAt, p.leftAt].filter((x): x is string => Boolean(x))),
+    ];
+    return maxTimestamp(timestamps);
   }
 }
 
@@ -370,7 +477,7 @@ export interface TranscriptArtifact {
     participantId: string;
     summary: string;
     category: string;
-    artifactIds?: string[];
+    artifactIds: string[];
     replyTo?: string;
     createdAt: string;
   }>;
@@ -398,7 +505,7 @@ export function formatConferenceComment(verdict: ConferenceVerdict, transcript?:
   const lines = [
     `${icon} **Teleconference: ${verdict.decision.toUpperCase()}**`,
     `> ${verdict.reason}`,
-    `> Participants: ${p.joined} joined, ${p.contributing} active, ${p.idle} idle, ${p.left} left, ${p.timed_out} timed-out`,
+    `> Participants: ${p.joined} joined, ${p.contributing} active, ${p.idle} idle, ${p.left} left, ${p.blocked} blocked, ${p.timed_out} timed-out`,
     `> Contributions: ${c.total} (${c.analysis} analysis, ${c.decision} decisions, ${c.question} questions, ${c.artifact} artifacts, ${c.correction} corrections)`,
   ];
 
@@ -411,4 +518,93 @@ export function formatConferenceComment(verdict: ConferenceVerdict, transcript?:
   }
 
   return lines.join("\n");
+}
+
+export function defaultRedactSummary(summary: string): string {
+  const scrubbed = summary
+    .replace(/[\u0000-\u001f\u007f]/g, " ")
+    .replace(/\[(?:private|raw|secret)\][\s\S]*?\[\/(?:private|raw|secret)\]/gi, "[REDACTED]")
+    .replace(/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi, "[REDACTED_EMAIL]")
+    .replace(/\b(?:\+?82[-.\s]?)?0?1[016789][-.\s]?\d{3,4}[-.\s]?\d{4}\b/g, "[REDACTED_PHONE]")
+    .replace(/\b\d{6}[-\s]?\d{7}\b/g, "[REDACTED_ID]")
+    .replace(/\b(?:sk-[A-Za-z0-9_-]{8,}|gh[pousr]_[A-Za-z0-9_]{8,}|xox[baprs]-[A-Za-z0-9-]{8,})\b/g, "[REDACTED_TOKEN]")
+    .replace(/\b(?:bearer|token|api[_-]?key|secret|password)\s*[:=]\s*\S+/gi, "$1=[REDACTED]")
+    .replace(/\b(?:raw|private)\s*[:=]\s*[^.;\n]+/gi, "[REDACTED]")
+    .replace(/https?:\/\/\S+/gi, url => redactUrl(url))
+    .replace(/\s+/g, " ")
+    .trim();
+
+  if (scrubbed.length <= 480) return scrubbed;
+  return `${scrubbed.slice(0, 477).trimEnd()}...`;
+}
+
+function redactUrl(value: string): string {
+  try {
+    const url = new URL(value);
+    url.username = "";
+    url.password = "";
+    url.search = url.search ? "?redacted" : "";
+    return url.toString();
+  } catch {
+    return "[REDACTED_URL]";
+  }
+}
+
+function sortParticipants(parts: readonly ConferenceParticipant[]): ConferenceParticipant[] {
+  return [...parts].sort((a, b) => compareStrings(a.nodeId, b.nodeId) || compareStrings(a.role, b.role));
+}
+
+function sortContributions(contributions: readonly Contribution[]): Contribution[] {
+  return [...contributions].sort(
+    (a, b) => timestampMs(a.createdAt) - timestampMs(b.createdAt)
+      || compareStrings(a.participantId, b.participantId)
+      || compareStrings(a.id, b.id)
+      || compareStrings(a.category, b.category),
+  );
+}
+
+function sortedUnique(values: readonly string[]): string[] {
+  return [...new Set(values)].sort(compareStrings);
+}
+
+function emptyParticipantCounts(): ConferenceVerdict["participantCounts"] {
+  return { total: 0, joined: 0, contributing: 0, idle: 0, left: 0, blocked: 0, timed_out: 0 };
+}
+
+function emptyContributionCounts(): ConferenceVerdict["contributionCounts"] {
+  return { total: 0, analysis: 0, decision: 0, question: 0, artifact: 0, correction: 0 };
+}
+
+function elapsedMs(from: string, to: string): number {
+  return timestampMs(to) - timestampMs(from);
+}
+
+function maxTimestamp(values: readonly string[]): string {
+  const maxMs = values.map(timestampMs).reduce((max, value) => Math.max(max, value), EPOCH_MS);
+  return toIso(maxMs);
+}
+
+function normalizeTime(value: ConferenceTimeInput): string {
+  return toIso(timestampMs(value));
+}
+
+function timestampMs(value: ConferenceTimeInput): number {
+  if (value instanceof Date) {
+    const ms = value.getTime();
+    if (Number.isFinite(ms)) return ms;
+  } else if (typeof value === "number") {
+    if (Number.isFinite(value)) return value;
+  } else {
+    const ms = Date.parse(value);
+    if (Number.isFinite(ms)) return ms;
+  }
+  throw new Error(`Invalid conference timestamp: ${String(value)}`);
+}
+
+function toIso(ms: number): string {
+  return new Date(ms).toISOString();
+}
+
+function compareStrings(a: string, b: string): number {
+  return a.localeCompare(b, "en", { numeric: false, sensitivity: "variant" });
 }

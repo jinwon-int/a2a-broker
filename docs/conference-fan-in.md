@@ -10,17 +10,18 @@ Deterministic fan-in from multi-agent teleconference into a quorum decision and 
 
 | Decision | Meaning |
 |---|---|
-| `ready` | Quorum met, all participants contributed or idle |
-| `waiting` | Quorum not met or participants still contributing |
-| `blocked` | Chair missing, participant timed out |
+| `ready` | Quorum met and every non-terminal participant has contributed and settled, or is explicitly idle |
+| `waiting` | Quorum not met, participants still contributing, or joined participants have not contributed/settled |
+| `blocked` | Chair missing, participant blocked, or participant timed out |
 | `failed` | Quorum unreachable (participants left) |
 
 ## Quorum Rules
 
-1. `minQuorum` participants must be active (default: 2)
+1. `minQuorum` participants must be available (default: 2)
 2. Chair must be present and contribute (if `requireChairContribution`)
-3. Timed-out participants block the conference
-4. If active + left < minQuorum → `failed` (unreachable)
+3. `ready` requires every available participant to have contributed and settled, or be explicitly `idle`; a merely `joined` participant keeps the conference `waiting`
+4. `idleTimeoutMs` is reconciled against participant `lastActiveAt` via `currentVerdict(asOf)` or `reconcileTimeouts(asOf)`; timed-out participants block the conference
+5. If remaining available participants drop below `minQuorum` after departures → `failed` (unreachable)
 
 ## Contribution Idempotency
 
@@ -31,7 +32,7 @@ Deterministic fan-in from multi-agent teleconference into a quorum decision and 
 
 ## Transcript Artifact
 
-Redacted by default — no raw session text:
+Redacted and deterministic by default — no raw session text. Participant order, contribution order (including equal timestamps), artifact IDs, unique artifact lists, and generated timestamps are stable for the same inputs:
 
 ```typescript
 {
@@ -53,16 +54,18 @@ Redacted by default — no raw session text:
 | No quorum | `waiting` |
 | Chair missing | `blocked` |
 | Chair not contributed | `waiting` |
-| Participant timed out | `blocked` |
+| Participant timed out manually or by elapsed idle timeout | `blocked` |
 | Quorum unreachable | `failed` |
 | Duplicate contribution | idempotent (no-op) |
 | Max contributions exceeded | rejected |
+| Joined participant has not contributed or settled | `waiting` |
+| Explicitly idle participant without contribution | settled for closeout |
 
 ## Implementation
 
 - **Fan-in**: `src/core/conference-fan-in.ts`
-- **Tests**: `src/core/conference-fan-in.test.ts` (31 tests)
+- **Tests**: `src/core/conference-fan-in.test.ts` (38 tests)
 
 ## Test Results
 
-401/401 pass (all suites including 31 new)
+`node --test dist/core/conference-fan-in.test.js` → 38/38 pass

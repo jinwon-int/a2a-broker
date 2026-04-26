@@ -11,7 +11,7 @@ import {
   ConferenceFanIn,
   formatConferenceComment,
 } from "./conference-fan-in.js";
-import type { Contribution, ConferenceVerdict } from "./conference-fan-in.js";
+import type { Contribution, ConferenceConfig, ConferenceVerdict } from "./conference-fan-in.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -84,6 +84,35 @@ describe("conference: quorum", () => {
     f.updateParticipant("alpha", "idle");
     f.addContribution(contrib({ participantId: "beta" }));
     f.updateParticipant("beta", "idle");
+    const v = f.currentVerdict();
+    assert.equal(v.decision, "ready");
+  });
+
+  it("does not become ready while a joined participant has not contributed or settled", () => {
+    resetIds();
+    const f = new ConferenceFanIn({ minQuorum: 2, requireChairContribution: false });
+    f.joinParticipant({ nodeId: "alpha", role: "presenter" });
+    f.joinParticipant({ nodeId: "beta", role: "reviewer" });
+    f.joinParticipant({ nodeId: "gamma", role: "observer" });
+    f.addContribution(contrib({ participantId: "alpha" }));
+    f.updateParticipant("alpha", "idle");
+    f.addContribution(contrib({ participantId: "beta" }));
+    f.updateParticipant("beta", "idle");
+
+    const v = f.currentVerdict();
+    assert.equal(v.decision, "waiting");
+    assert.ok(v.signals.includes("awaiting:gamma"));
+  });
+
+  it("allows an explicitly idle participant without contribution to settle", () => {
+    resetIds();
+    const f = new ConferenceFanIn({ minQuorum: 2, requireChairContribution: false });
+    f.joinParticipant({ nodeId: "alpha", role: "presenter" });
+    f.joinParticipant({ nodeId: "beta", role: "observer" });
+    f.addContribution(contrib({ participantId: "alpha" }));
+    f.updateParticipant("alpha", "idle");
+    f.updateParticipant("beta", "idle");
+
     const v = f.currentVerdict();
     assert.equal(v.decision, "ready");
   });
@@ -163,6 +192,17 @@ describe("conference: participant lifecycle", () => {
     const v = f.currentVerdict();
     assert.equal(v.participantCounts.left, 1);
   });
+
+  it("blocked participant status blocks closeout", () => {
+    resetIds();
+    const f = new ConferenceFanIn({ minQuorum: 2, requireChairContribution: false });
+    f.joinParticipant({ nodeId: "alpha", role: "presenter" });
+    f.joinParticipant({ nodeId: "beta", role: "reviewer" });
+    f.updateParticipant("beta", "blocked");
+    const v = f.currentVerdict();
+    assert.equal(v.decision, "blocked");
+    assert.deepEqual(v.signals, ["blocked:beta"]);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -180,6 +220,32 @@ describe("conference: timeout", () => {
     assert.equal(v.decision, "blocked");
     assert.ok(v.reason.includes("timed out"));
     assert.ok(v.signals.some(s => s.includes("timeout:beta")));
+  });
+
+  it("reconciles elapsed idleTimeoutMs without manual timed_out status", () => {
+    resetIds();
+    const f = new ConferenceFanIn({ minQuorum: 2, requireChairContribution: false, idleTimeoutMs: 1_000 });
+    f.joinParticipant({ nodeId: "alpha", role: "presenter", joinedAt: "2026-04-26T00:00:00.000Z" });
+    f.joinParticipant({ nodeId: "beta", role: "reviewer", joinedAt: "2026-04-26T00:00:00.000Z" });
+
+    const before = f.currentVerdict("2026-04-26T00:00:00.999Z");
+    assert.equal(before.decision, "waiting");
+    assert.equal(before.participantCounts.timed_out, 0);
+
+    const after = f.currentVerdict("2026-04-26T00:00:01.000Z");
+    assert.equal(after.decision, "blocked");
+    assert.equal(after.participantCounts.timed_out, 2);
+    assert.deepEqual(after.signals, ["timeout:alpha", "timeout:beta"]);
+  });
+
+  it("can persist timeout reconciliation into participant state", () => {
+    resetIds();
+    const f = new ConferenceFanIn({ minQuorum: 1, requireChairContribution: false, idleTimeoutMs: 500 });
+    f.joinParticipant({ nodeId: "alpha", role: "presenter", joinedAt: "2026-04-26T00:00:00.000Z" });
+
+    const v = f.reconcileTimeouts("2026-04-26T00:00:00.500Z");
+    assert.equal(v.decision, "blocked");
+    assert.equal(f.getParticipant("alpha")?.status, "timed_out");
   });
 
   it("failed when quorum unreachable after departure", () => {
@@ -279,6 +345,41 @@ describe("conference: transcript artifact", () => {
       assert.ok(typeof c.summary === "string");
       assert.ok(c.summary.length < 500);
     }
+  });
+
+  it("redacts private details from transcript summaries by default", () => {
+    resetIds();
+    const f = new ConferenceFanIn({ minQuorum: 1, requireChairContribution: false });
+    f.joinParticipant({ nodeId: "alpha", role: "presenter" });
+    f.addContribution(contrib({
+      participantId: "alpha",
+      summary: "PRIVATE: call 010-1234-5678, mail human@example.com, token sk-secretvalue123, [raw]verbatim private text[/raw]",
+    }));
+
+    const summary = f.buildTranscriptArtifact().contributions[0]?.summary ?? "";
+    assert.equal(summary.includes("010-1234-5678"), false);
+    assert.equal(summary.includes("human@example.com"), false);
+    assert.equal(summary.includes("sk-secretvalue123"), false);
+    assert.equal(summary.includes("verbatim private text"), false);
+    assert.ok(summary.includes("[REDACTED"));
+  });
+
+  it("orders transcript participants, artifacts, and equal-timestamp contributions deterministically", () => {
+    resetIds();
+    const f = new ConferenceFanIn({ minQuorum: 2, requireChairContribution: false });
+    f.joinParticipant({ nodeId: "gamma", role: "observer", joinedAt: "2026-04-26T00:00:00Z" });
+    f.joinParticipant({ nodeId: "alpha", role: "presenter", joinedAt: "2026-04-26T00:00:00Z" });
+    f.joinParticipant({ nodeId: "beta", role: "reviewer", joinedAt: "2026-04-26T00:00:00Z" });
+    f.addContribution(contrib({ participantId: "beta", id: "b", createdAt: "2026-04-26T01:00:00Z", artifactIds: ["z", "a"] }));
+    f.addContribution(contrib({ participantId: "alpha", id: "a", createdAt: "2026-04-26T01:00:00Z", artifactIds: ["m", "a"] }));
+    f.addContribution(contrib({ participantId: "alpha", id: "c", createdAt: "2026-04-26T01:00:00Z", artifactIds: ["b"] }));
+
+    const artifact = f.buildTranscriptArtifact();
+    assert.deepEqual(artifact.participants.map(p => p.nodeId), ["alpha", "beta", "gamma"]);
+    assert.deepEqual(artifact.contributions.map(c => `${c.participantId}:${c.id}`), ["alpha:a", "alpha:c", "beta:b"]);
+    assert.deepEqual(artifact.contributions[2]?.artifactIds, ["a", "z"]);
+    assert.deepEqual(artifact.uniqueArtifacts, ["a", "b", "m", "z"]);
+    assert.equal(artifact.generatedAt, "2026-04-26T01:00:00.000Z");
   });
 });
 
