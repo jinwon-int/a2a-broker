@@ -108,7 +108,7 @@ export function normalizeTaskPolicyContext(
   request: CreateTaskRequest,
 ): NormalizedTaskPolicyContext | undefined {
   const inferredLiveImpact = isLiveImpactTask(request);
-  const requiresGate = taskRequiresHumanGate(request);
+  const requiresGate = isTaskApprovalRequired(request);
   const context = { ...(request.policyContext ?? {}) };
 
   if (inferredLiveImpact && context.liveImpact === undefined) {
@@ -125,21 +125,13 @@ export function normalizeTaskPolicyContext(
 }
 
 export function assertTaskHumanGateAllowed(request: CreateTaskRequest): void {
-  if (!taskRequiresHumanGate(request)) {
-    return;
-  }
-
-  const requesterRole = request.requester.role;
-  if (requesterRole === "operator" || requesterRole === "hub") {
-    return;
-  }
-
-  throw new PolicyError(
-    "live-impact task creation requires an operator or hub requester",
-  );
+  // Round 27 changed live-impact handling from create-time rejection to
+  // broker-owned blocked -> approved -> queued resume. Keep this exported
+  // helper as a compatibility no-op for older callers that still import it.
+  void request;
 }
 
-function taskRequiresHumanGate(request: CreateTaskRequest): boolean {
+export function isTaskApprovalRequired(request: CreateTaskRequest): boolean {
   return (
     DANGEROUS_TASK_INTENTS.has(request.intent) ||
     request.policyContext?.requiresApproval === true ||
@@ -147,6 +139,10 @@ function taskRequiresHumanGate(request: CreateTaskRequest): boolean {
     request.policyContext?.targetEnvironment === "live" ||
     isLiveImpactTask(request)
   );
+}
+
+export function isPrivilegedTaskApprover(actor: A2APartyRef | undefined): boolean {
+  return actor?.role === "operator" || actor?.role === "hub";
 }
 
 function isLiveImpactTask(request: CreateTaskRequest): boolean {

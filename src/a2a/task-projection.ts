@@ -57,6 +57,8 @@ export function projectBrokerTask(task: TaskRecord): A2ATaskProjection {
       cancellation: task.cancellation,
       error: task.error,
       result: task.result,
+      policyContext: task.policyContext,
+      approval: task.approval,
     },
     artifacts: (task.result?.artifactIds ?? task.artifactIds ?? []).map((id) => ({ id })),
   };
@@ -64,6 +66,7 @@ export function projectBrokerTask(task: TaskRecord): A2ATaskProjection {
 
 function mapTaskState(status: TaskStatus): A2ATaskState {
   switch (status) {
+    case "blocked":
     case "queued":
       return "submitted";
     case "claimed":

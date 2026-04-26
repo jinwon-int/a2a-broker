@@ -54,27 +54,28 @@ test("accepted exchange thread creates and links an exchange task", () => {
   assert.equal(linkedTask.status, "queued");
 });
 
-test("live-impact task creation requires an operator or hub requester", () => {
+test("live-impact task creation by a non-operator is blocked until approval", () => {
   const broker = new InMemoryA2ABroker();
   registerWorker(broker, "worker-a");
 
-  assert.throws(
-    () => broker.createTask({
-      intent: "apply_local_change",
-      requester: { id: "analyst-a", kind: "node", role: "analyst" },
-      target: { id: "worker-a", kind: "node", role: "live-trader" },
-      workspace: { nodeId: "worker-a", workspaceId: "test" },
-      message: "apply live patch",
-    }),
-    {
-      name: "BrokerError",
-      code: "policy_denied",
-      message: "live-impact task creation requires an operator or hub requester",
-    },
-  );
+  const task = broker.createTask({
+    intent: "apply_local_change",
+    requester: { id: "analyst-a", kind: "node", role: "analyst" },
+    target: { id: "worker-a", kind: "node", role: "live-trader" },
+    workspace: { nodeId: "worker-a", workspaceId: "test" },
+    message: "apply live patch",
+  });
+
+  assert.equal(task.status, "blocked");
+  assert.equal(task.policyContext?.requiresApproval, true);
+  assert.throws(() => broker.claimTask(task.id, "worker-a"), {
+    name: "BrokerError",
+    code: "policy_denied",
+    message: "task requires operator or hub approval before claim",
+  });
 });
 
-test("dangerous task creation records explicit human-gate policy context", () => {
+test("dangerous task creation records explicit human-gate policy context and waits blocked", () => {
   const broker = new InMemoryA2ABroker();
   registerWorker(broker, "worker-a");
 
@@ -90,6 +91,82 @@ test("dangerous task creation records explicit human-gate policy context", () =>
     liveImpact: true,
     targetEnvironment: "live",
   });
+  assert.equal(task.status, "blocked");
+});
+
+test("operator approval resumes blocked approval-gated task and records audit metadata", () => {
+  const broker = new InMemoryA2ABroker();
+  registerWorker(broker, "worker-a");
+
+  const task = broker.createTask({
+    intent: "promote_to_live",
+    requester: { id: "analyst-a", kind: "node", role: "analyst" },
+    target: { id: "worker-a", kind: "node", role: "analyst" },
+    message: "promote after review",
+  });
+
+  assert.throws(
+    () => broker.approveTask(task.id, {
+      actor: { id: "researcher-a", kind: "node", role: "researcher" },
+      reason: "not authorized",
+    }),
+    {
+      name: "BrokerError",
+      code: "policy_denied",
+      message: "task approval requires a hub or operator actor",
+    },
+  );
+
+  const approved = broker.approveTask(task.id, {
+    actor: { id: "operator-a", kind: "node", role: "operator" },
+    approvalId: "approval-123",
+    reason: "change ticket CHG-123 reviewed",
+  });
+
+  assert.equal(approved.status, "queued");
+  assert.deepEqual(approved.approval, {
+    approvalId: "approval-123",
+    approvedAt: approved.approval?.approvedAt,
+    approvedBy: "operator-a",
+    actorRole: "operator",
+    requesterRole: "analyst",
+    reason: "change ticket CHG-123 reviewed",
+  });
+  assert.ok(approved.approval?.approvedAt);
+  const audit = broker.listAuditEvents({ targetId: task.id, action: "task.approved" });
+  assert.equal(audit.length, 1);
+  assert.equal(audit[0].actorId, "operator-a");
+  assert.equal(audit[0].note, "change ticket CHG-123 reviewed");
+
+  const claimed = broker.claimTask(task.id, "worker-a");
+  assert.equal(claimed.status, "claimed");
+});
+
+test("repeat approval is idempotent and preserves first approval record", () => {
+  const broker = new InMemoryA2ABroker();
+  registerWorker(broker, "worker-a");
+
+  const task = broker.createTask({
+    intent: "rollback_live",
+    requester: { id: "hub-a", kind: "node", role: "hub" },
+    target: { id: "worker-a", kind: "node", role: "analyst" },
+    message: "rollback",
+  });
+  const first = broker.approveTask(task.id, {
+    actor: { id: "hub-a", kind: "node", role: "hub" },
+    approvalId: "approval-first",
+    reason: "first reason",
+  });
+  const auditCount = broker.listAuditEvents({ targetId: task.id, action: "task.approved" }).length;
+  const second = broker.approveTask(task.id, {
+    actor: { id: "operator-b", kind: "node", role: "operator" },
+    approvalId: "approval-second",
+    reason: "second reason",
+  });
+
+  assert.deepEqual(second.approval, first.approval);
+  assert.equal(second.approval?.approvalId, "approval-first");
+  assert.equal(broker.listAuditEvents({ targetId: task.id, action: "task.approved" }).length, auditCount);
 });
 
 test("needs_clarification cancels active exchange task and returns exchange to queued", () => {

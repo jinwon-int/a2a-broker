@@ -236,6 +236,72 @@ test("server rejects unauthorized reassign with 401", async () => {
   }
 });
 
+test("server approves blocked live-impact task with operator audit metadata", async () => {
+  const server = await startTestServer();
+  try {
+    await registerTestWorker(server.baseUrl, "worker-a", "analyst");
+
+    const createRes = await fetch(`${server.baseUrl}/tasks`, {
+      method: "POST",
+      headers: jsonHeaders({
+        "x-a2a-requester-id": "analyst-a",
+        "x-a2a-requester-role": "analyst",
+      }),
+      body: JSON.stringify({
+        intent: "promote_to_live",
+        requester: { id: "analyst-a", kind: "node", role: "analyst" },
+        target: { id: "worker-a", kind: "node", role: "analyst" },
+        message: "promote after review",
+      }),
+    });
+    assert.equal(createRes.status, 201);
+    const task = await createRes.json();
+    assert.equal(task.status, "blocked");
+
+    const deniedApprove = await fetch(`${server.baseUrl}/tasks/${task.id}/approve`, {
+      method: "POST",
+      headers: jsonHeaders({
+        "x-a2a-requester-id": "analyst-a",
+        "x-a2a-requester-role": "analyst",
+      }),
+      body: JSON.stringify({
+        actor: { id: "analyst-a", kind: "node", role: "analyst" },
+        reason: "not authorized",
+      }),
+    });
+    assert.equal(deniedApprove.status, 401);
+
+    const approveRes = await fetch(`${server.baseUrl}/tasks/${task.id}/approve`, {
+      method: "POST",
+      headers: jsonHeaders({
+        "x-a2a-requester-id": "operator-a",
+        "x-a2a-requester-role": "operator",
+      }),
+      body: JSON.stringify({
+        actor: { id: "operator-a", kind: "node", role: "operator" },
+        approvalId: "approval-http-1",
+        reason: "change ticket reviewed",
+      }),
+    });
+    assert.equal(approveRes.status, 200);
+    const approved = await approveRes.json();
+    assert.equal(approved.status, "queued");
+    assert.equal(approved.approval.approvalId, "approval-http-1");
+    assert.equal(approved.approval.approvedBy, "operator-a");
+    assert.equal(approved.approval.actorRole, "operator");
+    assert.equal(approved.approval.requesterRole, "analyst");
+    assert.equal(approved.approval.reason, "change ticket reviewed");
+
+    const auditRes = await fetch(`${server.baseUrl}/audit?action=task.approved&targetId=${task.id}`);
+    const audit = await auditRes.json();
+    assert.equal(audit.items.length, 1);
+    assert.equal(audit.items[0].actorId, "operator-a");
+    assert.equal(audit.items[0].note, "change ticket reviewed");
+  } finally {
+    await server.close();
+  }
+});
+
 test("server returns subtree items and thread structure for exchange messages", async () => {
   const server = await startTestServer();
   try {

@@ -92,18 +92,34 @@ metadata field, so consumers do not have to handcraft the mapping.
 The broker treats `apply_local_change`, `promote_to_live`, `rollback_live`,
 and any task explicitly marked `policyContext.liveImpact` or
 `targetEnvironment: "live"` as human-gated live-impact work. Such tasks must
-be created by a requester with role `operator` or `hub`; other requester roles
-are rejected before the task enters the queue. Accepted live-impact tasks carry
-an explicit `policyContext.requiresApproval: true` marker, and inferred live
-tasks also carry `liveImpact: true` / `targetEnvironment: "live"` so workers,
-dashboards, and closeout tools can surface the operational risk without
-re-parsing intent names.
+receive explicit operator approval before a worker can claim them. Creation is
+accepted but the task enters `blocked` with an explicit
+`policyContext.requiresApproval: true` marker; inferred live tasks also carry
+`liveImpact: true` / `targetEnvironment: "live"` so workers, dashboards, and
+closeout tools can surface the operational risk without re-parsing intent
+names.
+
+Operators or hubs resume a gated task with `POST /tasks/:id/approve`:
+
+```json
+{
+  "actor": { "id": "operator-a", "role": "operator" },
+  "approvalId": "chg-123",
+  "reason": "change ticket reviewed"
+}
+```
+
+Approval records `TaskRecord.approval` (`approvalId`, `approvedAt`,
+`approvedBy`, `actorRole`, `requesterRole`, optional `reason`) and emits a
+`task.approved` audit event. Repeating approval is idempotent and preserves the
+first approval record; non-operator/non-hub actors are rejected.
 
 ## State model
 
 `TaskStatus` values and the only legal transitions:
 
 ```
+blocked ──> queued (operator/hub approval)
 queued ──┬──> claimed ──> running ──┬──> succeeded
          │                          ├──> failed
          │                          └──> canceled
@@ -115,6 +131,8 @@ Notes:
 
 - `queued -> claimed` happens on `POST /tasks/:id/claim` with the
   worker id.
+- `blocked -> queued` happens on `POST /tasks/:id/approve`; claiming an
+  approval-gated task without `TaskRecord.approval` is rejected.
 - `claimed -> running` on `POST /tasks/:id/start`.
 - `running -> succeeded | failed` on `POST /tasks/:id/complete` or
   `/fail`.
@@ -129,7 +147,8 @@ Notes:
 - A consumer must treat `succeeded`, `failed`, and `canceled` as
   terminal. The SSE stream marks the final event with `final: true`.
 - The JSON-RPC projection (`A2ATaskState`) collapses
-  `claimed | running` into `working`. Consumers that need the precise
+  `blocked | queued` into `submitted` and `claimed | running` into `working`.
+  Consumers that need the precise
   internal status should read `metadata.internalStatus` from the
   projection.
 
@@ -181,6 +200,8 @@ Requester / hub side (context updates):
 - `POST /tasks/:id/reassign` (operator/hub only) re-pins the task to
   a different node or worker and resets `requeueCount` to `0` so the
   fresh target gets a clean attempt budget.
+- `POST /tasks/:id/approve` (operator/hub only) records approval metadata and
+  resumes an approval-gated task from `blocked` to `queued`.
 
 The legacy library exposed an `applyA2ATaskProtocolUpdate` helper that
 fanned out into either branch above. There is no in-process
@@ -411,7 +432,7 @@ existing callers:
 |---|---|
 | `runA2ATaskRequest(...)` | `POST /tasks` (raw record), or JSON-RPC `SendMessage` with `metadata.targetNodeId` (creates a fresh exchange + first task in one call). |
 | `runA2ABrokerExchange(...)` | `POST /exchanges` followed by `POST /tasks`, or a single JSON-RPC `SendMessage` with no `metadata.exchangeId`. |
-| `applyA2ATaskProtocolUpdate(...)` | Worker side: `POST /tasks/:id/{claim,start,complete,fail}`. Requester side: `POST /exchanges/:id/messages`. |
+| `applyA2ATaskProtocolUpdate(...)` | Worker side: `POST /tasks/:id/{claim,start,complete,fail}`. Operator side: `POST /tasks/:id/approve` and `POST /tasks/:id/reassign`. Requester side: `POST /exchanges/:id/messages`. |
 | `applyA2ATaskProtocolCancel(...)` | `POST /tasks/:id/cancel`, or JSON-RPC `CancelTask`. `runtime.cancelTarget` semantics preserved (see "Cancel semantics"). |
 | `loadA2ATaskProtocolStatusById(...)` | `GET /tasks/:id` (raw record) or JSON-RPC `GetTask` (A2A projection). |
 | event constructors / reducer helpers | None. The broker owns the reducer; consume `GET /a2a/tasks/:id/events` (SSE) and render `A2ATaskProjection` directly. |
@@ -448,7 +469,7 @@ of `#6` without losing reference material.
 |---|---|
 | `A2ATaskEnvelopeV1` shape | "Canonical task envelope" section above; `A2ATaskRequest` + `TaskRecord` in `src/core/types.ts`. |
 | Request behavior | "Request behavior" section above; `POST /exchanges`, `POST /tasks`, JSON-RPC `SendMessage` in `src/a2a/json-rpc.ts`. |
-| Update behavior | "Update behavior" section above; `POST /tasks/:id/{claim,start,complete,fail,reassign}`, `POST /exchanges/:id/messages`. |
+| Update behavior | "Update behavior" section above; `POST /tasks/:id/{approve,claim,start,complete,fail,reassign}`, `POST /exchanges/:id/messages`. |
 | Cancel behavior + `runtime.cancelTarget` for `session_run` | "Cancel semantics" section above; `POST /tasks/:id/cancel`, JSON-RPC `CancelTask`. |
 | Status read behavior | "Status read behavior" section above; `GET /tasks/:id`, JSON-RPC `GetTask` / `ListTasks`. |
 | Event model | "Event model" section above; SSE at `GET /a2a/tasks/:id/events`, projection in `src/a2a/task-projection.ts`. |

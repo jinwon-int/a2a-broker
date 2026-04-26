@@ -77,6 +77,8 @@ export interface ProjectedComment {
 
 export function projectStatusMarker(task: TaskRecord): GitHubStatusMarker | null {
   switch (task.status as TaskStatus) {
+    case "blocked":
+      return "Block";
     case "queued":
       return null;
     case "claimed":

@@ -9,6 +9,7 @@ import type { A2AExchangeIntent, TaskOrigin, TaskStatus } from "./types.js";
  */
 export type TaskStatusEventKind =
   | "created"
+  | "approved"
   | "claimed"
   | "started"
   | "succeeded"
