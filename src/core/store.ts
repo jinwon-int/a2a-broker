@@ -156,6 +156,18 @@ const taskApprovalSchema = z
   })
   .passthrough();
 
+const taskApprovalOutcomeSchema = z
+  .object({
+    status: z.enum(["approved", "rejected", "expired", "canceled"]),
+    approvalId: z.string().min(1),
+    decidedAt: z.string(),
+    decidedBy: z.string().min(1),
+    actorRole: z.string().optional(),
+    requesterRole: z.string().optional(),
+    reason: z.string().optional(),
+  })
+  .passthrough();
+
 const taskPolicyContextSchema = z
   .object({
     requiresApproval: z.boolean().optional(),
@@ -213,6 +225,7 @@ const taskSchema = z
     error: taskErrorSchema.optional(),
     cancellation: taskCancellationSchema.optional(),
     approval: taskApprovalSchema.optional(),
+    approvalOutcome: taskApprovalOutcomeSchema.optional(),
     requeueCount: z.number().int().nonnegative().optional(),
     lastHeartbeatAt: z.string().optional(),
     attemptId: z.string().min(1).optional(),

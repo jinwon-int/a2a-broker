@@ -41,6 +41,8 @@ import type {
   TaskCancelRequest,
   TaskError,
   TaskApprovalRequest,
+  TaskApprovalTerminalRequest,
+  TaskApprovalOutcomeStatus,
   TaskHistorySummary,
   TaskListFilters,
   TaskQueueSummary,
@@ -1152,6 +1154,15 @@ export class InMemoryA2ABroker {
       requesterRole: task.requester.role,
       reason: normalizeApprovalReason(request.reason),
     };
+    task.approvalOutcome = {
+      status: "approved",
+      approvalId: task.approval.approvalId,
+      decidedAt: now,
+      decidedBy: request.actor.id,
+      actorRole: request.actor.role,
+      requesterRole: task.requester.role,
+      reason: task.approval.reason,
+    };
     task.status = "queued";
     task.updatedAt = now;
     this.tasks.set(task.id, task);
@@ -1167,6 +1178,58 @@ export class InMemoryA2ABroker {
     this.persistState();
     this.emitTaskUpdate(task, "approved");
     return task;
+  }
+
+  rejectTaskApproval(taskId: string, request: TaskApprovalTerminalRequest): TaskRecord {
+    const task = this.requireTask(taskId);
+    if (!request.actor?.id) {
+      throw new BrokerError("bad_request", "actor.id is required");
+    }
+    if (!isPrivilegedTaskApprover(request.actor)) {
+      throw new BrokerError("policy_denied", "task approval rejection requires a hub or operator actor");
+    }
+    if (task.policyContext?.requiresApproval !== true) {
+      throw new BrokerError("invalid_transition", "task does not require approval");
+    }
+    if (task.approval || task.approvalOutcome?.status === "approved") {
+      throw new BrokerError("invalid_transition", "task approval is already approved");
+    }
+    if (task.approvalOutcome) {
+      return task;
+    }
+    if (isTerminalTaskStatus(task.status)) {
+      throw new BrokerError("invalid_transition", `cannot reject approval while task status is ${task.status}`);
+    }
+    if (task.status !== "blocked" && task.status !== "queued") {
+      throw new BrokerError("invalid_transition", `cannot reject approval while task status is ${task.status}`);
+    }
+
+    const now = isoNow();
+    const status = normalizeApprovalTerminalStatus(request.status);
+    const reason = normalizeApprovalReason(request.reason) ?? `approval ${status}`;
+    task.approvalOutcome = {
+      status,
+      approvalId: normalizeApprovalId(request.approvalId) ?? randomUUID(),
+      decidedAt: now,
+      decidedBy: request.actor.id,
+      actorRole: request.actor.role,
+      requesterRole: task.requester.role,
+      reason,
+    };
+    const canceled = this.cancelTaskTree(task, {
+      actorId: request.actor.id,
+      reason,
+    });
+    this.appendAuditEvent({
+      actorId: request.actor.id,
+      action: "task.approval_rejected",
+      targetType: "task",
+      targetId: task.id,
+      proposalId: task.proposalId,
+      note: `${status}: ${reason}`,
+    });
+    this.persistState();
+    return canceled;
   }
 
   claimTask(taskId: string, workerId: string): TaskRecord {
@@ -3329,6 +3392,10 @@ function normalizeApprovalId(value: unknown): string | undefined {
 
 function normalizeApprovalReason(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function normalizeApprovalTerminalStatus(value: unknown): Exclude<TaskApprovalOutcomeStatus, "approved"> {
+  return value === "expired" || value === "canceled" ? value : "rejected";
 }
 
 function buildTaskWakeKey(task: TaskRecord, request: TaskWakePlanRequest): string {

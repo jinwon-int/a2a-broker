@@ -47,6 +47,7 @@ import type {
   RegisterWorkerRequest,
   SubmitValidationRequest,
   TaskApprovalRequest,
+  TaskApprovalTerminalRequest,
   TaskCancelRequest,
   TaskClaimRequest,
   TaskCompleteRequest,
@@ -1084,6 +1085,23 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
           assertRequesterHasRole(requesterIdentity, ["hub", "operator"], "task.approve");
         }
         const task = broker.approveTask(segments[1], body);
+        return sendJson(res, 200, task);
+      }
+
+      if (req.method === "POST" && segments[0] === "tasks" && segments[1] && segments[2] === "reject-approval") {
+        const body = await readJson<TaskApprovalTerminalRequest>(req);
+        if (!body?.actor?.id) {
+          throw new BrokerError("bad_request", "actor.id is required");
+        }
+        if (enforceRequesterIdentity) {
+          assertRequesterMatchesParty(
+            requesterIdentity,
+            { id: body.actor.id, role: body.actor.role },
+            "task.reject-approval",
+          );
+          assertRequesterHasRole(requesterIdentity, ["hub", "operator"], "task.reject-approval");
+        }
+        const task = broker.rejectTaskApproval(segments[1], body);
         return sendJson(res, 200, task);
       }
 
