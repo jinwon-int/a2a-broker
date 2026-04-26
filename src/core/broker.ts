@@ -12,6 +12,7 @@ import {
   type BrokerSnapshot,
   type BrokerStateStore,
 } from "./store.js";
+import { TaskEventStream } from "./task-event-stream.js";
 import type {
   ApplyProposalRequest,
   ArtifactRecord,
@@ -105,6 +106,12 @@ export interface InMemoryA2ABrokerOptions {
    * Default: 100.
    */
   maxBufferedEventsPerTask?: number;
+  /**
+   * Max retained {@link TaskStatusEvent}s in the broker-wide
+   * {@link TaskEventStream}. Older events are evicted FIFO when exceeded.
+   * Default: 1000.
+   */
+  maxTaskStatusEvents?: number;
 }
 
 /**
@@ -175,6 +182,7 @@ export class InMemoryA2ABroker {
   private readonly taskEventSeqs = new Map<string, number>();
   private readonly stateListeners = new Set<BrokerStateListener>();
   private readonly maxBufferedEventsPerTask: number;
+  private readonly taskEventStream: TaskEventStream;
 
   constructor(
     private readonly stateStore?: BrokerStateStore,
@@ -184,10 +192,20 @@ export class InMemoryA2ABroker {
     this.retentionPolicy = normalizeBrokerRetentionPolicy(options.retention);
     this.maxRequeueAttempts = normalizeMaxRequeueAttempts(options.maxRequeueAttempts);
     this.maxBufferedEventsPerTask = options.maxBufferedEventsPerTask ?? 100;
+    this.taskEventStream = new TaskEventStream({ maxEvents: options.maxTaskStatusEvents });
     if (snapshot) {
       this.loadSnapshot(snapshot);
     }
     this.applyRetentionPolicy();
+  }
+
+  /**
+   * Cursor-based stream of task status transitions. Wraps the audit-event
+   * pipeline so subscribers can replay missed events after reconnect without
+   * polling. See `docs/task-event-stream.md`.
+   */
+  getTaskEventStream(): TaskEventStream {
+    return this.taskEventStream;
   }
 
   private readonly retentionPolicy: BrokerRetentionPolicy;
@@ -1922,6 +1940,12 @@ export class InMemoryA2ABroker {
     };
 
     this.auditEvents.set(event.id, event);
+    if (event.targetType === "task") {
+      const task = this.tasks.get(event.targetId);
+      if (task) {
+        this.taskEventStream.push(event, task);
+      }
+    }
     return event;
   }
 
