@@ -54,6 +54,7 @@ export type AuditAction =
   | "exchange.message.added"
   | "task.created"
   | "task.approved"
+  | "task.approval_rejected"
   | "task.claimed"
   | "task.started"
   | "task.heartbeat"
@@ -230,10 +231,26 @@ export interface TaskApprovalInfo {
   reason?: string;
 }
 
+export type TaskApprovalOutcomeStatus = "approved" | "rejected" | "expired" | "canceled";
+
+export interface TaskApprovalOutcomeInfo {
+  status: TaskApprovalOutcomeStatus;
+  approvalId: string;
+  decidedAt: string;
+  decidedBy: string;
+  actorRole?: A2APartyRole;
+  requesterRole?: A2APartyRole;
+  reason?: string;
+}
+
 export interface TaskApprovalRequest {
   actor: A2APartyRef;
   reason?: string;
   approvalId?: string;
+}
+
+export interface TaskApprovalTerminalRequest extends TaskApprovalRequest {
+  status?: Exclude<TaskApprovalOutcomeStatus, "approved">;
 }
 
 export type TaskWakeStatus = "planned" | "scheduled" | "skipped" | "failed";
@@ -297,6 +314,8 @@ export interface TaskRecord extends A2ATaskRequest {
   cancellation?: TaskCancellationInfo;
   /** Operator/hub approval that released an approval-gated task for worker claim. */
   approval?: TaskApprovalInfo;
+  /** Terminal approval decision, including negative outcomes that keep live-impact work stopped. */
+  approvalOutcome?: TaskApprovalOutcomeInfo;
   /**
    * Count of times this task has been requeued from claimed/running back to queued by the
    * stale-task reaper or the manual requeue endpoint. Capped by the broker's

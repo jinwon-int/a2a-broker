@@ -166,7 +166,60 @@ test("repeat approval is idempotent and preserves first approval record", () => 
 
   assert.deepEqual(second.approval, first.approval);
   assert.equal(second.approval?.approvalId, "approval-first");
+  assert.equal(second.approvalOutcome?.status, "approved");
+  assert.equal(second.approvalOutcome?.approvalId, "approval-first");
   assert.equal(broker.listAuditEvents({ targetId: task.id, action: "task.approved" }).length, auditCount);
+});
+
+test("operator rejection records terminal approval outcome and leaves task unclaimable", () => {
+  const broker = new InMemoryA2ABroker();
+  registerWorker(broker, "worker-a");
+
+  const task = broker.createTask({
+    intent: "promote_to_live",
+    requester: { id: "analyst-a", kind: "node", role: "analyst" },
+    target: { id: "worker-a", kind: "node", role: "analyst" },
+    assignedWorkerId: "worker-a",
+    message: "promote after review",
+  });
+  const updates: TaskUpdate[] = [];
+  broker.subscribeToTask(task.id, (update) => updates.push(update));
+
+  const rejected = broker.rejectTaskApproval(task.id, {
+    actor: { id: "operator-a", kind: "node", role: "operator" },
+    approvalId: "chg-rejected-1",
+    status: "rejected",
+    reason: "change ticket rejected",
+  });
+  const repeated = broker.rejectTaskApproval(task.id, {
+    actor: { id: "operator-b", kind: "node", role: "operator" },
+    approvalId: "chg-rejected-2",
+    status: "expired",
+    reason: "late duplicate",
+  });
+
+  assert.equal(rejected.status, "canceled");
+  assert.deepEqual(repeated.approvalOutcome, rejected.approvalOutcome);
+  assert.deepEqual(rejected.approvalOutcome, {
+    status: "rejected",
+    approvalId: "chg-rejected-1",
+    decidedAt: rejected.approvalOutcome?.decidedAt,
+    decidedBy: "operator-a",
+    actorRole: "operator",
+    requesterRole: "analyst",
+    reason: "change ticket rejected",
+  });
+  assert.ok(rejected.approvalOutcome?.decidedAt);
+  assert.equal(rejected.cancellation?.reason, "change ticket rejected");
+  assert.equal(broker.listAuditEvents({ targetId: task.id, action: "task.approval_rejected" }).length, 1);
+  assert.deepEqual(
+    updates.map((update) => [update.reason, update.final, update.task.approvalOutcome?.status]),
+    [["canceled", true, "rejected"]],
+  );
+  assert.throws(() => broker.claimTask(task.id, "worker-a"), {
+    name: "BrokerError",
+    code: "policy_denied",
+  });
 });
 
 test("needs_clarification cancels active exchange task and returns exchange to queued", () => {

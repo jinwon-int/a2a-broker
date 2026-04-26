@@ -562,6 +562,30 @@ Response:
 
 ## Approval routes
 
+Task approval-gate decisions are preserved on the task record as
+`approvalOutcome`. An approved outcome also keeps the legacy `approval` record
+for callers that only need the approval release metadata. Negative terminal
+outcomes cancel the task and leave the live-impact work unclaimable.
+
+### `POST /tasks/:id/reject-approval`
+
+Request:
+
+```json
+{
+  "actor": { "id": "operator-a", "kind": "node", "role": "operator" },
+  "approvalId": "chg-rejected-1",
+  "status": "rejected",
+  "reason": "Rejected after reviewing the exact live-impact step."
+}
+```
+
+`status` may be `rejected`, `expired`, or `canceled` and defaults to
+`rejected`.
+
+Response: the canceled task record, including `approvalOutcome` and
+`cancellation` metadata.
+
 ### `POST /proposals/:id/approve`
 
 Request:
