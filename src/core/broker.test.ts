@@ -1126,6 +1126,41 @@ test("subscribeToTask streams lifecycle updates and marks terminal events final"
   assert.equal(broker.getTask(task.id)?.status, "succeeded");
 });
 
+test("subscribeToTask emits approval updates with approval metadata", () => {
+  const broker = new InMemoryA2ABroker();
+  registerWorker(broker, "worker-a");
+
+  const task = broker.createTask({
+    intent: "promote_to_live",
+    requester: { id: "hub-a", kind: "node", role: "hub" },
+    target: { id: "worker-a", kind: "node", role: "live-trader" },
+    assignedWorkerId: "worker-a",
+    message: "promote after review",
+  });
+
+  const updates: TaskUpdate[] = [];
+  const unsubscribe = broker.subscribeToTask(task.id, (update) => {
+    updates.push(update);
+  });
+
+  broker.approveTask(task.id, {
+    actor: { id: "operator-a", kind: "user", role: "operator" },
+    approvalId: "chg-28",
+    reason: "operator reviewed live promotion",
+  });
+
+  unsubscribe();
+
+  assert.deepEqual(
+    updates.map((u) => u.reason),
+    ["approved"],
+  );
+  assert.equal(updates[0].task.status, "queued");
+  assert.equal(updates[0].final, false);
+  assert.equal(updates[0].task.approval?.approvalId, "chg-28");
+  assert.equal(updates[0].task.policyContext?.requiresApproval, true);
+});
+
 test("subscribeToTask emits dead_lettered and requeued updates during stale recovery", () => {
   const broker = new InMemoryA2ABroker(undefined, undefined, { maxRequeueAttempts: 1 });
   registerWorker(broker, "worker-a");
