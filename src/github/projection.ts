@@ -5,6 +5,48 @@
  * append-only audit/collaboration surface. This module is purely
  * functional: it produces the marker and the rendered body. Posting
  * (the GitHub API call) is intentionally left to a downstream adapter.
+ *
+ * Status → marker mapping:
+ *   - `queued`               → no marker (null projection — nothing to post)
+ *   - `claimed` | `running`  → `Start`
+ *   - `succeeded` (no PR)    → `Done`
+ *   - `succeeded` (with PR)  → `PR`  (an extracted pull-request URL upgrades
+ *                                     `Done` → `PR`)
+ *   - `failed` | `canceled`  → `Block`
+ *
+ * Body fields per marker:
+ *   - `Start`: `worker=<assigned-or-target> status=<task.status>`
+ *   - `Done`:  `summary: <result.summary or result.note>` (when present),
+ *              followed by an `output:` block listing each `result.output`
+ *              key on its own indented line. Both summary and output are
+ *              redacted before serialization (see redaction below).
+ *   - `PR`:    `pull_request: <url>` extracted from `result.output`
+ *              (`pullRequestUrl` / `prUrl` / `pull_request_url`) or, as a
+ *              fallback, matched against `result.summary`. Followed by the
+ *              same redacted `summary:` line as `Done`.
+ *   - `Block`: `reason: <error.message or cancellation.reason or
+ *              `task <status>`>`, optionally followed by `code: <error.code>`.
+ *
+ * Every body starts with the canonical marker line:
+ *   `[a2a:<Marker>] task=<task.id>`
+ * Downstream consumers grep this header to dedup/replace earlier projections
+ * for the same task.
+ *
+ * Redaction (see `redactSensitive`):
+ *   - Object keys matching /(token|secret|api[_-]?key|password|credential|
+ *     authorization)/i have their value replaced with `[REDACTED]`.
+ *   - Token-shaped substrings inside string values (`ghp_…`, `gho_…`,
+ *     `ghu_…`, `ghs_…`, `ghr_…`, `github_pat_…`) are scrubbed regardless of
+ *     the surrounding key, so accidental token leaks in summaries or output
+ *     fields are caught.
+ *   - Redaction recurses into nested objects and arrays.
+ *
+ * Truncation:
+ *   - The rendered body is hard-capped at `MAX_GITHUB_COMMENT_LENGTH` (60_000
+ *     bytes — well under GitHub's 65_536 limit). Bodies exceeding the cap are
+ *     sliced and have `\n\n…(truncated)` appended so reviewers know more was
+ *     produced. Truncation happens after rendering and after redaction, so
+ *     redacted markers always reach the wire even when the body is clipped.
  */
 
 import type { TaskRecord, TaskStatus } from "../core/types.js";
