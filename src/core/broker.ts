@@ -834,6 +834,7 @@ export class InMemoryA2ABroker {
       status: "queued",
       createdAt: request.createdAt ?? now,
       updatedAt: now,
+      taskOrigin: request.taskOrigin ?? "unknown",
     };
 
     this.tasks.set(task.id, task);
@@ -983,6 +984,9 @@ export class InMemoryA2ABroker {
           return false;
         }
         if (filters?.assignedWorkerId && task.assignedWorkerId !== filters.assignedWorkerId) {
+          return false;
+        }
+        if (filters?.taskOrigin && (task.taskOrigin ?? "unknown") !== filters.taskOrigin) {
           return false;
         }
         return true;
@@ -3297,6 +3301,7 @@ function normalizeTaskRecord(task: TaskRecord): TaskRecord {
     error: task.error ? normalizeTaskError(task.error) : undefined,
     attemptId: task.attemptId,
     wake: normalizeTaskWakeState(task.wake),
+    taskOrigin: task.taskOrigin ?? "unknown",
   };
 }
 

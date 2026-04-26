@@ -543,6 +543,7 @@ export class GitHubIngestionService {
       target: { id: seedIntent.target, kind: "node" },
       assignedWorkerId: seedIntent.target,
       message: seedIntent.message ?? `${repo.fullName}#${issue.number}: ${issue.title}`,
+      taskOrigin: "github",
       payload: {
         githubDeliveryId: ctx.deliveryId,
         githubReceivedAt: ctx.receivedAt,
@@ -582,6 +583,7 @@ export class GitHubIngestionService {
       target: { id: intent.target, kind: "node" },
       assignedWorkerId: intent.target,
       message: intent.message ?? intent.raw,
+      taskOrigin: "github",
       payload: {
         githubDeliveryId: ctx.deliveryId,
         githubReceivedAt: ctx.receivedAt,

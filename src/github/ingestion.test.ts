@@ -769,4 +769,111 @@ describe("GitHubIngestionService — replay protection", () => {
     assert.equal(stats.trackedPairs, 2);
     assert.equal(stats.totalEvents, 2);
   });
+
+  it("sets taskOrigin to 'github' on parent task created from issue event", () => {
+    const broker = new InMemoryA2ABroker();
+    registerWorker(broker, "worker-a");
+    const ingestion = new GitHubIngestionService({ broker });
+
+    const result = ingestion.ingest(
+      makeIssueEvent({
+        issue: makeIssue({
+          body: "/a2a assign worker-a --work-mode github",
+        }),
+      }),
+      makeContext("d1"),
+    );
+
+    assert.ok(result.parentTaskId);
+    const parent = broker.getTask(result.parentTaskId!);
+    assert.ok(parent);
+    assert.equal(parent.taskOrigin, "github");
+  });
+
+  it("sets taskOrigin to 'github' on child task created from comment event", () => {
+    const broker = new InMemoryA2ABroker();
+    registerWorker(broker, "worker-a");
+    registerWorker(broker, "worker-b");
+    const ingestion = new GitHubIngestionService({ broker });
+
+    ingestion.ingest(
+      makeIssueEvent({
+        issue: makeIssue({
+          body: "/a2a assign worker-a --work-mode github",
+        }),
+      }),
+      makeContext("d1"),
+    );
+
+    const commentResult = ingestion.ingest(
+      makeCommentEvent(
+        "Follow up: /a2a assign worker-b --work-mode github --intent analyze",
+      ),
+      makeContext("d2"),
+    );
+
+    assert.equal(commentResult.childTaskIds.length, 1);
+    const child = broker.getTask(commentResult.childTaskIds[0]!);
+    assert.ok(child);
+    assert.equal(child.taskOrigin, "github");
+  });
+
+  it("task created without taskOrigin defaults to 'unknown'", () => {
+    const broker = new InMemoryA2ABroker();
+    registerWorker(broker, "worker-a");
+
+    const task = broker.createTask({
+      intent: "analyze",
+      requester: { id: "tester", kind: "user" },
+      target: { id: "worker-a", kind: "node" },
+    });
+
+    assert.equal(task.taskOrigin, "unknown");
+  });
+
+  it("listTasks can filter by taskOrigin", () => {
+    const broker = new InMemoryA2ABroker();
+    registerWorker(broker, "worker-a");
+    const ingestion = new GitHubIngestionService({ broker });
+
+    // GitHub-origin task via ingestion.
+    ingestion.ingest(
+      makeIssueEvent({
+        issue: makeIssue({
+          body: "/a2a assign worker-a --work-mode github",
+        }),
+      }),
+      makeContext("d1"),
+    );
+
+    // Non-GitHub task (defaults to "unknown").
+    broker.createTask({
+      intent: "analyze",
+      requester: { id: "tester", kind: "user" },
+      target: { id: "worker-a", kind: "node" },
+    });
+
+    // Explicit api-origin task.
+    broker.createTask({
+      intent: "analyze",
+      requester: { id: "tester", kind: "user" },
+      target: { id: "worker-a", kind: "node" },
+      taskOrigin: "api",
+    });
+
+    const githubTasks = broker.listTasks({ taskOrigin: "github" });
+    assert.equal(githubTasks.length, 1);
+    assert.equal(githubTasks[0]!.taskOrigin, "github");
+
+    const unknownTasks = broker.listTasks({ taskOrigin: "unknown" });
+    assert.equal(unknownTasks.length, 1);
+    assert.equal(unknownTasks[0]!.taskOrigin, "unknown");
+
+    const apiTasks = broker.listTasks({ taskOrigin: "api" });
+    assert.equal(apiTasks.length, 1);
+    assert.equal(apiTasks[0]!.taskOrigin, "api");
+
+    // No filter still returns all three.
+    assert.equal(broker.listTasks({}).length, 3);
+  });
 });
