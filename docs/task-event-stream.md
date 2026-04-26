@@ -110,3 +110,11 @@ setInterval(() => {
 For server-sent events to a single client, prefer the per-task SSE pipeline
 (`subscribeToTask` + `replayTaskEvents`); the task event stream is sized for
 small, fan-out aggregation rather than per-task streaming.
+
+## Related conference room stream
+
+Agent teleconference rooms use the same internal bounded cursor/replay substrate
+and the same `afterId`/`limit`/parent-task filtering contract. They remain a
+separate read model because participant telemetry such as `joined`, `speaking`,
+or `blocked` is not a task lifecycle transition and should not be projected as a
+`TaskStatusEvent.kind`.

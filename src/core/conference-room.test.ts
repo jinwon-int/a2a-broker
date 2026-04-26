@@ -1,7 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
-import { ConferenceRoomManager } from "./conference-room.js";
+import { ConferenceRoomError, ConferenceRoomManager } from "./conference-room.js";
 
 describe("ConferenceRoomManager", () => {
   it("creates a room anchored to a parent task id", () => {
@@ -71,6 +71,40 @@ describe("ConferenceRoomManager", () => {
     ]);
   });
 
+  it("rejects invalid participant transitions and terminal state mutations", () => {
+    const manager = new ConferenceRoomManager();
+    const room = manager.createRoom("parent-1");
+    manager.invite(room.id, ["worker-a", "worker-b", "worker-c"]);
+
+    assert.throws(
+      () => manager.speak(room.id, "worker-a"),
+      /invalid participant transition invited -> speaking/,
+    );
+    assert.throws(
+      () => manager.done(room.id, "worker-a"),
+      /invalid participant transition invited -> done/,
+    );
+
+    manager.leave(room.id, "worker-a");
+    assert.throws(
+      () => manager.join(room.id, "worker-a"),
+      /participant worker-a is terminal \(left\)/,
+    );
+
+    manager.join(room.id, "worker-b");
+    manager.done(room.id, "worker-b");
+    assert.throws(
+      () => manager.speak(room.id, "worker-b"),
+      /participant worker-b is terminal \(done\)/,
+    );
+
+    manager.block(room.id, "worker-c", "policy_denied");
+    assert.throws(
+      () => manager.done(room.id, "worker-c"),
+      /participant worker-c is terminal \(blocked\)/,
+    );
+  });
+
   it("duplicate join is idempotent — no extra event", () => {
     const manager = new ConferenceRoomManager();
     const room = manager.createRoom("parent-1");
@@ -99,7 +133,33 @@ describe("ConferenceRoomManager", () => {
     assert.equal(second!.id, first!.id);
   });
 
-  it("block transitions any status to blocked", () => {
+  it("idempotency is independent from bounded replay retention", () => {
+    const manager = new ConferenceRoomManager({ maxEvents: 2 });
+    const room = manager.createRoom("parent-1");
+    const [invite] = manager.invite(room.id, ["worker-a"]);
+    const joined = manager.join(room.id, "worker-a");
+
+    manager.invite(room.id, ["worker-b"]);
+    manager.join(room.id, "worker-b");
+    assert.deepEqual(
+      manager.subscribe().map((event) => event.id),
+      [4, 5],
+      "the original invite/join events have been evicted from replay",
+    );
+
+    const [repeatInvite] = manager.invite(room.id, ["worker-a"]);
+    const repeatJoin = manager.join(room.id, "worker-a");
+
+    assert.equal(repeatInvite!.id, invite!.id);
+    assert.equal(repeatJoin.id, joined.id);
+    assert.deepEqual(
+      manager.subscribe().map((event) => event.id),
+      [4, 5],
+      "duplicate operations must not append new replay events after eviction",
+    );
+  });
+
+  it("block uses structured reason codes", () => {
     const manager = new ConferenceRoomManager();
     const room = manager.createRoom("parent-1");
     manager.invite(room.id, ["worker-a", "worker-b"]);
@@ -109,16 +169,16 @@ describe("ConferenceRoomManager", () => {
     const blockedFromJoined = manager.block(room.id, "worker-b", "rate-limit");
 
     assert.equal(blockedFromInvited.kind, "participant_blocked");
-    assert.equal(blockedFromInvited.metadata.reason, "auth-failed");
+    assert.equal(blockedFromInvited.metadata.reasonCode, "auth_failed");
     assert.equal(blockedFromJoined.kind, "participant_blocked");
-    assert.equal(blockedFromJoined.metadata.reason, "rate-limit");
+    assert.equal(blockedFromJoined.metadata.reasonCode, "rate_limited");
 
     const byNode = new Map(manager.getParticipants(room.id).map((p) => [p.nodeId, p]));
     assert.equal(byNode.get("worker-a")!.status, "blocked");
     assert.equal(byNode.get("worker-b")!.status, "blocked");
   });
 
-  it("leave transitions any status to left", () => {
+  it("leave transitions non-terminal participants to left", () => {
     const manager = new ConferenceRoomManager();
     const room = manager.createRoom("parent-1");
     manager.invite(room.id, ["worker-a", "worker-b"]);
@@ -149,6 +209,30 @@ describe("ConferenceRoomManager", () => {
 
     const second = manager.closeRoom(room.id);
     assert.equal(second.id, closed.id, "closing an already-closed room is idempotent");
+  });
+
+  it("rejects mutations after room close", () => {
+    const manager = new ConferenceRoomManager();
+    const room = manager.createRoom("parent-1");
+    manager.invite(room.id, ["worker-a"]);
+    manager.closeRoom(room.id);
+
+    const before = manager.subscribe().length;
+    const assertClosed = (fn: () => unknown) => {
+      assert.throws(fn, (error) => {
+        assert.ok(error instanceof ConferenceRoomError);
+        assert.match(error.message, /room .* is closed/);
+        return true;
+      });
+    };
+
+    assertClosed(() => manager.invite(room.id, ["worker-b"]));
+    assertClosed(() => manager.join(room.id, "worker-a"));
+    assertClosed(() => manager.speak(room.id, "worker-a"));
+    assertClosed(() => manager.block(room.id, "worker-a", "timeout"));
+    assertClosed(() => manager.leave(room.id, "worker-a"));
+    assertClosed(() => manager.done(room.id, "worker-a"));
+    assert.equal(manager.subscribe().length, before);
   });
 
   it("subscribe returns only events after the cursor", () => {
@@ -262,13 +346,29 @@ describe("ConferenceRoomManager", () => {
       for (const key of Object.keys(event)) {
         assert.ok(allowed.has(key), `unexpected event key: ${key}`);
       }
-      const metaAllowed = new Set(["nodeId", "reason"]);
+      const metaAllowed = new Set(["nodeId", "reasonCode"]);
       for (const key of Object.keys(event.metadata)) {
         assert.ok(metaAllowed.has(key), `unexpected metadata key: ${key}`);
       }
     }
 
     const blockEvent = events.find((e) => e.kind === "participant_blocked")!;
-    assert.equal(blockEvent.metadata.reason, "rate-limit");
+    assert.equal(blockEvent.metadata.reasonCode, "rate_limited");
+  });
+
+  it("malicious block reasons are reduced to safe codes", () => {
+    const manager = new ConferenceRoomManager();
+    const room = manager.createRoom("parent-1");
+    manager.invite(room.id, ["worker-a"]);
+
+    const secret = "Bearer sk-live-secret prompt=session dump\nrate-limit";
+    const blocked = manager.block(room.id, "worker-a", secret);
+
+    assert.equal(blocked.metadata.reasonCode, "other");
+    const serialized = JSON.stringify(blocked);
+    assert.ok(!serialized.includes("sk-live-secret"));
+    assert.ok(!serialized.includes("prompt=session"));
+    assert.ok(!serialized.includes(secret));
+    assert.equal(Object.prototype.hasOwnProperty.call(blocked.metadata, "reason"), false);
   });
 });

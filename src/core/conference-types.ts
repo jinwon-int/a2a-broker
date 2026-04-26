@@ -14,6 +14,25 @@ export type ConferenceParticipantStatus =
   | "left"
   | "done";
 
+export type ConferenceBlockReasonCode =
+  | "auth_failed"
+  | "rate_limited"
+  | "unreachable"
+  | "policy_denied"
+  | "timeout"
+  | "worker_failed"
+  | "other";
+
+export const CONFERENCE_BLOCK_REASON_CODES = [
+  "auth_failed",
+  "rate_limited",
+  "unreachable",
+  "policy_denied",
+  "timeout",
+  "worker_failed",
+  "other",
+] as const satisfies readonly ConferenceBlockReasonCode[];
+
 export interface ConferenceParticipant {
   /** Node id of the participant. */
   nodeId: string;
@@ -47,7 +66,7 @@ export type ConferenceEventKind =
   | "room_closed";
 
 export interface ConferenceEvent {
-  /** Monotonically increasing id within this room. */
+  /** Monotonically increasing event id across the manager-wide stream. */
   id: number;
   /** ISO timestamp. */
   timestamp: string;
@@ -60,6 +79,6 @@ export interface ConferenceEvent {
   /** Operator-safe metadata. */
   metadata: {
     nodeId?: string;
-    reason?: string;
+    reasonCode?: ConferenceBlockReasonCode;
   };
 }

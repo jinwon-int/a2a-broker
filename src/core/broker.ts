@@ -213,8 +213,8 @@ export class InMemoryA2ABroker {
 
   /**
    * Manager for agent teleconference rooms. Each room is anchored to a parent
-   * task id and tracks participant status transitions on a separate
-   * cursor-based event stream. See `docs/conference-room.md`.
+   * task id and tracks participant status transitions using the same bounded
+   * cursor/replay substrate as the task status stream. See `docs/conference-room.md`.
    */
   getConferenceManager(): ConferenceRoomManager {
     return this.conferenceManager;
