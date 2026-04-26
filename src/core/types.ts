@@ -37,6 +37,7 @@ export type ValidationKind = "backfill" | "paper" | "replay" | "smoke";
 export type ValidationVerdict = "pass" | "fail" | "warn";
 export type TaskKind = A2AExchangeIntent;
 export type TaskStatus =
+  | "blocked"
   | "queued"
   | "claimed"
   | "running"
@@ -52,6 +53,7 @@ export type AuditAction =
   | "proposal.applied"
   | "exchange.message.added"
   | "task.created"
+  | "task.approved"
   | "task.claimed"
   | "task.started"
   | "task.heartbeat"
@@ -219,6 +221,21 @@ export interface TaskCancellationInfo {
   sourceTaskId?: string;
 }
 
+export interface TaskApprovalInfo {
+  approvalId: string;
+  approvedAt: string;
+  approvedBy: string;
+  actorRole?: A2APartyRole;
+  requesterRole?: A2APartyRole;
+  reason?: string;
+}
+
+export interface TaskApprovalRequest {
+  actor: A2APartyRef;
+  reason?: string;
+  approvalId?: string;
+}
+
 export type TaskWakeStatus = "planned" | "scheduled" | "skipped" | "failed";
 
 export interface TaskWakeState {
@@ -278,6 +295,8 @@ export interface TaskRecord extends A2ATaskRequest {
   result?: TaskResult;
   error?: TaskError;
   cancellation?: TaskCancellationInfo;
+  /** Operator/hub approval that released an approval-gated task for worker claim. */
+  approval?: TaskApprovalInfo;
   /**
    * Count of times this task has been requeued from claimed/running back to queued by the
    * stale-task reaper or the manual requeue endpoint. Capped by the broker's
@@ -622,6 +641,7 @@ export interface BrokerDashboard {
 
 export interface BrokerObservabilitySummary {
   queuePressure: {
+    blocked: number;
     queued: number;
     claimed: number;
     running: number;
@@ -660,7 +680,7 @@ export interface TaskQueueSummary {
   total: number;
   byStatus: Record<TaskStatus, number>;
   byIntent: Record<string, number>;
-  /** Tasks waiting longest in their current queued/claimed state. */
+  /** Tasks waiting longest in their current blocked/queued/claimed state. */
   oldestPending: Array<Pick<TaskRecord, 'id' | 'intent' | 'status' | 'targetNodeId' | 'assignedWorkerId' | 'createdAt'> & {
     statusSinceAt: string;
     statusAgeSec: number;

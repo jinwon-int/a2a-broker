@@ -1,11 +1,11 @@
 import { randomUUID } from "node:crypto";
 
 import {
-  assertTaskHumanGateAllowed,
   assertProposalApplyAllowed,
   assertProposalCreationAllowed,
   assertProposalReviewAllowed,
   assertValidationSubmissionAllowed,
+  isPrivilegedTaskApprover,
   normalizeTaskPolicyContext,
   PolicyError,
 } from "./policy.js";
@@ -40,6 +40,7 @@ import type {
   SubmitValidationRequest,
   TaskCancelRequest,
   TaskError,
+  TaskApprovalRequest,
   TaskHistorySummary,
   TaskListFilters,
   TaskQueueSummary,
@@ -138,6 +139,7 @@ export const DEFAULT_BROKER_RETENTION_POLICY: BrokerRetentionPolicy = {
 
 export type TaskUpdateReason =
   | "created"
+  | "approved"
   | "claimed"
   | "started"
   | "succeeded"
@@ -837,12 +839,6 @@ export class InMemoryA2ABroker {
       }
     }
 
-    try {
-      assertTaskHumanGateAllowed(request);
-    } catch (error) {
-      throw normalizePolicyError(error);
-    }
-
     if (request.exchangeId) {
       this.requireExchange(request.exchangeId);
     }
@@ -853,6 +849,8 @@ export class InMemoryA2ABroker {
     this.assertTaskProposalLink(request);
 
     const now = isoNow();
+    const policyContext = normalizeTaskPolicyContext(request);
+    const initialStatus: TaskStatus = policyContext?.requiresApproval === true ? "blocked" : "queued";
     const task: TaskRecord = {
       id: request.id ?? randomUUID(),
       exchangeId: request.exchangeId,
@@ -867,9 +865,9 @@ export class InMemoryA2ABroker {
       proposalId: request.proposalId,
       artifactIds: uniqueIds(request.artifactIds ?? []),
       via: request.via,
-      policyContext: normalizeTaskPolicyContext(request),
+      policyContext,
       payload: normalizeTaskPayload(request.payload),
-      status: "queued",
+      status: initialStatus,
       createdAt: request.createdAt ?? now,
       updatedAt: now,
       taskOrigin: request.taskOrigin ?? "unknown",
@@ -885,7 +883,7 @@ export class InMemoryA2ABroker {
       targetType: "task",
       targetId: task.id,
       proposalId: task.proposalId,
-      note: task.message ?? task.intent,
+      note: task.status === "blocked" ? `approval required: ${task.message ?? task.intent}` : task.message ?? task.intent,
     });
     this.persistState();
     this.emitTaskUpdate(task, "created");
@@ -1060,7 +1058,7 @@ export class InMemoryA2ABroker {
       role: targetWorker.role,
     };
     task.assignedWorkerId = assignedWorker.nodeId;
-    task.status = "queued";
+    task.status = task.policyContext?.requiresApproval === true && !task.approval ? "blocked" : "queued";
     task.claimedBy = undefined;
     task.claimedAt = undefined;
     task.completedAt = undefined;
@@ -1124,9 +1122,59 @@ export class InMemoryA2ABroker {
     });
   }
 
+  approveTask(taskId: string, request: TaskApprovalRequest): TaskRecord {
+    const task = this.requireTask(taskId);
+    if (!request.actor?.id) {
+      throw new BrokerError("bad_request", "actor.id is required");
+    }
+    if (!isPrivilegedTaskApprover(request.actor)) {
+      throw new BrokerError("policy_denied", "task approval requires a hub or operator actor");
+    }
+    if (task.policyContext?.requiresApproval !== true) {
+      throw new BrokerError("invalid_transition", "task does not require approval");
+    }
+    if (task.approval) {
+      return task;
+    }
+    if (isTerminalTaskStatus(task.status)) {
+      throw new BrokerError("invalid_transition", `cannot approve task while status is ${task.status}`);
+    }
+    if (task.status !== "blocked" && task.status !== "queued") {
+      throw new BrokerError("invalid_transition", `cannot approve task while status is ${task.status}`);
+    }
+
+    const now = isoNow();
+    task.approval = {
+      approvalId: normalizeApprovalId(request.approvalId) ?? randomUUID(),
+      approvedAt: now,
+      approvedBy: request.actor.id,
+      actorRole: request.actor.role,
+      requesterRole: task.requester.role,
+      reason: normalizeApprovalReason(request.reason),
+    };
+    task.status = "queued";
+    task.updatedAt = now;
+    this.tasks.set(task.id, task);
+    this.syncExchangeStateFromTask(task, "queued");
+    this.appendAuditEvent({
+      actorId: request.actor.id,
+      action: "task.approved",
+      targetType: "task",
+      targetId: task.id,
+      proposalId: task.proposalId,
+      note: task.approval.reason ?? `approvalId=${task.approval.approvalId}`,
+    });
+    this.persistState();
+    this.emitTaskUpdate(task, "approved");
+    return task;
+  }
+
   claimTask(taskId: string, workerId: string): TaskRecord {
     const task = this.requireTask(taskId);
     this.assertTaskWorker(task, workerId, "claim");
+    if (task.policyContext?.requiresApproval === true && !task.approval) {
+      throw new BrokerError("policy_denied", "task requires operator or hub approval before claim");
+    }
     this.assertTaskStatus(task.status, ["queued"], "claim");
 
     const now = isoNow();
@@ -1423,7 +1471,7 @@ export class InMemoryA2ABroker {
 
     // --- Queue ---
     const pendingTasks = allTasks.filter(
-      (t) => t.status === "queued" || t.status === "claimed",
+      (t) => t.status === "blocked" || t.status === "queued" || t.status === "claimed",
     );
     const oldestPending = sortedCopy(
       pendingTasks,
@@ -1571,6 +1619,7 @@ export class InMemoryA2ABroker {
     );
     const observability = {
       queuePressure: {
+        blocked: queue.byStatus.blocked ?? 0,
         queued: queue.byStatus.queued ?? 0,
         claimed: queue.byStatus.claimed ?? 0,
         running: queue.byStatus.running ?? 0,
@@ -3271,6 +3320,14 @@ function normalizeTaskError(error: TaskError | undefined): TaskError {
 }
 
 function normalizeWakeString(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function normalizeApprovalId(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function normalizeApprovalReason(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }
 

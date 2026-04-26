@@ -225,7 +225,7 @@ function parseListTaskFilters(params: unknown): TaskListFilters {
 
   return {
     exchangeId: optionalString(params.exchangeId) ?? optionalString(params.contextId),
-    status: optionalEnum(params.status, ["queued", "claimed", "running", "succeeded", "failed", "canceled"]),
+    status: optionalEnum(params.status, ["blocked", "queued", "claimed", "running", "succeeded", "failed", "canceled"]),
     targetNodeId: optionalString(params.targetNodeId),
     proposalId: optionalString(params.proposalId),
     intent: optionalEnum(params.intent, [

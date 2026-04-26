@@ -57,7 +57,7 @@ Requires edge secret authentication (same as other non-health routes).
   "generatedAt": "2026-04-15T10:00:00.000Z",
   "queue": {
     "total": 3,
-    "byStatus": { "queued": 2, "claimed": 1, "running": 0, "succeeded": 0, "failed": 0, "canceled": 0 },
+    "byStatus": { "blocked": 0, "queued": 2, "claimed": 1, "running": 0, "succeeded": 0, "failed": 0, "canceled": 0 },
     "byIntent": { "analyze": 2, "backfill": 1 },
     "oldestPending": [
       {
@@ -106,6 +106,7 @@ Requires edge secret authentication (same as other non-health routes).
   },
   "observability": {
     "queuePressure": {
+      "blocked": 0,
       "queued": 2,
       "claimed": 1,
       "running": 0,
@@ -766,7 +767,7 @@ Server-Sent Events stream of task lifecycle updates.
   `reason: "snapshot"`. If the task is already terminal (`succeeded`, `failed`,
   `canceled`) the server closes the connection immediately after this event.
 - `task-status-update` — emitted on each lifecycle transition. `reason` is one of
-  `created`, `claimed`, `started`, `succeeded`, `failed`, `canceled`, `reassigned`,
+  `created`, `approved`, `claimed`, `started`, `succeeded`, `failed`, `canceled`, `reassigned`,
   `requeued`, `dead_lettered`. `final: true` signals a terminal state and the
   server closes the connection.
 

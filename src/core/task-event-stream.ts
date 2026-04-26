@@ -34,6 +34,7 @@ export interface TaskEventSubscribeOptions {
 
 const ACTION_TO_KIND: Partial<Record<AuditAction, TaskStatusEventKind>> = {
   "task.created": "created",
+  "task.approved": "approved",
   "task.claimed": "claimed",
   "task.started": "started",
   "task.succeeded": "succeeded",

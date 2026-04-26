@@ -46,6 +46,7 @@ import type {
   ProposalStatus,
   RegisterWorkerRequest,
   SubmitValidationRequest,
+  TaskApprovalRequest,
   TaskCancelRequest,
   TaskClaimRequest,
   TaskCompleteRequest,
@@ -1069,6 +1070,23 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
         return sendJson(res, 200, task);
       }
 
+      if (req.method === "POST" && segments[0] === "tasks" && segments[1] && segments[2] === "approve") {
+        const body = await readJson<TaskApprovalRequest>(req);
+        if (!body?.actor?.id) {
+          throw new BrokerError("bad_request", "actor.id is required");
+        }
+        if (enforceRequesterIdentity) {
+          assertRequesterMatchesParty(
+            requesterIdentity,
+            { id: body.actor.id, role: body.actor.role },
+            "task.approve",
+          );
+          assertRequesterHasRole(requesterIdentity, ["hub", "operator"], "task.approve");
+        }
+        const task = broker.approveTask(segments[1], body);
+        return sendJson(res, 200, task);
+      }
+
       if (req.method === "POST" && segments[0] === "tasks" && segments[1] && segments[2] === "cancel") {
         const body = await readJson<TaskCancelRequest>(req);
         if (!body?.actor?.id) {
@@ -1377,6 +1395,7 @@ function taskFiltersFromUrl(url: URL): {
   return {
     exchangeId: optionalString(url.searchParams.get("exchangeId")),
     status: optionalEnum(url.searchParams.get("status"), [
+      "blocked",
       "queued",
       "claimed",
       "running",
@@ -1421,6 +1440,7 @@ function auditFiltersFromUrl(url: URL): {
       "proposal.rejected",
       "proposal.applied",
       "task.created",
+      "task.approved",
       "task.claimed",
       "task.started",
       "task.reassigned",
