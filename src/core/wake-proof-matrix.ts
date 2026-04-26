@@ -344,7 +344,7 @@ async function runS1ColdWake(
 // S2: Duplicate delivery suppression — same idempotency key
 // ---------------------------------------------------------------------------
 
-function runS2DuplicateSuppression(
+async function runS2DuplicateSuppression(
   fixture: WakeScenarioFixture,
   wakeKey: string,
 ): Promise<WakeProofCellResult> {
@@ -376,7 +376,7 @@ function runS2DuplicateSuppression(
 // S3: Warm / coalesced wake — in-flight wake exists, coalesce
 // ---------------------------------------------------------------------------
 
-function runS3WarmCoalesced(
+async function runS3WarmCoalesced(
   fixture: WakeScenarioFixture,
   wakeKey: string,
 ): Promise<WakeProofCellResult> {

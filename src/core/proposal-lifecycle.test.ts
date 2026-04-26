@@ -1,4 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { describe, it } from "node:test";
+
+import { expect } from "../test-helpers/expect.js";
 
 import {
   ProposalManager,
