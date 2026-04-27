@@ -10,6 +10,7 @@ import {
   CURRENT_BROKER_STATE_VERSION,
   JsonFileBrokerStateStore,
   SqliteBrokerStateStore,
+  SqliteTaskRuntimeRepository,
   SqliteWorkerRuntimeRepository,
   buildHotEntityHintCoverage,
   emptySnapshot,
@@ -549,6 +550,34 @@ test("SqliteBrokerStateStore reads hot entities from mirrored tables with filter
       store.readHotAuditEvents({ action: "task.created" }).map((event) => event.targetId),
       ["task-queued"],
     );
+    store.close();
+  } finally {
+    temp.cleanup();
+  }
+});
+
+test("SqliteTaskRuntimeRepository writes task state directly to broker_tasks", () => {
+  const temp = withTempFile("state.sqlite");
+  try {
+    const store = new SqliteBrokerStateStore(temp.filePath);
+    const repository = new SqliteTaskRuntimeRepository(store);
+
+    repository.upsertTask(makeTask("task-runtime", "queued", "worker-a"));
+    repository.upsertTask({
+      ...makeTask("task-runtime", "claimed", "worker-a"),
+      claimedBy: "worker-a",
+      claimedAt: "2026-04-27T00:02:00.000Z",
+      updatedAt: "2026-04-27T00:02:00.000Z",
+    });
+
+    const task = repository.getTask("task-runtime");
+    assert.equal(task?.status, "claimed");
+    assert.equal(task?.claimedBy, "worker-a");
+    assert.deepEqual(
+      repository.listTasks({ status: "claimed", claimedBy: "worker-a", assignedWorkerId: "worker-a", taskOrigin: "api" }).map((item) => item.id),
+      ["task-runtime"],
+    );
+    assert.deepEqual(store.load().tasks, []);
     store.close();
   } finally {
     temp.cleanup();
