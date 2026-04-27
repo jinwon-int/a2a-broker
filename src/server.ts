@@ -722,13 +722,15 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
       }
 
       if (req.method === "GET" && segments[0] === "exchanges" && segments[1] && segments[2] === "messages") {
-        const items = broker.listExchangeMessages(segments[1], {
-          parentMessageId: optionalString(url.searchParams.get("parentMessageId")),
-          includeDescendants: booleanQueryParam(url, "includeDescendants") ?? false,
+        const parentMessageId = optionalString(url.searchParams.get("parentMessageId"));
+        const includeDescendants = booleanQueryParam(url, "includeDescendants") ?? false;
+        const items = listExchangeMessagesForReadPath(stateStore, broker, segments[1], {
+          parentMessageId,
+          includeDescendants,
         });
         return sendJson(res, 200, {
           exchangeId: segments[1],
-          parentMessageId: optionalString(url.searchParams.get("parentMessageId")),
+          parentMessageId,
           items,
           threads: buildMessageThreads(items),
         });
@@ -1576,6 +1578,56 @@ function getExchangeForReadPath(
     return stateStore.readHotExchanges({ id: exchangeId })[0] ?? null;
   }
   return broker.getExchange(exchangeId);
+}
+
+function listExchangeMessagesForReadPath(
+  stateStore: BrokerStateStore,
+  broker: InMemoryA2ABroker,
+  exchangeId: string,
+  filters: {
+    parentMessageId?: string;
+    includeDescendants?: boolean;
+  },
+): A2AExchangeMessageRecord[] {
+  if (!(stateStore instanceof SqliteBrokerStateStore)) {
+    return broker.listExchangeMessages(exchangeId, filters);
+  }
+
+  if (!stateStore.readHotExchanges({ id: exchangeId })[0]) {
+    throw new BrokerError("not_found", "exchange not found");
+  }
+
+  const items = stateStore.readHotExchangeMessages({ exchangeId });
+  if (!filters.parentMessageId) {
+    return items;
+  }
+
+  if (!items.some((message) => message.id === filters.parentMessageId)) {
+    throw new BrokerError("not_found", "exchange message not found");
+  }
+  if (filters.includeDescendants) {
+    const allowedIds = collectThreadMessageIds(items, filters.parentMessageId);
+    return items.filter((message) => allowedIds.has(message.id));
+  }
+  return items.filter((message) => message.parentMessageId === filters.parentMessageId);
+}
+
+function collectThreadMessageIds(
+  messages: A2AExchangeMessageRecord[],
+  parentMessageId: string,
+): Set<string> {
+  const allowedIds = new Set<string>([parentMessageId]);
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const message of messages) {
+      if (message.parentMessageId && allowedIds.has(message.parentMessageId) && !allowedIds.has(message.id)) {
+        allowedIds.add(message.id);
+        changed = true;
+      }
+    }
+  }
+  return allowedIds;
 }
 
 function listWorkerViewsForReadPath(

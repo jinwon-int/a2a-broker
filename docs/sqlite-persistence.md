@@ -39,10 +39,11 @@ Malformed JSON import fails startup/load with the same bounded validation errors
     "kind": "sqlite",
     "dbFile": "/var/lib/a2a-broker/state.sqlite",
     "stateVersion": 7,
-    "schemaVersion": 4,
+    "schemaVersion": 5,
     "journalMode": "wal",
     "hotEntityTables": [
       "broker_exchanges",
+      "broker_exchange_messages",
       "broker_tasks",
       "broker_workers",
       "broker_audit_events"

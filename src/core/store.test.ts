@@ -90,6 +90,7 @@ test("SqliteBrokerStateStore saves and reloads snapshots with WAL metadata", () 
     const snapshot: BrokerSnapshot = {
       ...emptySnapshot(),
       exchanges: [makeExchange("exchange-1", "worker-a")],
+      exchangeMessages: [makeExchangeMessage("message-1", "exchange-1", "root")],
       workers: [
         {
           nodeId: "worker-a",
@@ -145,9 +146,15 @@ test("SqliteBrokerStateStore saves and reloads snapshots with WAL metadata", () 
       kind: "sqlite",
       dbFile: temp.filePath,
       stateVersion: CURRENT_BROKER_STATE_VERSION,
-      schemaVersion: 4,
+      schemaVersion: 5,
       journalMode: "wal",
-      hotEntityTables: ["broker_exchanges", "broker_tasks", "broker_workers", "broker_audit_events"],
+      hotEntityTables: [
+        "broker_exchanges",
+        "broker_exchange_messages",
+        "broker_tasks",
+        "broker_workers",
+        "broker_audit_events",
+      ],
       importedFromJsonFile: undefined,
       lastImportAt: undefined,
     });
@@ -156,6 +163,7 @@ test("SqliteBrokerStateStore saves and reloads snapshots with WAL metadata", () 
     const db = new DatabaseSync(temp.filePath, { readOnly: true });
     try {
       assert.equal(readSqliteCount(db, "broker_exchanges"), 1);
+      assert.equal(readSqliteCount(db, "broker_exchange_messages"), 1);
       assert.equal(readSqliteCount(db, "broker_tasks"), 1);
       assert.equal(readSqliteCount(db, "broker_workers"), 1);
       assert.equal(readSqliteCount(db, "broker_audit_events"), 1);
@@ -181,6 +189,14 @@ test("SqliteBrokerStateStore saves and reloads snapshots with WAL metadata", () 
       assert.equal(exchangeRow.status, "running");
       assert.equal(exchangeRow.intent, "chat");
       assert.equal(exchangeRow.target_node_id, "worker-a");
+      const exchangeMessageRow = db.prepare("SELECT id, exchange_id, kind FROM broker_exchange_messages").get() as {
+        id: string;
+        exchange_id: string;
+        kind: string;
+      };
+      assert.equal(exchangeMessageRow.id, "message-1");
+      assert.equal(exchangeMessageRow.exchange_id, "exchange-1");
+      assert.equal(exchangeMessageRow.kind, "root");
     } finally {
       db.close();
     }
@@ -257,6 +273,11 @@ test("SqliteBrokerStateStore reads hot entities from mirrored tables with filter
         makeExchange("exchange-a", "worker-a", "2026-04-27T00:01:00.000Z"),
         makeExchange("exchange-b", "worker-b", "2026-04-27T00:02:00.000Z"),
       ],
+      exchangeMessages: [
+        makeExchangeMessage("message-root", "exchange-a", "root", undefined, "2026-04-27T00:00:00.000Z"),
+        makeExchangeMessage("message-child", "exchange-a", "thread", "message-root", "2026-04-27T00:01:00.000Z"),
+        makeExchangeMessage("message-other", "exchange-b", "root", undefined, "2026-04-27T00:02:00.000Z"),
+      ],
       tasks: [
         makeTask("task-queued", "queued", "worker-a"),
         makeTask("task-running", "running", "worker-a"),
@@ -295,6 +316,10 @@ test("SqliteBrokerStateStore reads hot entities from mirrored tables with filter
     assert.deepEqual(
       store.readHotExchanges({ id: "exchange-a" }).map((exchange) => exchange.targetNodeId),
       ["worker-a"],
+    );
+    assert.deepEqual(
+      store.readHotExchangeMessages({ exchangeId: "exchange-a" }).map((message) => message.id),
+      ["message-root", "message-child"],
     );
     assert.deepEqual(
       store.readHotWorkers().map((worker) => worker.nodeId),
@@ -349,7 +374,7 @@ test("SqliteBrokerStateStore migrates v2 task hot table with task origin column"
       store.readHotTasks({ taskOrigin: "api", targetNodeId: "worker-a" }).map((task) => task.id),
       ["task-migrated"],
     );
-    assert.equal(store.getPersistenceInfo().schemaVersion, 4);
+    assert.equal(store.getPersistenceInfo().schemaVersion, 5);
     store.close();
   } finally {
     temp.cleanup();
@@ -402,6 +427,28 @@ function makeExchange(
     createdAt,
     updatedAt: createdAt,
   };
+}
+
+function makeExchangeMessage(
+  id: string,
+  exchangeId: string,
+  kind: BrokerSnapshot["exchangeMessages"][number]["kind"],
+  parentMessageId?: string,
+  createdAt = "2026-04-27T00:00:00.000Z",
+): BrokerSnapshot["exchangeMessages"][number] {
+  const message: BrokerSnapshot["exchangeMessages"][number] = {
+    id,
+    exchangeId,
+    kind,
+    message: id,
+    actor: { id: "requester", kind: "session", role: "hub" },
+    createdAt,
+    updatedAt: createdAt,
+  };
+  if (parentMessageId) {
+    message.parentMessageId = parentMessageId;
+  }
+  return message;
 }
 
 function makeTask(

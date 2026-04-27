@@ -72,6 +72,10 @@ export interface SqliteExchangeHotTableFilters {
   id?: string;
 }
 
+export interface SqliteExchangeMessageHotTableFilters {
+  exchangeId?: string;
+}
+
 export interface SqliteAuditHotTableFilters {
   proposalId?: string;
   actorId?: string;
@@ -85,8 +89,14 @@ export interface SqliteWorkerHotTableFilters {
   role?: WorkerRecord["role"];
 }
 
-const SQLITE_SCHEMA_VERSION = 4;
-const SQLITE_HOT_ENTITY_TABLES = ["broker_exchanges", "broker_tasks", "broker_workers", "broker_audit_events"];
+const SQLITE_SCHEMA_VERSION = 5;
+const SQLITE_HOT_ENTITY_TABLES = [
+  "broker_exchanges",
+  "broker_exchange_messages",
+  "broker_tasks",
+  "broker_workers",
+  "broker_audit_events",
+];
 
 const partyRefSchema = z
   .object({
@@ -528,6 +538,18 @@ export class SqliteBrokerStateStore implements BrokerStateStore {
       .map((row) => parseHotEntityPayload(row, exchangeStateSchema, "broker_exchanges")) as A2AExchangeState[];
   }
 
+  readHotExchangeMessages(filters: SqliteExchangeMessageHotTableFilters = {}): A2AExchangeMessageRecord[] {
+    const { sql, params } = buildHotTableSelect(
+      "broker_exchange_messages",
+      [["exchange_id", filters.exchangeId]],
+      "created_at ASC, CASE WHEN kind = 'root' THEN 0 ELSE 1 END ASC, id ASC",
+    );
+    return this.db
+      .prepare(sql)
+      .all(...params)
+      .map((row) => parseHotEntityPayload(row, exchangeMessageSchema, "broker_exchange_messages")) as A2AExchangeMessageRecord[];
+  }
+
   readHotWorkers(filters: SqliteWorkerHotTableFilters = {}): WorkerRecord[] {
     const { sql, params } = buildHotTableSelect(
       "broker_workers",
@@ -631,6 +653,19 @@ export class SqliteBrokerStateStore implements BrokerStateStore {
       );
       CREATE INDEX IF NOT EXISTS broker_exchanges_created_idx
         ON broker_exchanges(created_at);
+      CREATE TABLE IF NOT EXISTS broker_exchange_messages (
+        id TEXT PRIMARY KEY,
+        exchange_id TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        parent_message_id TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        payload TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS broker_exchange_messages_exchange_created_idx
+        ON broker_exchange_messages(exchange_id, created_at);
+      CREATE INDEX IF NOT EXISTS broker_exchange_messages_parent_idx
+        ON broker_exchange_messages(exchange_id, parent_message_id);
       CREATE TABLE IF NOT EXISTS broker_workers (
         node_id TEXT PRIMARY KEY,
         role TEXT NOT NULL,
@@ -699,6 +734,7 @@ export class SqliteBrokerStateStore implements BrokerStateStore {
     this.db.exec(`
       DELETE FROM broker_tasks;
       DELETE FROM broker_exchanges;
+      DELETE FROM broker_exchange_messages;
       DELETE FROM broker_workers;
       DELETE FROM broker_audit_events;
     `);
@@ -718,6 +754,23 @@ export class SqliteBrokerStateStore implements BrokerStateStore {
         exchange.createdAt,
         exchange.updatedAt,
         JSON.stringify(exchange),
+      );
+    }
+
+    const insertExchangeMessage = this.db.prepare(
+      `INSERT INTO broker_exchange_messages
+        (id, exchange_id, kind, parent_message_id, created_at, updated_at, payload)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    );
+    for (const message of snapshot.exchangeMessages) {
+      insertExchangeMessage.run(
+        message.id,
+        message.exchangeId,
+        message.kind,
+        message.parentMessageId ?? null,
+        message.createdAt,
+        message.updatedAt,
+        JSON.stringify(message),
       );
     }
 
@@ -867,7 +920,12 @@ function parseSnapshotPayload(payload: string, source: string, maxBytes: number)
 }
 
 function buildHotTableSelect(
-  tableName: "broker_exchanges" | "broker_tasks" | "broker_workers" | "broker_audit_events",
+  tableName:
+    | "broker_exchanges"
+    | "broker_exchange_messages"
+    | "broker_tasks"
+    | "broker_workers"
+    | "broker_audit_events",
   filters: Array<[string, string | undefined]>,
   orderBy: string,
 ): { sql: string; params: string[] } {
