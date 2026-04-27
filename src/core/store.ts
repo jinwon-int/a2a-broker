@@ -11,6 +11,7 @@ import type {
   A2AExchangeMessageRecord,
   A2AExchangeState,
   ChangeProposal,
+  ProposalListFilters,
   TaskListFilters,
   TaskRecord,
   TaskTombstone,
@@ -21,6 +22,7 @@ import type {
 } from "./types.js";
 import type { AuditRuntimeRepository } from "./audit-repository.js";
 import type { ExchangeMessageRuntimeRepository, ExchangeRuntimeRepository } from "./exchange-repository.js";
+import type { ProposalRuntimeRepository } from "./proposal-repository.js";
 import type { TaskRuntimeRepository } from "./task-repository.js";
 import type { TombstoneRuntimeRepository } from "./tombstone-repository.js";
 import type { WorkerRuntimeRepository } from "./worker-repository.js";
@@ -1583,6 +1585,22 @@ export class SqliteExchangeMessageRuntimeRepository implements ExchangeMessageRu
 
   upsertExchangeMessage(message: A2AExchangeMessageRecord): void {
     this.store.upsertHotExchangeMessages([message]);
+  }
+}
+
+export class SqliteProposalRuntimeRepository implements ProposalRuntimeRepository {
+  constructor(private readonly store: SqliteBrokerStateStore) {}
+
+  getProposal(id: string): ChangeProposal | null {
+    return this.store.readHotProposals({ id })[0] ?? null;
+  }
+
+  listProposals(filters: ProposalListFilters = {}): ChangeProposal[] {
+    return this.store.readHotProposals(filters);
+  }
+
+  upsertProposal(proposal: ChangeProposal): void {
+    this.store.upsertHotProposals([proposal]);
   }
 }
 

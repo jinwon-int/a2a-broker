@@ -13,6 +13,7 @@ import {
   SqliteBrokerStateStore,
   SqliteExchangeMessageRuntimeRepository,
   SqliteExchangeRuntimeRepository,
+  SqliteProposalRuntimeRepository,
   SqliteTaskRuntimeRepository,
   SqliteTombstoneRuntimeRepository,
   SqliteWorkerRuntimeRepository,
@@ -623,6 +624,42 @@ test("Sqlite exchange runtime repositories write directly to exchange hot tables
     );
     assert.deepEqual(store.load().exchanges, []);
     assert.deepEqual(store.load().exchangeMessages, []);
+    store.close();
+  } finally {
+    temp.cleanup();
+  }
+});
+
+test("SqliteProposalRuntimeRepository writes proposal state directly to broker_proposals", () => {
+  const temp = withTempFile("state.sqlite");
+  try {
+    const store = new SqliteBrokerStateStore(temp.filePath);
+    const repository = new SqliteProposalRuntimeRepository(store);
+
+    repository.upsertProposal(makeProposal("proposal-runtime", "submitted", "worker-a"));
+    repository.upsertProposal({
+      ...makeProposal("proposal-runtime", "approved", "worker-a"),
+      summary: "runtime proposal updated",
+      updatedAt: "2026-04-27T00:02:00.000Z",
+    });
+    repository.upsertProposal({
+      ...makeProposal("proposal-runtime-other", "validated", "worker-b", "2026-04-27T00:01:00.000Z"),
+      kind: "params",
+      parameterPayload: { threshold: 3 },
+    });
+
+    const proposal = repository.getProposal("proposal-runtime");
+    assert.equal(proposal?.status, "approved");
+    assert.equal(proposal?.summary, "runtime proposal updated");
+    assert.deepEqual(
+      repository.listProposals({ status: "approved", sourceNodeId: "source-a", targetNodeId: "worker-a", kind: "patch" }).map((item) => item.id),
+      ["proposal-runtime"],
+    );
+    assert.deepEqual(
+      repository.listProposals({ kind: "params" }).map((item) => item.parameterPayload),
+      [{ threshold: 3 }],
+    );
+    assert.deepEqual(store.load().proposals, []);
     store.close();
   } finally {
     temp.cleanup();

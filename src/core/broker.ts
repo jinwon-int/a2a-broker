@@ -19,6 +19,7 @@ import { TaskEventStream } from "./task-event-stream.js";
 import { ConferenceRoomManager } from "./conference-room.js";
 import type { AuditRuntimeRepository } from "./audit-repository.js";
 import type { ExchangeMessageRuntimeRepository, ExchangeRuntimeRepository } from "./exchange-repository.js";
+import type { ProposalRuntimeRepository } from "./proposal-repository.js";
 import type { TaskRuntimeRepository } from "./task-repository.js";
 import type { TombstoneRuntimeRepository } from "./tombstone-repository.js";
 import type { WorkerRuntimeRepository } from "./worker-repository.js";
@@ -115,6 +116,8 @@ export interface InMemoryA2ABrokerOptions {
   exchangeRepository?: ExchangeRuntimeRepository;
   /** Optional table-native repository for A2A exchange message runtime state. */
   exchangeMessageRepository?: ExchangeMessageRuntimeRepository;
+  /** Optional table-native repository for change proposal runtime state. */
+  proposalRepository?: ProposalRuntimeRepository;
   retention?: Partial<BrokerRetentionPolicy>;
   /**
    * Maximum number of times the stale-task reaper (or manual requeue) is allowed to recycle a
@@ -234,6 +237,7 @@ export class InMemoryA2ABroker {
   private readonly workerRepository?: WorkerRuntimeRepository;
   private readonly exchangeRepository?: ExchangeRuntimeRepository;
   private readonly exchangeMessageRepository?: ExchangeMessageRuntimeRepository;
+  private readonly proposalRepository?: ProposalRuntimeRepository;
 
   constructor(
     private readonly stateStore?: BrokerStateStore,
@@ -246,6 +250,7 @@ export class InMemoryA2ABroker {
     this.workerRepository = options.workerRepository;
     this.exchangeRepository = options.exchangeRepository;
     this.exchangeMessageRepository = options.exchangeMessageRepository;
+    this.proposalRepository = options.proposalRepository;
     this.retentionPolicy = normalizeBrokerRetentionPolicy(options.retention);
     this.maxRequeueAttempts = normalizeMaxRequeueAttempts(options.maxRequeueAttempts);
     this.maxBufferedEventsPerTask = options.maxBufferedEventsPerTask ?? 100;
@@ -700,26 +705,27 @@ export class InMemoryA2ABroker {
   }
 
   getProposal(id: string): ChangeProposal | null {
+    const repositoryProposal = this.proposalRepository?.getProposal(id);
+    if (repositoryProposal) {
+      this.proposals.set(repositoryProposal.id, repositoryProposal);
+      return repositoryProposal;
+    }
     return this.proposals.get(id) ?? null;
   }
 
   listProposals(filters?: ProposalListFilters): ChangeProposal[] {
+    if (this.proposalRepository) {
+      const repositoryProposals = this.proposalRepository.listProposals(filters);
+      for (const repositoryProposal of repositoryProposals) {
+        this.proposals.set(repositoryProposal.id, repositoryProposal);
+      }
+      return sortedCopy(
+        repositoryProposals.filter((proposal) => proposalMatchesFilters(proposal, filters)),
+        sortNewestFirst,
+      );
+    }
     return sortedCopy(
-      [...this.proposals.values()].filter((proposal) => {
-        if (filters?.status && proposal.status !== filters.status) {
-          return false;
-        }
-        if (filters?.sourceNodeId && proposal.sourceNodeId !== filters.sourceNodeId) {
-          return false;
-        }
-        if (filters?.targetNodeId && proposal.targetNodeId !== filters.targetNodeId) {
-          return false;
-        }
-        if (filters?.kind && proposal.kind !== filters.kind) {
-          return false;
-        }
-        return true;
-      }),
+      [...this.proposals.values()].filter((proposal) => proposalMatchesFilters(proposal, filters)),
       sortNewestFirst,
     );
   }
@@ -2125,6 +2131,7 @@ export class InMemoryA2ABroker {
   }
 
   private setProposalRecord(proposal: ChangeProposal): void {
+    this.proposalRepository?.upsertProposal(structuredClone(proposal));
     this.proposals.set(proposal.id, proposal);
     this.pendingHotProposals.set(proposal.id, structuredClone(proposal));
   }
@@ -2246,7 +2253,7 @@ export class InMemoryA2ABroker {
   }
 
   private requireProposal(id: string): ChangeProposal {
-    const proposal = this.proposals.get(id);
+    const proposal = this.getProposal(id);
     if (!proposal) {
       throw new BrokerError("not_found", "proposal not found");
     }
@@ -3052,6 +3059,22 @@ function taskMatchesFilters(task: TaskRecord, filters?: TaskListFilters): boolea
     return false;
   }
   if (filters?.taskOrigin && (task.taskOrigin ?? "unknown") !== filters.taskOrigin) {
+    return false;
+  }
+  return true;
+}
+
+function proposalMatchesFilters(proposal: ChangeProposal, filters?: ProposalListFilters): boolean {
+  if (filters?.status && proposal.status !== filters.status) {
+    return false;
+  }
+  if (filters?.sourceNodeId && proposal.sourceNodeId !== filters.sourceNodeId) {
+    return false;
+  }
+  if (filters?.targetNodeId && proposal.targetNodeId !== filters.targetNodeId) {
+    return false;
+  }
+  if (filters?.kind && proposal.kind !== filters.kind) {
     return false;
   }
   return true;
