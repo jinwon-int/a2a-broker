@@ -570,6 +570,67 @@ test("SqliteBrokerStateStore supports granular task and audit hot-table upserts"
   }
 });
 
+test("SqliteBrokerStateStore save hints update dirty task and audit rows while preserving retained rows", () => {
+  const temp = withTempFile("state.sqlite");
+  try {
+    const initialTask = makeTask("task-dirty", "queued", "worker-a");
+    const retainedTask = makeTask("task-retained", "queued", "worker-b");
+    const initialAudit = makeAuditEvent("audit-dirty", "task.created", "task-dirty");
+    const retainedAudit = makeAuditEvent("audit-retained", "task.created", "task-retained");
+    const store = new SqliteBrokerStateStore(temp.filePath);
+    store.save({
+      ...emptySnapshot(),
+      tasks: [initialTask, retainedTask],
+      auditEvents: [initialAudit, retainedAudit],
+    });
+
+    const dirtyTask = {
+      ...initialTask,
+      status: "claimed" as const,
+      claimedBy: "worker-a",
+      claimedAt: "2026-04-27T00:02:00.000Z",
+      updatedAt: "2026-04-27T00:02:00.000Z",
+    };
+    const dirtyAudit = makeAuditEvent("audit-dirty-2", "task.claimed", "task-dirty", "2026-04-27T00:02:00.000Z");
+    store.save(
+      {
+        ...emptySnapshot(),
+        tasks: [dirtyTask, retainedTask],
+        auditEvents: [initialAudit, retainedAudit, dirtyAudit],
+      },
+      {
+        hotTasks: [dirtyTask],
+        hotAuditEvents: [dirtyAudit],
+      },
+    );
+
+    assert.deepEqual(store.readHotTasks().map((task) => task.id).sort(), ["task-dirty", "task-retained"]);
+    assert.equal(store.readHotTasks({ id: "task-dirty" })[0]?.status, "claimed");
+    assert.deepEqual(
+      store.readHotAuditEvents({ targetId: "task-retained" }).map((event) => event.id),
+      ["audit-retained"],
+    );
+    assert.equal(store.readHotEntityMirrorStatus().ok, true);
+
+    store.save(
+      {
+        ...emptySnapshot(),
+        tasks: [dirtyTask],
+        auditEvents: [initialAudit, dirtyAudit],
+      },
+      {
+        hotTasks: [],
+        hotAuditEvents: [],
+      },
+    );
+    assert.deepEqual(store.readHotTasks().map((task) => task.id), ["task-dirty"]);
+    assert.deepEqual(store.readHotAuditEvents().map((event) => event.id).sort(), ["audit-dirty", "audit-dirty-2"]);
+    store.close();
+  } finally {
+    temp.cleanup();
+  }
+});
+
 test("SqliteBrokerStateStore migrates v2 task hot table with task origin column", () => {
   const temp = withTempFile("state.sqlite");
   try {

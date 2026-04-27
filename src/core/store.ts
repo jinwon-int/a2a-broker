@@ -34,8 +34,13 @@ export interface BrokerSnapshot {
 
 export interface BrokerStateStore {
   load(): BrokerSnapshot;
-  save(snapshot: BrokerSnapshot): void;
+  save(snapshot: BrokerSnapshot, hints?: BrokerStateSaveHints): void;
   getPersistenceInfo?(): BrokerPersistenceInfo;
+}
+
+export interface BrokerStateSaveHints {
+  hotTasks?: TaskRecord[];
+  hotAuditEvents?: AuditEvent[];
 }
 
 export interface BrokerPersistenceInfo {
@@ -489,7 +494,7 @@ export class JsonFileBrokerStateStore implements BrokerStateStore {
     }
   }
 
-  save(snapshot: BrokerSnapshot): void {
+  save(snapshot: BrokerSnapshot, _hints?: BrokerStateSaveHints): void {
     writeBrokerSnapshotFile(this.filePath, snapshot, this.maxBytes);
   }
 
@@ -540,8 +545,8 @@ export class SqliteBrokerStateStore implements BrokerStateStore {
     return emptySnapshot();
   }
 
-  save(snapshot: BrokerSnapshot): void {
-    this.saveSnapshot(snapshot);
+  save(snapshot: BrokerSnapshot, hints?: BrokerStateSaveHints): void {
+    this.saveSnapshot(snapshot, hints);
   }
 
   readHotTasks(filters: SqliteTaskHotTableFilters = {}): TaskRecord[] {
@@ -880,15 +885,15 @@ export class SqliteBrokerStateStore implements BrokerStateStore {
     });
   }
 
-  private saveSnapshot(snapshot: BrokerSnapshot): void {
+  private saveSnapshot(snapshot: BrokerSnapshot, hints?: BrokerStateSaveHints): void {
     const updatedAt = new Date().toISOString();
     this.runImmediateTransaction(() => {
-      this.writeSnapshotRow(snapshot, updatedAt);
+      this.writeSnapshotRow(snapshot, updatedAt, hints);
       this.writeMetadata("state_version", String(CURRENT_BROKER_STATE_VERSION));
     });
   }
 
-  private writeSnapshotRow(snapshot: BrokerSnapshot, updatedAt: string): void {
+  private writeSnapshotRow(snapshot: BrokerSnapshot, updatedAt: string, hints?: BrokerStateSaveHints): void {
     const payload = serializeBrokerSnapshot(snapshot, this.maxBytes);
     this.db
       .prepare(
@@ -900,7 +905,7 @@ export class SqliteBrokerStateStore implements BrokerStateStore {
            updated_at = excluded.updated_at`,
       )
       .run(CURRENT_BROKER_STATE_VERSION, payload, updatedAt);
-    this.writeHotEntityTables(snapshot);
+    this.writeHotEntityTables(snapshot, hints);
   }
 
   private readSnapshotEntityCounts(): Record<string, number> | undefined {
@@ -923,17 +928,27 @@ export class SqliteBrokerStateStore implements BrokerStateStore {
     return typeof row?.count === "number" ? row.count : 0;
   }
 
-  private writeHotEntityTables(snapshot: BrokerSnapshot): void {
+  private writeHotEntityTables(snapshot: BrokerSnapshot, hints?: BrokerStateSaveHints): void {
+    const hotTaskHints = hints?.hotTasks;
+    const hotAuditHints = hints?.hotAuditEvents;
     this.db.exec(`
-      DELETE FROM broker_tasks;
       DELETE FROM broker_exchanges;
       DELETE FROM broker_exchange_messages;
       DELETE FROM broker_proposals;
       DELETE FROM broker_artifacts;
       DELETE FROM broker_validations;
       DELETE FROM broker_workers;
-      DELETE FROM broker_audit_events;
     `);
+    if (hotTaskHints) {
+      this.deleteMissingHotEntityRows("broker_tasks", snapshot.tasks.map((task) => task.id));
+    } else {
+      this.db.exec("DELETE FROM broker_tasks;");
+    }
+    if (hotAuditHints) {
+      this.deleteMissingHotEntityRows("broker_audit_events", snapshot.auditEvents.map((event) => event.id));
+    } else {
+      this.db.exec("DELETE FROM broker_audit_events;");
+    }
 
     const insertExchange = this.db.prepare(
       `INSERT INTO broker_exchanges
@@ -1020,7 +1035,7 @@ export class SqliteBrokerStateStore implements BrokerStateStore {
       );
     }
 
-    this.upsertHotTasksUnsafe(snapshot.tasks);
+    this.upsertHotTasksUnsafe(hotTaskHints ?? snapshot.tasks);
 
     const insertWorker = this.db.prepare(
       `INSERT INTO broker_workers
@@ -1037,7 +1052,16 @@ export class SqliteBrokerStateStore implements BrokerStateStore {
       );
     }
 
-    this.upsertHotAuditEventsUnsafe(snapshot.auditEvents);
+    this.upsertHotAuditEventsUnsafe(hotAuditHints ?? snapshot.auditEvents);
+  }
+
+  private deleteMissingHotEntityRows(tableName: "broker_tasks" | "broker_audit_events", retainedIds: string[]): void {
+    if (retainedIds.length === 0) {
+      this.db.exec(`DELETE FROM ${tableName};`);
+      return;
+    }
+    const placeholders = retainedIds.map(() => "?").join(", ");
+    this.db.prepare(`DELETE FROM ${tableName} WHERE id NOT IN (${placeholders})`).run(...retainedIds);
   }
 
   private upsertHotTasksUnsafe(tasks: TaskRecord[]): void {
