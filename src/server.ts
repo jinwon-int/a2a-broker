@@ -41,6 +41,7 @@ import {
   SqliteValidationRuntimeRepository,
   SqliteWorkerRuntimeRepository,
   type BrokerStateStore,
+  type SqliteBrokerLoadSource,
 } from "./core/store.js";
 import type {
   A2AExchangeMessageRecord,
@@ -168,6 +169,7 @@ export interface BrokerServerOptions {
   stateFile?: string;
   sqliteFile?: string;
   persistenceBackend?: "json-file" | "sqlite";
+  sqliteLoadSource?: SqliteBrokerLoadSource;
   workerOfflineAfterSec?: number;
   rateLimitWindowSec?: number;
   rateLimitMaxRequests?: number;
@@ -234,6 +236,7 @@ export interface BrokerServerRuntime {
     stateFile: string;
     sqliteFile?: string;
     persistenceBackend: "json-file" | "sqlite";
+    sqliteLoadSource?: SqliteBrokerLoadSource;
     workerOfflineAfterSec: number;
     rateLimitWindowSec: number;
     rateLimitMaxRequests: number;
@@ -262,6 +265,7 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
   const persistenceBackend =
     options.persistenceBackend ?? normalizePersistenceBackend(process.env.BROKER_PERSISTENCE_BACKEND);
   const sqliteFile = options.sqliteFile ?? process.env.SQLITE_STATE_FILE ?? process.env.BROKER_SQLITE_FILE;
+  const sqliteLoadSource = options.sqliteLoadSource ?? normalizeSqliteLoadSource(process.env.BROKER_SQLITE_LOAD_SOURCE);
   const workerOfflineAfterSec = options.workerOfflineAfterSec ?? Number(process.env.WORKER_OFFLINE_AFTER_SEC ?? 90);
   const rateLimitWindowSec = options.rateLimitWindowSec ?? Number(process.env.RATE_LIMIT_WINDOW_SEC ?? 60);
   const rateLimitMaxRequests = options.rateLimitMaxRequests ?? Number(process.env.RATE_LIMIT_MAX_REQUESTS ?? 10);
@@ -317,6 +321,7 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
       backend: persistenceBackend,
       stateFile,
       sqliteFile,
+      sqliteLoadSource,
       maxSnapshotBytes,
     });
   const broker =
@@ -1226,6 +1231,7 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
       stateFile,
       ...(sqliteFile ? { sqliteFile } : {}),
       persistenceBackend,
+      ...(persistenceBackend === "sqlite" ? { sqliteLoadSource } : {}),
       workerOfflineAfterSec,
       rateLimitWindowSec,
       rateLimitMaxRequests,
@@ -1332,15 +1338,25 @@ function normalizePersistenceBackend(value: string | undefined): "json-file" | "
   return "json-file";
 }
 
+function normalizeSqliteLoadSource(value: string | undefined): SqliteBrokerLoadSource {
+  const normalized = value?.trim().toLowerCase().replace(/_/g, "-");
+  if (normalized === "hot-tables" || normalized === "hot-table" || normalized === "hot-runtime") {
+    return "hot-tables";
+  }
+  return "snapshot";
+}
+
 function createDefaultStateStore(params: {
   backend: "json-file" | "sqlite";
   stateFile: string;
   sqliteFile?: string;
+  sqliteLoadSource: SqliteBrokerLoadSource;
   maxSnapshotBytes: number;
 }): BrokerStateStore {
   if (params.backend === "sqlite") {
     return new SqliteBrokerStateStore(params.sqliteFile ?? `${params.stateFile}.sqlite`, {
       importJsonFile: params.stateFile,
+      loadSource: params.sqliteLoadSource,
       maxBytes: params.maxSnapshotBytes,
     });
   }
