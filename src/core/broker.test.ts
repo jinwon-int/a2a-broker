@@ -2,7 +2,13 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { InMemoryA2ABroker, type TaskUpdate, type BufferedTaskEvent } from "./broker.js";
-import { CURRENT_BROKER_STATE_VERSION, type BrokerSnapshot } from "./store.js";
+import {
+  CURRENT_BROKER_STATE_VERSION,
+  emptySnapshot,
+  type BrokerSnapshot,
+  type BrokerStateSaveHints,
+  type BrokerStateStore,
+} from "./store.js";
 import type { WorkerRecord } from "./types.js";
 
 function registerWorker(broker: InMemoryA2ABroker, nodeId: string): void {
@@ -19,6 +25,36 @@ function registerWorker(broker: InMemoryA2ABroker, nodeId: string): void {
     },
   });
 }
+
+test("broker passes dirty task and audit hints to state store saves", () => {
+  const saveHints: Array<BrokerStateSaveHints | undefined> = [];
+  const store: BrokerStateStore = {
+    load: () => emptySnapshot(),
+    save: (_snapshot, hints) => {
+      saveHints.push(hints);
+    },
+  };
+  const broker = new InMemoryA2ABroker(store, store.load());
+  registerWorker(broker, "worker-a");
+
+  const task = broker.createTask({
+    id: "task-hot-hints",
+    intent: "chat",
+    requester: { id: "hub-a", kind: "node", role: "hub" },
+    target: { id: "worker-a", kind: "node", role: "analyst" },
+    assignedWorkerId: "worker-a",
+    message: "prove hot write hints",
+  });
+
+  const createHints = saveHints.at(-1);
+  assert.deepEqual(createHints?.hotTasks?.map((item) => item.id), [task.id]);
+  assert.deepEqual(createHints?.hotAuditEvents?.map((item) => item.action), ["task.created"]);
+
+  broker.claimTask(task.id, "worker-a");
+  const claimHints = saveHints.at(-1);
+  assert.deepEqual(claimHints?.hotTasks?.map((item) => [item.id, item.status]), [[task.id, "claimed"]]);
+  assert.deepEqual(claimHints?.hotAuditEvents?.map((item) => item.action), ["task.claimed"]);
+});
 
 test("accepted exchange thread creates and links an exchange task", () => {
   const broker = new InMemoryA2ABroker();

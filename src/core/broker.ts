@@ -12,6 +12,7 @@ import {
 import {
   CURRENT_BROKER_STATE_VERSION,
   type BrokerSnapshot,
+  type BrokerStateSaveHints,
   type BrokerStateStore,
 } from "./store.js";
 import { TaskEventStream } from "./task-event-stream.js";
@@ -187,6 +188,8 @@ export class InMemoryA2ABroker {
   private readonly taskListeners = new Map<string, Set<TaskUpdateListener>>();
   private readonly taskEventBuffers = new Map<string, BufferedTaskEvent[]>();
   private readonly taskEventSeqs = new Map<string, number>();
+  private readonly pendingHotTasks = new Map<string, TaskRecord>();
+  private readonly pendingHotAuditEvents = new Map<string, AuditEvent>();
   private readonly stateListeners = new Set<BrokerStateListener>();
   private readonly maxBufferedEventsPerTask: number;
   private readonly taskEventStream: TaskEventStream;
@@ -875,7 +878,7 @@ export class InMemoryA2ABroker {
       taskOrigin: request.taskOrigin ?? "unknown",
     };
 
-    this.tasks.set(task.id, task);
+    this.setTaskRecord(task);
     if (task.exchangeId) {
       this.linkTaskToExchange(task);
     }
@@ -913,7 +916,7 @@ export class InMemoryA2ABroker {
         replayCount: (existing.replayCount ?? 0) + 1,
         updatedAt: isoNow(),
       };
-      this.tasks.set(task.id, task);
+      this.setTaskRecord(task);
       this.persistState();
       return {
         task,
@@ -941,7 +944,7 @@ export class InMemoryA2ABroker {
 
     task.wake = wake;
     task.updatedAt = now;
-    this.tasks.set(task.id, task);
+    this.setTaskRecord(task);
     this.appendAuditEvent({
       actorId: task.requester.id,
       action: "task.wake.planned",
@@ -981,7 +984,7 @@ export class InMemoryA2ABroker {
       updatedAt: now,
     };
     task.updatedAt = now;
-    this.tasks.set(task.id, task);
+    this.setTaskRecord(task);
     const action = wakeDecisionAuditAction(request.status);
     this.appendAuditEvent({
       actorId: "broker",
@@ -1071,7 +1074,7 @@ export class InMemoryA2ABroker {
     task.requeueCount = 0;
     task.attemptId = undefined;
     task.updatedAt = now;
-    this.tasks.set(task.id, task);
+    this.setTaskRecord(task);
     this.syncExchangeStateFromTask(task, "queued");
     this.appendAuditEvent({
       actorId: request.actor.id,
@@ -1165,7 +1168,7 @@ export class InMemoryA2ABroker {
     };
     task.status = "queued";
     task.updatedAt = now;
-    this.tasks.set(task.id, task);
+    this.setTaskRecord(task);
     this.syncExchangeStateFromTask(task, "queued");
     this.appendAuditEvent({
       actorId: request.actor.id,
@@ -1246,7 +1249,7 @@ export class InMemoryA2ABroker {
     task.claimedBy = workerId;
     task.claimedAt = now;
     task.updatedAt = now;
-    this.tasks.set(task.id, task);
+    this.setTaskRecord(task);
     this.syncExchangeStateFromTask(task, "running");
     this.appendAuditEvent({
       actorId: workerId,
@@ -1268,7 +1271,7 @@ export class InMemoryA2ABroker {
 
     task.status = "running";
     task.updatedAt = isoNow();
-    this.tasks.set(task.id, task);
+    this.setTaskRecord(task);
     this.syncExchangeStateFromTask(task, "running");
     this.appendAuditEvent({
       actorId: workerId,
@@ -1311,7 +1314,7 @@ export class InMemoryA2ABroker {
       ...(normalizedResult.validation?.artifactIds ?? []),
       ...(normalizedResult.apply?.artifactIds ?? []),
     ]);
-    this.tasks.set(task.id, task);
+    this.setTaskRecord(task);
     this.syncExchangeStateFromTask(task, "completed");
     this.appendAuditEvent({
       actorId: workerId,
@@ -1346,7 +1349,7 @@ export class InMemoryA2ABroker {
     task.updatedAt = now;
     task.completedAt = now;
     task.error = normalizedError;
-    this.tasks.set(task.id, task);
+    this.setTaskRecord(task);
     this.syncExchangeStateFromTask(task, "failed");
     this.appendAuditEvent({
       actorId: workerId,
@@ -1423,7 +1426,7 @@ export class InMemoryA2ABroker {
             lastRequeueReason: requeueReason,
           },
         };
-        this.tasks.set(task.id, task);
+        this.setTaskRecord(task);
         this.syncExchangeStateFromTask(task, "failed");
         this.appendAuditEvent({
           actorId: "broker",
@@ -1445,7 +1448,7 @@ export class InMemoryA2ABroker {
       task.attemptId = undefined;
       task.updatedAt = nowIso;
       task.requeueCount = currentRequeues + 1;
-      this.tasks.set(task.id, task);
+      this.setTaskRecord(task);
       this.syncExchangeStateFromTask(task, "queued");
       this.appendAuditEvent({
         actorId: "broker",
@@ -2034,8 +2037,31 @@ export class InMemoryA2ABroker {
 
   private persistState(): void {
     this.applyRetentionPolicy();
-    this.stateStore?.save(this.exportSnapshot());
+    const snapshot = this.exportSnapshot();
+    const hints = this.consumeStateSaveHints(snapshot);
+    this.stateStore?.save(snapshot, hints);
     this.emitStateChange();
+  }
+
+  private setTaskRecord(task: TaskRecord): void {
+    this.tasks.set(task.id, task);
+    this.pendingHotTasks.set(task.id, structuredClone(task));
+  }
+
+  private consumeStateSaveHints(snapshot: BrokerSnapshot): BrokerStateSaveHints | undefined {
+    if (this.pendingHotTasks.size === 0 && this.pendingHotAuditEvents.size === 0) {
+      return undefined;
+    }
+    const retainedTaskIds = new Set(snapshot.tasks.map((task) => task.id));
+    const retainedAuditEventIds = new Set(snapshot.auditEvents.map((event) => event.id));
+    const hotTasks = [...this.pendingHotTasks.values()].filter((task) => retainedTaskIds.has(task.id));
+    const hotAuditEvents = [...this.pendingHotAuditEvents.values()].filter((event) => retainedAuditEventIds.has(event.id));
+    this.pendingHotTasks.clear();
+    this.pendingHotAuditEvents.clear();
+    return {
+      ...(hotTasks.length ? { hotTasks } : {}),
+      ...(hotAuditEvents.length ? { hotAuditEvents } : {}),
+    };
   }
 
   private emitStateChange(): void {
@@ -2072,6 +2098,7 @@ export class InMemoryA2ABroker {
     };
 
     this.auditEvents.set(event.id, event);
+    this.pendingHotAuditEvents.set(event.id, structuredClone(event));
     if (event.targetType === "task") {
       const task = this.tasks.get(event.targetId);
       if (task) {
@@ -2286,7 +2313,7 @@ export class InMemoryA2ABroker {
       reason: params.reason,
       sourceTaskId: params.sourceTaskId,
     };
-    this.tasks.set(task.id, task);
+    this.setTaskRecord(task);
     this.syncExchangeStateFromTask(task, "queued");
     this.appendAuditEvent({
       actorId: params.actorId,
@@ -2353,7 +2380,7 @@ export class InMemoryA2ABroker {
     const now = isoNow();
     task.lastHeartbeatAt = now;
     task.updatedAt = now;
-    this.tasks.set(task.id, task);
+    this.setTaskRecord(task);
     this.appendAuditEvent({
       actorId: workerId,
       action: "task.heartbeat",
