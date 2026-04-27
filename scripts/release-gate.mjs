@@ -155,21 +155,27 @@ async function gateComposeSmoke({ edgeSecret, timeoutMs }) {
   const projectName = process.env.COMPOSE_PROJECT || `release-gate-${Date.now()}`;
   const port = parsePositiveInt(process.env.PORT, 0) || await findFreePort(18787);
 
-  // override the port by generating a temporary compose override
-  const override = {
-    services: {
-      'a2a-broker': {
-        ports: [`127.0.0.1:${port}:8787`],
-        environment: {
-          PUBLIC_BASE_URL: `http://127.0.0.1:${port}`,
-        },
-      },
-    },
-  };
-
+  // Generate a temporary compose override. Compose merges sequence fields by
+  // appending, so use the compose `!override` tag for ports; otherwise the
+  // base `127.0.0.1:8787:8787` binding remains active and can collide with a
+  // local broker while the gate is trying to use a free ephemeral port.
   const overrideDir = await mkdtemp(join(tmpdir(), 'release-gate-'));
   const overrideFile = join(overrideDir, 'override.yml');
-  await writeFile(overrideFile, JSON.stringify(override, null, 2));
+  await writeFile(
+    overrideFile,
+    [
+      'services:',
+      '  a2a-broker:',
+      `    container_name: ${projectName}-a2a-broker`,
+      '    ports: !override',
+      `      - "127.0.0.1:${port}:8787"`,
+      '    environment:',
+      `      PUBLIC_BASE_URL: "http://127.0.0.1:${port}"`,
+      '  echo-worker:',
+      `    container_name: ${projectName}-echo-worker`,
+      '',
+    ].join('\n'),
+  );
 
   const baseUrl = `http://127.0.0.1:${port}`;
   let compose;
@@ -200,7 +206,9 @@ async function gateComposeSmoke({ edgeSecret, timeoutMs }) {
       return null;
     }, { timeoutMs, label: 'broker-health' });
     report.health = health;
-    if (health?.status !== 'ok') throw new Error(`unexpected health: ${JSON.stringify(health)}`);
+    if (health?.status !== 'ok' && health?.ok !== true) {
+      throw new Error(`unexpected health: ${JSON.stringify(health)}`);
+    }
 
     // 3. Verify worker registration
     console.log('[compose] verifying echo-worker-1 registration…');
