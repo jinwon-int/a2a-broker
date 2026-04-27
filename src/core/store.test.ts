@@ -162,6 +162,7 @@ test("SqliteBrokerStateStore saves and reloads snapshots with WAL metadata", () 
           taskOrigin: "api",
         },
       ],
+      tombstones: [makeTombstone("task-1", "failed")],
     };
 
     const store = new SqliteBrokerStateStore(temp.filePath);
@@ -174,7 +175,7 @@ test("SqliteBrokerStateStore saves and reloads snapshots with WAL metadata", () 
       kind: "sqlite",
       dbFile: temp.filePath,
       stateVersion: CURRENT_BROKER_STATE_VERSION,
-      schemaVersion: 7,
+      schemaVersion: 8,
       journalMode: "wal",
       hotEntityTables: [
         "broker_exchanges",
@@ -183,6 +184,7 @@ test("SqliteBrokerStateStore saves and reloads snapshots with WAL metadata", () 
         "broker_artifacts",
         "broker_validations",
         "broker_tasks",
+        "broker_tombstones",
         "broker_workers",
         "broker_audit_events",
       ],
@@ -193,6 +195,7 @@ test("SqliteBrokerStateStore saves and reloads snapshots with WAL metadata", () 
         "broker_artifacts",
         "broker_validations",
         "broker_tasks",
+        "broker_tombstones",
         "broker_workers",
         "broker_audit_events",
       ],
@@ -205,12 +208,13 @@ test("SqliteBrokerStateStore saves and reloads snapshots with WAL metadata", () 
           "broker_artifacts",
           "broker_validations",
           "broker_tasks",
+          "broker_tombstones",
           "broker_workers",
           "broker_audit_events",
         ],
         missingTables: [],
-        supportedCount: 8,
-        totalCount: 8,
+        supportedCount: 9,
+        totalCount: 9,
       },
       hotEntityMirror: {
         ok: true,
@@ -221,6 +225,7 @@ test("SqliteBrokerStateStore saves and reloads snapshots with WAL metadata", () 
           broker_artifacts: 1,
           broker_validations: 1,
           broker_tasks: 1,
+          broker_tombstones: 1,
           broker_workers: 1,
           broker_audit_events: 1,
         },
@@ -231,6 +236,7 @@ test("SqliteBrokerStateStore saves and reloads snapshots with WAL metadata", () 
           artifacts: 1,
           validations: 1,
           tasks: 1,
+          tombstones: 1,
           workers: 1,
           auditEvents: 1,
         },
@@ -249,6 +255,7 @@ test("SqliteBrokerStateStore saves and reloads snapshots with WAL metadata", () 
       assert.equal(readSqliteCount(db, "broker_artifacts"), 1);
       assert.equal(readSqliteCount(db, "broker_validations"), 1);
       assert.equal(readSqliteCount(db, "broker_tasks"), 1);
+      assert.equal(readSqliteCount(db, "broker_tombstones"), 1);
       assert.equal(readSqliteCount(db, "broker_workers"), 1);
       assert.equal(readSqliteCount(db, "broker_audit_events"), 1);
       const taskRow = db.prepare("SELECT id, status, intent, assigned_worker_id, task_origin FROM broker_tasks").get() as {
@@ -309,6 +316,14 @@ test("SqliteBrokerStateStore saves and reloads snapshots with WAL metadata", () 
       assert.equal(validationRow.proposal_id, "proposal-1");
       assert.equal(validationRow.node_id, "validator-a");
       assert.equal(validationRow.verdict, "pass");
+      const tombstoneRow = db.prepare("SELECT task_id, terminal_status, tombstone_reason FROM broker_tombstones").get() as {
+        task_id: string;
+        terminal_status: string;
+        tombstone_reason: string;
+      };
+      assert.equal(tombstoneRow.task_id, "task-1");
+      assert.equal(tombstoneRow.terminal_status, "failed");
+      assert.equal(tombstoneRow.tombstone_reason, "failed");
     } finally {
       db.close();
     }
@@ -1051,6 +1066,40 @@ test("SqliteBrokerStateStore supports proposal artifact and validation hot-table
   }
 });
 
+test("SqliteBrokerStateStore supports tombstone hot-table reads and hinted pruning", () => {
+  const temp = withTempFile("state.sqlite");
+  try {
+    const store = new SqliteBrokerStateStore(temp.filePath);
+    const keep = makeTombstone("task-keep", "failed", "2026-04-27T00:03:00.000Z");
+    const prune = makeTombstone("task-prune", "canceled", "2026-04-27T00:01:00.000Z");
+    store.save({
+      ...emptySnapshot(),
+      tombstones: [keep, prune],
+    });
+
+    assert.deepEqual(store.readHotTombstones().map((tombstone) => tombstone.taskId), ["task-keep", "task-prune"]);
+    assert.deepEqual(store.readHotTombstones({ tombstoneReason: "failed" }).map((tombstone) => tombstone.taskId), ["task-keep"]);
+    assert.deepEqual(store.readHotTombstones({ since: "2026-04-27T00:02:00.000Z" }).map((tombstone) => tombstone.taskId), ["task-keep"]);
+
+    const updated = { ...keep, durationMs: 180_000, tombstonedAt: "2026-04-27T00:04:00.000Z" };
+    store.save(
+      {
+        ...emptySnapshot(),
+        tombstones: [updated],
+      },
+      {
+        hotTombstones: [updated],
+      },
+    );
+
+    assert.deepEqual(store.readHotTombstones().map((tombstone) => [tombstone.taskId, tombstone.durationMs]), [["task-keep", 180_000]]);
+    assert.equal(store.readHotEntityMirrorStatus().ok, true);
+    store.close();
+  } finally {
+    temp.cleanup();
+  }
+});
+
 test("SqliteBrokerStateStore migrates v2 task hot table with task origin column", () => {
   const temp = withTempFile("state.sqlite");
   try {
@@ -1078,7 +1127,7 @@ test("SqliteBrokerStateStore migrates v2 task hot table with task origin column"
       store.readHotTasks({ taskOrigin: "api", targetNodeId: "worker-a" }).map((task) => task.id),
       ["task-migrated"],
     );
-    assert.equal(store.getPersistenceInfo().schemaVersion, 7);
+    assert.equal(store.getPersistenceInfo().schemaVersion, 8);
     store.close();
   } finally {
     temp.cleanup();
@@ -1226,6 +1275,22 @@ function makeTask(
     createdAt: "2026-04-27T00:00:00.000Z",
     updatedAt: id === "task-running" ? "2026-04-27T00:02:00.000Z" : "2026-04-27T00:01:00.000Z",
     taskOrigin: "api",
+  };
+}
+
+function makeTombstone(
+  taskId: string,
+  tombstoneReason: NonNullable<BrokerSnapshot["tombstones"]>[number]["tombstoneReason"],
+  tombstonedAt = "2026-04-27T00:02:00.000Z",
+): NonNullable<BrokerSnapshot["tombstones"]>[number] {
+  return {
+    taskId,
+    terminalStatus: tombstoneReason === "canceled" ? "canceled" : "failed",
+    tombstoneReason,
+    durationMs: 120_000,
+    requeueCount: 0,
+    error: tombstoneReason === "failed" ? { code: "handler_error", message: "failed" } : undefined,
+    tombstonedAt,
   };
 }
 
