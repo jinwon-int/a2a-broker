@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { InMemoryA2ABroker, type TaskUpdate, type BufferedTaskEvent } from "./broker.js";
 import {
   CURRENT_BROKER_STATE_VERSION,
+  SqliteArtifactRuntimeRepository,
   SqliteAuditRuntimeRepository,
   SqliteBrokerStateStore,
   SqliteExchangeMessageRuntimeRepository,
@@ -20,7 +21,7 @@ import {
   type BrokerStateSaveHints,
   type BrokerStateStore,
 } from "./store.js";
-import type { AuditEvent, ChangeProposal, TaskTombstone, WorkerRecord } from "./types.js";
+import type { ArtifactRecord, AuditEvent, ChangeProposal, TaskTombstone, WorkerRecord } from "./types.js";
 
 function registerWorker(broker: InMemoryA2ABroker, nodeId: string): void {
   broker.registerWorker({
@@ -304,6 +305,65 @@ test("broker proposal lifecycle can use the SQLite runtime repository without JS
     assert.equal(approved.status, "approved");
     assert.equal(sqliteStore.readHotProposals({ id: "proposal-external-hot" })[0]?.status, "approved");
     assert.equal(snapshots.at(-1)?.proposals.find((proposal) => proposal.id === created.id)?.status, "applied");
+  } finally {
+    sqliteStore.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("broker proposal artifacts can use the SQLite runtime repository without JSON hot hints", () => {
+  const dir = mkdtempSync(join(tmpdir(), "a2a-broker-artifact-repo-"));
+  const sqliteStore = new SqliteBrokerStateStore(join(dir, "state.sqlite"));
+  const snapshots: BrokerSnapshot[] = [];
+  const noopStore: BrokerStateStore = {
+    load: () => emptySnapshot(),
+    save: (snapshot) => snapshots.push(snapshot),
+  };
+
+  try {
+    const broker = new InMemoryA2ABroker(noopStore, noopStore.load(), {
+      proposalRepository: new SqliteProposalRuntimeRepository(sqliteStore),
+      artifactRepository: new SqliteArtifactRuntimeRepository(sqliteStore),
+    });
+
+    const proposal = broker.createProposal({
+      source: { id: "research-a", kind: "node", role: "researcher" },
+      target: { id: "live-a", kind: "node", role: "live-trader" },
+      kind: "patch",
+      summary: "artifact through runtime repo",
+      workspace: { nodeId: "live-a", workspaceId: "repo" },
+      patchText: "diff --git a/file b/file",
+    });
+
+    const attached = broker.attachArtifact(proposal.id, {
+      kind: "report",
+      uri: "memory://artifact-runtime-attached",
+      summary: "attached through runtime repo",
+    });
+
+    assert.equal(sqliteStore.readHotArtifacts({ id: attached.id })[0]?.summary, "attached through runtime repo");
+    assert.equal(broker.getArtifact(attached.id)?.summary, "attached through runtime repo");
+    assert.deepEqual(sqliteStore.load().artifacts, []);
+    assert.deepEqual(
+      broker.getProposalDetails(proposal.id)?.artifacts.map((artifact) => artifact.id),
+      [attached.id],
+    );
+
+    const externalArtifact: ArtifactRecord = {
+      id: "artifact-external-hot",
+      proposalId: proposal.id,
+      kind: "report",
+      uri: "memory://artifact-external-hot",
+      summary: "external artifact from runtime repo",
+      createdAt: "2026-04-27T00:00:00.000Z",
+    };
+    sqliteStore.upsertHotArtifacts([externalArtifact]);
+
+    assert.deepEqual(
+      broker.listArtifactsForProposal(proposal.id).map((artifact) => artifact.id),
+      [attached.id, "artifact-external-hot"],
+    );
+    assert.equal(snapshots.at(-1)?.artifacts.find((artifact) => artifact.id === attached.id)?.summary, "attached through runtime repo");
   } finally {
     sqliteStore.close();
     rmSync(dir, { recursive: true, force: true });

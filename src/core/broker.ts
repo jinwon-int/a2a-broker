@@ -17,6 +17,7 @@ import {
 } from "./store.js";
 import { TaskEventStream } from "./task-event-stream.js";
 import { ConferenceRoomManager } from "./conference-room.js";
+import type { ArtifactRuntimeRepository } from "./artifact-repository.js";
 import type { AuditRuntimeRepository } from "./audit-repository.js";
 import type { ExchangeMessageRuntimeRepository, ExchangeRuntimeRepository } from "./exchange-repository.js";
 import type { ProposalRuntimeRepository } from "./proposal-repository.js";
@@ -118,6 +119,8 @@ export interface InMemoryA2ABrokerOptions {
   exchangeMessageRepository?: ExchangeMessageRuntimeRepository;
   /** Optional table-native repository for change proposal runtime state. */
   proposalRepository?: ProposalRuntimeRepository;
+  /** Optional table-native repository for proposal artifact metadata. */
+  artifactRepository?: ArtifactRuntimeRepository;
   retention?: Partial<BrokerRetentionPolicy>;
   /**
    * Maximum number of times the stale-task reaper (or manual requeue) is allowed to recycle a
@@ -238,6 +241,7 @@ export class InMemoryA2ABroker {
   private readonly exchangeRepository?: ExchangeRuntimeRepository;
   private readonly exchangeMessageRepository?: ExchangeMessageRuntimeRepository;
   private readonly proposalRepository?: ProposalRuntimeRepository;
+  private readonly artifactRepository?: ArtifactRuntimeRepository;
 
   constructor(
     private readonly stateStore?: BrokerStateStore,
@@ -251,6 +255,7 @@ export class InMemoryA2ABroker {
     this.exchangeRepository = options.exchangeRepository;
     this.exchangeMessageRepository = options.exchangeMessageRepository;
     this.proposalRepository = options.proposalRepository;
+    this.artifactRepository = options.artifactRepository;
     this.retentionPolicy = normalizeBrokerRetentionPolicy(options.retention);
     this.maxRequeueAttempts = normalizeMaxRequeueAttempts(options.maxRequeueAttempts);
     this.maxBufferedEventsPerTask = options.maxBufferedEventsPerTask ?? 100;
@@ -1542,7 +1547,23 @@ export class InMemoryA2ABroker {
       .map((worker) => worker.nodeId);
   }
 
+  getArtifact(id: string): ArtifactRecord | null {
+    const repositoryArtifact = this.artifactRepository?.getArtifact(id);
+    if (repositoryArtifact) {
+      this.artifacts.set(repositoryArtifact.id, repositoryArtifact);
+      return repositoryArtifact;
+    }
+    return this.artifacts.get(id) ?? null;
+  }
+
   listArtifactsForProposal(proposalId: string): ArtifactRecord[] {
+    const repositoryArtifacts = this.artifactRepository?.listArtifactsForProposal(proposalId);
+    if (repositoryArtifacts) {
+      for (const artifact of repositoryArtifacts) {
+        this.artifacts.set(artifact.id, artifact);
+      }
+      return sortedCopy(repositoryArtifacts, sortNewestFirst);
+    }
     return sortedCopy(
       [...this.artifacts.values()].filter((artifact) => artifact.proposalId === proposalId),
       sortNewestFirst,
@@ -2137,6 +2158,7 @@ export class InMemoryA2ABroker {
   }
 
   private setArtifactRecord(artifact: ArtifactRecord): void {
+    this.artifactRepository?.upsertArtifact(structuredClone(artifact));
     this.artifacts.set(artifact.id, artifact);
     this.pendingHotArtifacts.set(artifact.id, structuredClone(artifact));
   }
