@@ -17,6 +17,7 @@ import {
 } from "./store.js";
 import { TaskEventStream } from "./task-event-stream.js";
 import { ConferenceRoomManager } from "./conference-room.js";
+import type { WorkerRuntimeRepository } from "./worker-repository.js";
 import type {
   ApplyProposalRequest,
   ArtifactRecord,
@@ -98,6 +99,8 @@ export interface BrokerRetentionPolicy {
 }
 
 export interface InMemoryA2ABrokerOptions {
+  /** Optional table-native repository for high-churn worker runtime state. */
+  workerRepository?: WorkerRuntimeRepository;
   retention?: Partial<BrokerRetentionPolicy>;
   /**
    * Maximum number of times the stale-task reaper (or manual requeue) is allowed to recycle a
@@ -211,12 +214,14 @@ export class InMemoryA2ABroker {
   private readonly maxBufferedEventsPerTask: number;
   private readonly taskEventStream: TaskEventStream;
   private readonly conferenceManager: ConferenceRoomManager;
+  private readonly workerRepository?: WorkerRuntimeRepository;
 
   constructor(
     private readonly stateStore?: BrokerStateStore,
     snapshot?: BrokerSnapshot,
     options: InMemoryA2ABrokerOptions = {},
   ) {
+    this.workerRepository = options.workerRepository;
     this.retentionPolicy = normalizeBrokerRetentionPolicy(options.retention);
     this.maxRequeueAttempts = normalizeMaxRequeueAttempts(options.maxRequeueAttempts);
     this.maxBufferedEventsPerTask = options.maxBufferedEventsPerTask ?? 100;
@@ -510,7 +515,7 @@ export class InMemoryA2ABroker {
     this.assertWorkerRegistrationPayload(request);
 
     const now = isoNow();
-    const existing = this.workers.get(request.nodeId);
+    const existing = this.getWorker(request.nodeId);
     const worker: WorkerRecord = {
       nodeId: request.nodeId,
       role: request.role,
@@ -561,28 +566,29 @@ export class InMemoryA2ABroker {
   }
 
   getWorker(nodeId: string): WorkerRecord | null {
+    const repositoryWorker = this.workerRepository?.getWorker(nodeId);
+    if (repositoryWorker) {
+      const worker = normalizeWorkerRecord(repositoryWorker);
+      this.workers.set(worker.nodeId, worker);
+      return worker;
+    }
     return this.workers.get(nodeId) ?? null;
   }
 
   listWorkers(filters?: WorkerListFilters): WorkerRecord[] {
+    if (this.workerRepository) {
+      const workers = this.workerRepository.listWorkers(filters).map(normalizeWorkerRecord);
+      for (const worker of workers) {
+        this.workers.set(worker.nodeId, worker);
+      }
+      return sortedCopy(
+        workers.filter((worker) => workerMatchesFilters(worker, filters)),
+        sortWorkersNewestFirst,
+      );
+    }
     return sortedCopy(
       [...this.workers.values()].filter((worker) => {
-        if (filters?.role && worker.role !== filters.role) {
-          return false;
-        }
-        if (
-          filters?.environment &&
-          !worker.capabilities.environments.includes(filters.environment)
-        ) {
-          return false;
-        }
-        if (
-          filters?.workspaceId &&
-          !worker.capabilities.workspaceIds.includes(filters.workspaceId)
-        ) {
-          return false;
-        }
-        return true;
+        return workerMatchesFilters(worker, filters);
       }),
       sortWorkersNewestFirst,
     );
@@ -2035,10 +2041,8 @@ export class InMemoryA2ABroker {
     }
 
     for (const worker of snapshot.workers ?? []) {
-      this.workers.set(worker.nodeId, {
-        ...worker,
-        capabilities: normalizeCapabilities(worker.capabilities),
-      });
+      const normalizedWorker = normalizeWorkerRecord(worker);
+      this.workers.set(normalizedWorker.nodeId, normalizedWorker);
     }
 
     for (const task of snapshot.tasks ?? []) {
@@ -2091,8 +2095,10 @@ export class InMemoryA2ABroker {
   }
 
   private setWorkerRecord(worker: WorkerRecord): void {
-    this.workers.set(worker.nodeId, worker);
-    this.pendingHotWorkers.set(worker.nodeId, structuredClone(worker));
+    const normalizedWorker = normalizeWorkerRecord(worker);
+    this.workerRepository?.upsertWorker(structuredClone(normalizedWorker));
+    this.workers.set(normalizedWorker.nodeId, normalizedWorker);
+    this.pendingHotWorkers.set(normalizedWorker.nodeId, structuredClone(normalizedWorker));
   }
 
   private consumeStateSaveHints(snapshot: BrokerSnapshot): BrokerStateSaveHints | undefined {
@@ -2210,7 +2216,7 @@ export class InMemoryA2ABroker {
   }
 
   private requireWorker(nodeId: string): WorkerRecord {
-    const worker = this.workers.get(nodeId);
+    const worker = this.getWorker(nodeId);
     if (!worker) {
       throw new BrokerError("not_found", "worker not found");
     }
@@ -2955,6 +2961,19 @@ function computeWorkerStatus(
   return Date.now() - Date.parse(lastSeenAt) <= offlineAfterMs ? "online" : "stale";
 }
 
+function workerMatchesFilters(worker: WorkerRecord, filters?: WorkerListFilters): boolean {
+  if (filters?.role && worker.role !== filters.role) {
+    return false;
+  }
+  if (filters?.environment && !worker.capabilities.environments.includes(filters.environment)) {
+    return false;
+  }
+  if (filters?.workspaceId && !worker.capabilities.workspaceIds.includes(filters.workspaceId)) {
+    return false;
+  }
+  return true;
+}
+
 function getTaskRequeueReason(
   task: TaskRecord,
   olderThanMs: number,
@@ -3179,6 +3198,13 @@ function normalizeCapabilities(
     canPromoteLive: capabilities.canPromoteLive,
     workspaceIds: [...new Set(capabilities.workspaceIds ?? [])],
     environments: [...new Set(capabilities.environments ?? [])],
+  };
+}
+
+function normalizeWorkerRecord(worker: WorkerRecord): WorkerRecord {
+  return {
+    ...worker,
+    capabilities: normalizeCapabilities(worker.capabilities),
   };
 }
 
