@@ -56,6 +56,7 @@ import type {
   TaskFailRequest,
   TaskKind,
   TaskListFilters,
+  TaskOrigin,
   TaskReassignRequest,
   TaskRecord,
   TaskStatus,
@@ -1449,6 +1450,7 @@ function taskFiltersFromUrl(url: URL): {
   intent?: TaskKind;
   claimedBy?: string;
   assignedWorkerId?: string;
+  taskOrigin?: TaskOrigin;
 } {
   return {
     exchangeId: optionalString(url.searchParams.get("exchangeId")),
@@ -1476,6 +1478,7 @@ function taskFiltersFromUrl(url: URL): {
     ]),
     claimedBy: optionalString(url.searchParams.get("claimedBy")),
     assignedWorkerId: optionalString(url.searchParams.get("assignedWorkerId")),
+    taskOrigin: optionalEnum(url.searchParams.get("taskOrigin"), ["github", "api", "sessions_send", "unknown"]),
   };
 }
 
@@ -1531,7 +1534,10 @@ function listTasksForReadPath(
   if (stateStore instanceof SqliteBrokerStateStore && canUseSqliteTaskHotRead(filters)) {
     return stateStore.readHotTasks({
       status: filters.status,
+      targetNodeId: filters.targetNodeId,
+      intent: filters.intent,
       assignedWorkerId: filters.assignedWorkerId,
+      taskOrigin: filters.taskOrigin,
     });
   }
   return broker.listTasks(filters);
@@ -1540,11 +1546,8 @@ function listTasksForReadPath(
 function canUseSqliteTaskHotRead(filters: TaskListFilters): boolean {
   return !(
     filters.exchangeId ||
-    filters.targetNodeId ||
     filters.proposalId ||
-    filters.intent ||
-    filters.claimedBy ||
-    filters.taskOrigin
+    filters.claimedBy
   );
 }
 

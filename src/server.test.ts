@@ -335,7 +335,7 @@ test("server reports SQLite persistence metadata when SQLite backend is enabled"
     assert.equal(health.persistence.kind, "sqlite");
     assert.equal(health.persistence.dbFile, join(dir, "state.sqlite"));
     assert.equal(health.persistence.stateVersion, 7);
-    assert.equal(health.persistence.schemaVersion, 2);
+    assert.equal(health.persistence.schemaVersion, 3);
     assert.equal(health.persistence.journalMode, "wal");
     assert.deepEqual(health.persistence.hotEntityTables, [
       "broker_tasks",
@@ -417,6 +417,7 @@ test("server reads /tasks from SQLite hot tables for supported filters", async (
         status: "queued",
         createdAt: "2026-04-27T00:00:00.000Z",
         updatedAt: "2026-04-27T00:00:00.000Z",
+        taskOrigin: "api",
       },
     ],
   };
@@ -440,7 +441,9 @@ test("server reads /tasks from SQLite hot tables for supported filters", async (
       throw new Error("failed to bind test server");
     }
 
-    const res = await fetch(`http://127.0.0.1:${address.port}/tasks?status=queued&assignedWorkerId=worker-a`);
+    const res = await fetch(
+      `http://127.0.0.1:${address.port}/tasks?status=queued&assignedWorkerId=worker-a&targetNodeId=worker-a&intent=chat&taskOrigin=api`,
+    );
     assert.equal(res.status, 200);
     const body = await res.json();
     assert.deepEqual(body.items, snapshot.tasks);
@@ -467,7 +470,7 @@ test("server falls back to broker task reads for unsupported SQLite task filters
   try {
     runtime.broker.listTasks = ((filters) => [
       {
-        id: `fallback-${filters?.targetNodeId ?? "unknown"}`,
+        id: `fallback-${filters?.exchangeId ?? "unknown"}`,
         intent: "chat",
         requester: { id: "requester", kind: "session", role: "hub" },
         target: { id: "worker-fallback", kind: "node", role: "analyst" },
@@ -485,10 +488,10 @@ test("server falls back to broker task reads for unsupported SQLite task filters
       throw new Error("failed to bind test server");
     }
 
-    const res = await fetch(`http://127.0.0.1:${address.port}/tasks?targetNodeId=worker-fallback`);
+    const res = await fetch(`http://127.0.0.1:${address.port}/tasks?exchangeId=exchange-fallback`);
     assert.equal(res.status, 200);
     const body = await res.json();
-    assert.equal(body.items[0].id, "fallback-worker-fallback");
+    assert.equal(body.items[0].id, "fallback-exchange-fallback");
   } finally {
     runtime.stopStaleReaper();
     await new Promise<void>((resolve) => runtime.server.close(() => resolve()));

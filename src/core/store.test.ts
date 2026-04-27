@@ -144,7 +144,7 @@ test("SqliteBrokerStateStore saves and reloads snapshots with WAL metadata", () 
       kind: "sqlite",
       dbFile: temp.filePath,
       stateVersion: CURRENT_BROKER_STATE_VERSION,
-      schemaVersion: 2,
+      schemaVersion: 3,
       journalMode: "wal",
       hotEntityTables: ["broker_tasks", "broker_workers", "broker_audit_events"],
       importedFromJsonFile: undefined,
@@ -157,16 +157,18 @@ test("SqliteBrokerStateStore saves and reloads snapshots with WAL metadata", () 
       assert.equal(readSqliteCount(db, "broker_tasks"), 1);
       assert.equal(readSqliteCount(db, "broker_workers"), 1);
       assert.equal(readSqliteCount(db, "broker_audit_events"), 1);
-      const taskRow = db.prepare("SELECT id, status, intent, assigned_worker_id FROM broker_tasks").get() as {
+      const taskRow = db.prepare("SELECT id, status, intent, assigned_worker_id, task_origin FROM broker_tasks").get() as {
         id: string;
         status: string;
         intent: string;
         assigned_worker_id: string;
+        task_origin: string;
       };
       assert.equal(taskRow.id, "task-1");
       assert.equal(taskRow.status, "queued");
       assert.equal(taskRow.intent, "chat");
       assert.equal(taskRow.assigned_worker_id, "worker-a");
+      assert.equal(taskRow.task_origin, "api");
     } finally {
       db.close();
     }
@@ -267,6 +269,10 @@ test("SqliteBrokerStateStore reads hot entities from mirrored tables with filter
       [{ correlationId: "corr-task-queued" }],
     );
     assert.deepEqual(
+      store.readHotTasks({ targetNodeId: "worker-a", intent: "chat", taskOrigin: "api" }).map((task) => task.id),
+      ["task-running", "task-queued"],
+    );
+    assert.deepEqual(
       store.readHotWorkers().map((worker) => worker.nodeId),
       ["worker-a", "worker-b"],
     );
@@ -278,6 +284,40 @@ test("SqliteBrokerStateStore reads hot entities from mirrored tables with filter
       store.readHotAuditEvents({ action: "task.created" }).map((event) => event.targetId),
       ["task-queued"],
     );
+    store.close();
+  } finally {
+    temp.cleanup();
+  }
+});
+
+test("SqliteBrokerStateStore migrates v2 task hot table with task origin column", () => {
+  const temp = withTempFile("state.sqlite");
+  try {
+    const db = new DatabaseSync(temp.filePath);
+    db.exec(`
+      CREATE TABLE broker_tasks (
+        id TEXT PRIMARY KEY,
+        status TEXT NOT NULL,
+        intent TEXT NOT NULL,
+        target_node_id TEXT NOT NULL,
+        assigned_worker_id TEXT,
+        updated_at TEXT NOT NULL,
+        payload TEXT NOT NULL
+      );
+    `);
+    db.close();
+
+    const store = new SqliteBrokerStateStore(temp.filePath);
+    const snapshot: BrokerSnapshot = {
+      ...emptySnapshot(),
+      tasks: [makeTask("task-migrated", "queued", "worker-a")],
+    };
+    store.save(snapshot);
+    assert.deepEqual(
+      store.readHotTasks({ taskOrigin: "api", targetNodeId: "worker-a" }).map((task) => task.id),
+      ["task-migrated"],
+    );
+    assert.equal(store.getPersistenceInfo().schemaVersion, 3);
     store.close();
   } finally {
     temp.cleanup();
