@@ -1049,6 +1049,13 @@ async function main() {
     const label = r.skipped ? '⏭️' : icon;
     const detail = r.error || r.reason || `${r.durationMs}ms`;
     console.log(`  ${label} ${r.gate}: ${detail}`);
+    if (r.sqliteHotEntityHintCoverage) {
+      const coverage = r.sqliteHotEntityHintCoverage;
+      const status = coverage.ok ? 'covered' : `missing ${coverage.missingTables.join(', ') || 'unknown tables'}`;
+      console.log(
+        `     sqlite hinted writes: ${coverage.supportedCount}/${coverage.totalCount} tables ${status}`,
+      );
+    }
   }
 
   console.log('='.repeat(60));
