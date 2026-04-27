@@ -1,6 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { once } from "node:events";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import { createBrokerServer, type BrokerServerOptions } from "./server.js";
 import { emptySnapshot, type BrokerStateStore } from "./core/store.js";
@@ -299,6 +302,40 @@ test("server approves blocked live-impact task with operator audit metadata", as
     assert.equal(audit.items[0].note, "change ticket reviewed");
   } finally {
     await server.close();
+  }
+});
+
+test("server reports SQLite persistence metadata when SQLite backend is enabled", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "a2a-broker-sqlite-server-"));
+  const runtime = createBrokerServer({
+    host: "127.0.0.1",
+    port: 0,
+    publicBaseUrl: "https://broker.test/",
+    stateFile: join(dir, "state.json"),
+    sqliteFile: join(dir, "state.sqlite"),
+    persistenceBackend: "sqlite",
+    staleReaperEnabled: false,
+  });
+  try {
+    runtime.server.listen(0, "127.0.0.1");
+    await once(runtime.server, "listening");
+    const address = runtime.server.address();
+    if (!address || typeof address === "string") {
+      throw new Error("failed to bind test server");
+    }
+
+    const res = await fetch(`http://127.0.0.1:${address.port}/health`);
+    assert.equal(res.status, 200);
+    const health = await res.json();
+    assert.equal(health.persistence.kind, "sqlite");
+    assert.equal(health.persistence.dbFile, join(dir, "state.sqlite"));
+    assert.equal(health.persistence.stateVersion, 7);
+    assert.equal(health.persistence.schemaVersion, 1);
+    assert.equal(health.persistence.journalMode, "wal");
+  } finally {
+    runtime.stopStaleReaper();
+    await new Promise<void>((resolve) => runtime.server.close(() => resolve()));
+    rmSync(dir, { recursive: true, force: true });
   }
 });
 
