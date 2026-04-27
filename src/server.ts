@@ -55,6 +55,7 @@ import type {
   TaskCompleteRequest,
   TaskFailRequest,
   TaskKind,
+  TaskListFilters,
   TaskReassignRequest,
   TaskRecord,
   TaskStatus,
@@ -884,7 +885,7 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
 
       if (req.method === "GET" && path === "/tasks") {
         const filters = taskFiltersFromUrl(url);
-        return sendJson(res, 200, { items: broker.listTasks(filters) });
+        return sendJson(res, 200, { items: listTasksForReadPath(stateStore, broker, filters) });
       }
 
       if (req.method === "POST" && path === "/tasks") {
@@ -1520,6 +1521,31 @@ function listAuditEventsForReadPath(
     return stateStore.readHotAuditEvents(filters);
   }
   return broker.listAuditEvents(filters);
+}
+
+function listTasksForReadPath(
+  stateStore: BrokerStateStore,
+  broker: InMemoryA2ABroker,
+  filters: TaskListFilters,
+): TaskRecord[] {
+  if (stateStore instanceof SqliteBrokerStateStore && canUseSqliteTaskHotRead(filters)) {
+    return stateStore.readHotTasks({
+      status: filters.status,
+      assignedWorkerId: filters.assignedWorkerId,
+    });
+  }
+  return broker.listTasks(filters);
+}
+
+function canUseSqliteTaskHotRead(filters: TaskListFilters): boolean {
+  return !(
+    filters.exchangeId ||
+    filters.targetNodeId ||
+    filters.proposalId ||
+    filters.intent ||
+    filters.claimedBy ||
+    filters.taskOrigin
+  );
 }
 
 function optionalString(value: string | null): string | undefined {

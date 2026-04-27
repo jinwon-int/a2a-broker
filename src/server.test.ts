@@ -400,6 +400,103 @@ test("server reads /audit from SQLite hot tables when SQLite store is active", a
   }
 });
 
+test("server reads /tasks from SQLite hot tables for supported filters", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "a2a-broker-sqlite-tasks-"));
+  const store = new SqliteBrokerStateStore(join(dir, "state.sqlite"));
+  const snapshot: BrokerSnapshot = {
+    ...emptySnapshot(),
+    tasks: [
+      {
+        id: "task-from-sqlite",
+        intent: "chat",
+        requester: { id: "requester", kind: "session", role: "hub" },
+        target: { id: "worker-a", kind: "node", role: "analyst" },
+        targetNodeId: "worker-a",
+        assignedWorkerId: "worker-a",
+        payload: { source: "sqlite-hot-table" },
+        status: "queued",
+        createdAt: "2026-04-27T00:00:00.000Z",
+        updatedAt: "2026-04-27T00:00:00.000Z",
+      },
+    ],
+  };
+  store.save(snapshot);
+  const runtime = createBrokerServer({
+    host: "127.0.0.1",
+    port: 0,
+    publicBaseUrl: "https://broker.test/",
+    stateStore: store,
+    enforceRequesterIdentity: false,
+    staleReaperEnabled: false,
+  });
+  try {
+    runtime.broker.listTasks = (() => {
+      throw new Error("/tasks should use SQLite hot read path for supported filters");
+    }) as typeof runtime.broker.listTasks;
+    runtime.server.listen(0, "127.0.0.1");
+    await once(runtime.server, "listening");
+    const address = runtime.server.address();
+    if (!address || typeof address === "string") {
+      throw new Error("failed to bind test server");
+    }
+
+    const res = await fetch(`http://127.0.0.1:${address.port}/tasks?status=queued&assignedWorkerId=worker-a`);
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.deepEqual(body.items, snapshot.tasks);
+  } finally {
+    runtime.stopStaleReaper();
+    await new Promise<void>((resolve) => runtime.server.close(() => resolve()));
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("server falls back to broker task reads for unsupported SQLite task filters", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "a2a-broker-sqlite-tasks-fallback-"));
+  const store = new SqliteBrokerStateStore(join(dir, "state.sqlite"));
+  store.save(emptySnapshot());
+  const runtime = createBrokerServer({
+    host: "127.0.0.1",
+    port: 0,
+    publicBaseUrl: "https://broker.test/",
+    stateStore: store,
+    enforceRequesterIdentity: false,
+    staleReaperEnabled: false,
+  });
+  try {
+    runtime.broker.listTasks = ((filters) => [
+      {
+        id: `fallback-${filters?.targetNodeId ?? "unknown"}`,
+        intent: "chat",
+        requester: { id: "requester", kind: "session", role: "hub" },
+        target: { id: "worker-fallback", kind: "node", role: "analyst" },
+        targetNodeId: "worker-fallback",
+        payload: {},
+        status: "queued",
+        createdAt: "2026-04-27T00:00:00.000Z",
+        updatedAt: "2026-04-27T00:00:00.000Z",
+      },
+    ]) as typeof runtime.broker.listTasks;
+    runtime.server.listen(0, "127.0.0.1");
+    await once(runtime.server, "listening");
+    const address = runtime.server.address();
+    if (!address || typeof address === "string") {
+      throw new Error("failed to bind test server");
+    }
+
+    const res = await fetch(`http://127.0.0.1:${address.port}/tasks?targetNodeId=worker-fallback`);
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.items[0].id, "fallback-worker-fallback");
+  } finally {
+    runtime.stopStaleReaper();
+    await new Promise<void>((resolve) => runtime.server.close(() => resolve()));
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("server returns subtree items and thread structure for exchange messages", async () => {
   const server = await startTestServer();
   try {
