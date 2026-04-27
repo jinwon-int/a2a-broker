@@ -65,6 +65,39 @@ test("broker passes dirty task, audit, and worker hints to state store saves", (
   assert.ok(messageSaveHints.some((hints) => hints?.hotExchangeMessages?.some((item) => item.exchangeId === exchange.id && item.kind === "thread")));
   assert.ok(messageSaveHints.some((hints) => hints?.hotAuditEvents?.some((item) => item.action === "exchange.message.added")));
 
+  const proposal = broker.createProposal({
+    source: { id: "worker-a", kind: "node", role: "analyst" },
+    target: { id: "operator-a", kind: "service", role: "operator" },
+    kind: "patch",
+    summary: "prove proposal hot write hints",
+    workspace: { nodeId: "worker-a", workspaceId: "test" },
+    patchText: "diff --git a/file b/file",
+  });
+  const proposalHints = saveHints.at(-1);
+  assert.deepEqual(proposalHints?.hotProposals?.map((item) => [item.id, item.status]), [[proposal.id, "submitted"]]);
+  assert.deepEqual(proposalHints?.hotAuditEvents?.map((item) => item.action), ["proposal.created"]);
+
+  const artifact = broker.attachArtifact(proposal.id, {
+    kind: "report",
+    uri: "memory://proposal-artifact",
+    summary: "proposal artifact",
+  });
+  const artifactHints = saveHints.at(-1);
+  assert.deepEqual(artifactHints?.hotArtifacts?.map((item) => item.id), [artifact.id]);
+  assert.deepEqual(artifactHints?.hotProposals?.map((item) => item.artifactIds), [[artifact.id]]);
+  assert.deepEqual(artifactHints?.hotAuditEvents?.map((item) => item.action), ["artifact.attached"]);
+
+  const validation = broker.submitValidationResult(proposal.id, {
+    nodeId: "operator-a",
+    kind: "smoke",
+    verdict: "pass",
+    artifactIds: [artifact.id],
+  });
+  const validationHints = saveHints.at(-1);
+  assert.deepEqual(validationHints?.hotValidations?.map((item) => item.id), [validation.id]);
+  assert.deepEqual(validationHints?.hotProposals?.map((item) => item.status), ["validated"]);
+  assert.deepEqual(validationHints?.hotAuditEvents?.map((item) => item.action), ["validation.submitted"]);
+
   const task = broker.createTask({
     id: "task-hot-hints",
     intent: "chat",
