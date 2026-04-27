@@ -121,6 +121,16 @@ export interface InMemoryA2ABrokerOptions {
   maxTaskStatusEvents?: number;
 }
 
+export interface TaskDiagnosticsOptions {
+  /** Threshold in ms after which a running task without heartbeat is stale. */
+  staleAfterMs?: number;
+  /** Threshold in ms after which a running task is long-running. */
+  longRunningAfterMs?: number;
+  /** Threshold in ms after which an assigned worker is considered stale/offline. */
+  workerOfflineAfterMs?: number;
+  nowMs?: number;
+}
+
 /**
  * Default cap on automatic requeues for a single task. Chosen to tolerate a short burst of
  * worker crashes or transient outages without masking a genuinely stuck task forever.
@@ -2474,23 +2484,28 @@ export class InMemoryA2ABroker {
   /** Compute the diagnostic status for a single task. */
   getTaskDiagnostics(
     taskId: string,
-    options?: {
-      /** Threshold in ms after which a running task without heartbeat is stale. */
-      staleAfterMs?: number;
-      /** Threshold in ms after which a running task is long-running. */
-      longRunningAfterMs?: number;
-      /** Threshold in ms after which an assigned worker is considered stale/offline. */
-      workerOfflineAfterMs?: number;
-      nowMs?: number;
-    },
+    options?: TaskDiagnosticsOptions,
   ): TaskDiagnosticReport {
     const task = this.requireTask(taskId);
+    return this.getTaskDiagnosticsForRecord(task, options, {
+      tombstone: this.tombstones.get(taskId),
+    });
+  }
+
+  /** Compute diagnostics for a task snapshot supplied by a read model/store. */
+  getTaskDiagnosticsForRecord(
+    task: TaskRecord,
+    options?: TaskDiagnosticsOptions,
+    overrides?: { tombstone?: TaskTombstone | null },
+  ): TaskDiagnosticReport {
     const nowMs = options?.nowMs ?? Date.now();
     const staleAfterMs = options?.staleAfterMs ?? 120_000; // 2 min default
     const longRunningAfterMs = options?.longRunningAfterMs ?? 3_600_000; // 1 hr default
     const workerOfflineAfterMs = options?.workerOfflineAfterMs ?? 90_000;
 
-    const tombstone = this.tombstones.get(taskId);
+    const tombstone = overrides && "tombstone" in overrides
+      ? overrides.tombstone ?? undefined
+      : this.tombstones.get(task.id);
     const diagnosticStatus = computeTaskDiagnosticStatus(task, staleAfterMs, longRunningAfterMs, nowMs);
     const assignedWorker = task.assignedWorkerId ? this.workers.get(task.assignedWorkerId) : undefined;
     const staleWorker = assignedWorker

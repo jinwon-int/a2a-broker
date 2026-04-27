@@ -10,6 +10,7 @@ import {
   DEFAULT_MAX_REQUEUE_ATTEMPTS,
   InMemoryA2ABroker,
   type BrokerRetentionPolicy,
+  type TaskDiagnosticsOptions,
 } from "./core/broker.js";
 import {
   applyRateLimitHeaders,
@@ -57,6 +58,7 @@ import type {
   TaskCancelRequest,
   TaskClaimRequest,
   TaskCompleteRequest,
+  TaskDiagnosticReport,
   TaskFailRequest,
   TaskKind,
   TaskListFilters,
@@ -64,6 +66,7 @@ import type {
   TaskReassignRequest,
   TaskRecord,
   TaskStatus,
+  TaskTombstone,
   TaskWakeDecisionRequest,
   TaskWakePlanRequest,
   WorkerHeartbeatRequest,
@@ -970,10 +973,7 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
       if (req.method === "GET" && path === "/tasks/diagnostics") {
         const staleAfterMs = numberQueryParam(url, "stale_after_ms") ?? 120_000;
         const longRunningAfterMs = numberQueryParam(url, "long_running_after_ms") ?? 3_600_000;
-        const allTasks = broker.listTasks();
-        const reports = allTasks.map((task) =>
-          broker.getTaskDiagnostics(task.id, { staleAfterMs, longRunningAfterMs }),
-        );
+        const reports = listTaskDiagnosticsForReadPath(stateStore, broker, { staleAfterMs, longRunningAfterMs });
         return sendJson(res, 200, { items: reports, generatedAt: new Date().toISOString() });
       }
 
@@ -1031,7 +1031,7 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
         segments[2] === "diagnostics" &&
         segments.length === 3
       ) {
-        const report = broker.getTaskDiagnostics(segments[1], {
+        const report = getTaskDiagnosticsForReadPath(stateStore, broker, segments[1], {
           staleAfterMs: numberQueryParam(url, "stale_after_ms") ?? undefined,
           longRunningAfterMs: numberQueryParam(url, "long_running_after_ms") ?? undefined,
         });
@@ -1552,6 +1552,40 @@ function getTaskForReadPath(
     return stateStore.readHotTasks({ id: taskId })[0] ?? null;
   }
   return broker.getTask(taskId);
+}
+
+function getTaskDiagnosticsForReadPath(
+  stateStore: BrokerStateStore,
+  broker: InMemoryA2ABroker,
+  taskId: string,
+  options: TaskDiagnosticsOptions,
+): TaskDiagnosticReport {
+  if (stateStore instanceof SqliteBrokerStateStore) {
+    const task = stateStore.readHotTasks({ id: taskId })[0];
+    if (!task) {
+      throw new BrokerError("not_found", "task not found");
+    }
+    return broker.getTaskDiagnosticsForRecord(task, options, {
+      tombstone: stateStore.readHotTombstones({ taskId })[0] ?? null,
+    });
+  }
+  return broker.getTaskDiagnostics(taskId, options);
+}
+
+function listTaskDiagnosticsForReadPath(
+  stateStore: BrokerStateStore,
+  broker: InMemoryA2ABroker,
+  options: TaskDiagnosticsOptions,
+): TaskDiagnosticReport[] {
+  if (stateStore instanceof SqliteBrokerStateStore) {
+    const tombstonesByTaskId = new Map<string, TaskTombstone>(
+      stateStore.readHotTombstones().map((tombstone) => [tombstone.taskId, tombstone]),
+    );
+    return stateStore.readHotTasks().map((task) => broker.getTaskDiagnosticsForRecord(task, options, {
+      tombstone: tombstonesByTaskId.get(task.id) ?? null,
+    }));
+  }
+  return broker.listTasks().map((task) => broker.getTaskDiagnostics(task.id, options));
 }
 
 function listExchangesForReadPath(
