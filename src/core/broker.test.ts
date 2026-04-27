@@ -7,15 +7,17 @@ import { join } from "node:path";
 import { InMemoryA2ABroker, type TaskUpdate, type BufferedTaskEvent } from "./broker.js";
 import {
   CURRENT_BROKER_STATE_VERSION,
+  SqliteAuditRuntimeRepository,
   SqliteBrokerStateStore,
   SqliteTaskRuntimeRepository,
+  SqliteTombstoneRuntimeRepository,
   SqliteWorkerRuntimeRepository,
   emptySnapshot,
   type BrokerSnapshot,
   type BrokerStateSaveHints,
   type BrokerStateStore,
 } from "./store.js";
-import type { WorkerRecord } from "./types.js";
+import type { AuditEvent, TaskTombstone, WorkerRecord } from "./types.js";
 
 function registerWorker(broker: InMemoryA2ABroker, nodeId: string): void {
   broker.registerWorker({
@@ -274,6 +276,77 @@ test("broker worker mutations can use the SQLite runtime repository without JSON
     assert.equal(snapshots.at(-1)?.workers[0]?.nodeId, row.nodeId);
     assert.equal(snapshots.at(-1)?.workers[0]?.lastSeenAt, row.lastSeenAt);
     assert.deepEqual(snapshots.at(-1)?.workers[0]?.metadata, row.metadata);
+  } finally {
+    sqliteStore.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("broker audit and tombstone diagnostics can use SQLite runtime repositories", () => {
+  const dir = mkdtempSync(join(tmpdir(), "a2a-broker-audit-tombstone-repo-"));
+  const sqliteStore = new SqliteBrokerStateStore(join(dir, "state.sqlite"));
+  const snapshots: BrokerSnapshot[] = [];
+  const noopStore: BrokerStateStore = {
+    load: () => emptySnapshot(),
+    save: (snapshot) => snapshots.push(snapshot),
+  };
+
+  try {
+    const broker = new InMemoryA2ABroker(noopStore, noopStore.load(), {
+      auditRepository: new SqliteAuditRuntimeRepository(sqliteStore),
+      tombstoneRepository: new SqliteTombstoneRuntimeRepository(sqliteStore),
+    });
+    registerWorker(broker, "worker-sqlite");
+
+    const task = broker.createTask({
+      id: "task-sqlite-audit-tombstone",
+      intent: "chat",
+      requester: { id: "hub-a", kind: "node", role: "hub" },
+      target: { id: "worker-sqlite", kind: "node", role: "analyst" },
+      assignedWorkerId: "worker-sqlite",
+      message: "fail through audit/tombstone repo",
+    });
+    broker.claimTask(task.id, "worker-sqlite");
+    broker.failTask(task.id, "worker-sqlite", { code: "boom", message: "failed through repo" });
+
+    assert.deepEqual(
+      sqliteStore.readHotAuditEvents({ targetId: task.id, action: "task.failed" }).map((event) => event.note),
+      ["failed through repo"],
+    );
+    assert.equal(sqliteStore.readHotTombstones({ taskId: task.id })[0]?.error?.code, "boom");
+    assert.deepEqual(sqliteStore.load().auditEvents, []);
+    assert.deepEqual(sqliteStore.load().tombstones, []);
+    assert.equal(snapshots.at(-1)?.tasks.find((item) => item.id === task.id)?.status, "failed");
+
+    const externalAudit: AuditEvent = {
+      id: "audit-external-hot",
+      actorId: "operator-hot",
+      action: "task.requeued",
+      targetType: "task",
+      targetId: "task-external-hot",
+      createdAt: "2026-04-27T00:00:00.000Z",
+    };
+    const externalTombstone: TaskTombstone = {
+      taskId: "task-external-hot",
+      terminalStatus: "failed",
+      tombstoneReason: "dead_lettered",
+      durationMs: 10,
+      requeueCount: 2,
+      error: { code: "exceeded_requeue_limit", message: "hot tombstone" },
+      tombstonedAt: "2026-04-27T00:00:01.000Z",
+    };
+    sqliteStore.upsertHotAuditEvents([externalAudit]);
+    sqliteStore.upsertHotTombstones([externalTombstone]);
+
+    assert.deepEqual(
+      broker.listAuditEvents({ targetId: "task-external-hot", action: "task.requeued" }).map((event) => event.id),
+      ["audit-external-hot"],
+    );
+    assert.equal(broker.getTombstone("task-external-hot")?.tombstoneReason, "dead_lettered");
+    assert.deepEqual(
+      broker.listTombstones({ tombstoneReason: "dead_lettered" }).map((tombstone) => tombstone.taskId),
+      ["task-external-hot"],
+    );
   } finally {
     sqliteStore.close();
     rmSync(dir, { recursive: true, force: true });

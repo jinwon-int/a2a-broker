@@ -7,18 +7,22 @@ import { z } from "zod";
 import type {
   ArtifactRecord,
   AuditEvent,
+  AuditListFilters,
   A2AExchangeMessageRecord,
   A2AExchangeState,
   ChangeProposal,
   TaskListFilters,
   TaskRecord,
   TaskTombstone,
+  TombstoneListFilters,
   ValidationResult,
   WorkerListFilters,
   WorkerRecord,
 } from "./types.js";
 import type { TaskRuntimeRepository } from "./task-repository.js";
 import type { WorkerRuntimeRepository } from "./worker-repository.js";
+import type { AuditRuntimeRepository } from "./audit-repository.js";
+import type { TombstoneRuntimeRepository } from "./tombstone-repository.js";
 
 export const CURRENT_BROKER_STATE_VERSION = 7;
 export const DEFAULT_BROKER_STATE_MAX_BYTES = 50 * 1024 * 1024;
@@ -1602,6 +1606,34 @@ function workerMatchesRuntimeFilters(worker: WorkerRecord, filters: WorkerListFi
     return false;
   }
   return true;
+}
+
+export class SqliteAuditRuntimeRepository implements AuditRuntimeRepository {
+  constructor(private readonly store: SqliteBrokerStateStore) {}
+
+  listAuditEvents(filters: AuditListFilters = {}): AuditEvent[] {
+    return this.store.readHotAuditEvents(filters);
+  }
+
+  appendAuditEvent(event: AuditEvent): void {
+    this.store.upsertHotAuditEvents([event]);
+  }
+}
+
+export class SqliteTombstoneRuntimeRepository implements TombstoneRuntimeRepository {
+  constructor(private readonly store: SqliteBrokerStateStore) {}
+
+  getTombstone(taskId: string): TaskTombstone | null {
+    return this.store.readHotTombstones({ taskId })[0] ?? null;
+  }
+
+  listTombstones(filters: TombstoneListFilters = {}): TaskTombstone[] {
+    return this.store.readHotTombstones(filters);
+  }
+
+  upsertTombstone(tombstone: TaskTombstone): void {
+    this.store.upsertHotTombstones([tombstone]);
+  }
 }
 
 export function emptySnapshot(): BrokerSnapshot {

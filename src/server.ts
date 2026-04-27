@@ -30,8 +30,10 @@ import {
   CURRENT_BROKER_STATE_VERSION,
   DEFAULT_BROKER_STATE_MAX_BYTES,
   JsonFileBrokerStateStore,
+  SqliteAuditRuntimeRepository,
   SqliteBrokerStateStore,
   SqliteTaskRuntimeRepository,
+  SqliteTombstoneRuntimeRepository,
   SqliteWorkerRuntimeRepository,
   type BrokerStateStore,
 } from "./core/store.js";
@@ -317,6 +319,12 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
     new InMemoryA2ABroker(stateStore, stateStore.load(), {
       taskRepository: stateStore instanceof SqliteBrokerStateStore
         ? new SqliteTaskRuntimeRepository(stateStore)
+        : undefined,
+      auditRepository: stateStore instanceof SqliteBrokerStateStore
+        ? new SqliteAuditRuntimeRepository(stateStore)
+        : undefined,
+      tombstoneRepository: stateStore instanceof SqliteBrokerStateStore
+        ? new SqliteTombstoneRuntimeRepository(stateStore)
         : undefined,
       workerRepository: stateStore instanceof SqliteBrokerStateStore
         ? new SqliteWorkerRuntimeRepository(stateStore)
