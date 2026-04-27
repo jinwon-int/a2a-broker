@@ -145,6 +145,27 @@ For a healthy Round 34 SQLite deployment, operators should see
 `schemaVersion=8`, `hotEntityHintCoverage.ok=true`, `supportedCount=9`,
 `totalCount=9`, and `missingTables=[]`.
 
+## Round 35 worker runtime repository baseline
+
+Round 35 starts the table-native runtime cutover with worker state. When SQLite
+mode is active, the broker now binds worker register/heartbeat reads and writes
+to a `WorkerRuntimeRepository` backed by `broker_workers`. The in-memory broker
+map is still hydrated for existing lifecycle code, and every mutation still
+writes the canonical snapshot, so JSON export, rollback inspection, and the
+public HTTP worker contract remain unchanged.
+
+This first repository seam intentionally covers only worker runtime state:
+
+- `POST /workers/register`
+- `POST /workers/:id/heartbeat`
+- broker `getWorker` / `listWorkers` state used for last-seen and online/stale
+  views
+
+JSON mode remains unchanged and does not instantiate the SQLite repository. The
+focused tests prove direct `broker_workers` repository upserts separately from
+snapshot hot-write hints; the broader SQLite release gate still validates the
+existing hot-table, diagnostics, retention, and export guarantees.
+
 JSON mode continues to report:
 
 ```json
@@ -185,10 +206,10 @@ For restore, stop the broker, place those files back under the configured path, 
 
 ## Runtime hot rows and retention planning
 
-This slice is still snapshot-first for broker runtime load, but SQLite also maintains normalized hot-entity inspection tables for public read paths in the same transaction as the snapshot write. Runtime exchange, exchange-message, proposal, artifact, validation, task, tombstone, audit, and worker mutations now pass dirty hot-entity hints into state saves, and the SQLite store uses those hints to upsert changed hot rows while preserving retained rows and pruning rows absent from the canonical snapshot. SQLite `/health` exposes `hotEntityHintCoverage` so operators can verify hinted-write support covers every mirrored hot table.
+This slice is still snapshot-compatible for broker runtime load, but SQLite also maintains normalized hot-entity inspection tables for public read paths in the same transaction as the snapshot write. Runtime exchange, exchange-message, proposal, artifact, validation, task, tombstone, audit, and worker mutations now pass dirty hot-entity hints into state saves, and the SQLite store uses those hints to upsert changed hot rows while preserving retained rows and pruning rows absent from the canonical snapshot. Worker register/heartbeat state additionally has the Round 35 `WorkerRuntimeRepository` seam described above. SQLite `/health` exposes `hotEntityHintCoverage` so operators can verify hinted-write support covers every mirrored hot table.
 
 The SQLite store also exposes task/audit/worker hot-table retention planning helpers. These compute retained/prunable row ids from the hot tables with the same cutoff/newest-cap/protected-target shape used by broker retention. Verified plans can be applied to prune task/audit/worker hot rows directly in SQLite; canonical snapshot retention remains the source of truth until broader runtime paths move fully into dedicated repositories.
 
 ## Current limitation
 
-The snapshot remains canonical until broader runtime paths move fully into dedicated repositories. The next slices should move runtime reads/writes for workers, exchanges, proposals, and tombstones into dedicated repositories while keeping the public HTTP and JSON-RPC contract stable.
+The snapshot remains export-compatible and continues to be written after worker mutations. The next slices should move task lifecycle, audit/tombstone, exchange, and proposal runtime paths into dedicated repositories while keeping the public HTTP and JSON-RPC contract stable.

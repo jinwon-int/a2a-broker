@@ -31,6 +31,7 @@ import {
   DEFAULT_BROKER_STATE_MAX_BYTES,
   JsonFileBrokerStateStore,
   SqliteBrokerStateStore,
+  SqliteWorkerRuntimeRepository,
   type BrokerStateStore,
 } from "./core/store.js";
 import type {
@@ -313,6 +314,9 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
   const broker =
     options.broker ??
     new InMemoryA2ABroker(stateStore, stateStore.load(), {
+      workerRepository: stateStore instanceof SqliteBrokerStateStore
+        ? new SqliteWorkerRuntimeRepository(stateStore)
+        : undefined,
       retention: retentionPolicy,
       maxRequeueAttempts,
     });

@@ -13,8 +13,10 @@ import type {
   TaskRecord,
   TaskTombstone,
   ValidationResult,
+  WorkerListFilters,
   WorkerRecord,
 } from "./types.js";
+import type { WorkerRuntimeRepository } from "./worker-repository.js";
 
 export const CURRENT_BROKER_STATE_VERSION = 7;
 export const DEFAULT_BROKER_STATE_MAX_BYTES = 50 * 1024 * 1024;
@@ -1515,6 +1517,37 @@ export class SqliteBrokerStateStore implements BrokerStateStore {
     }
     this.db.exec(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${columnDefinition}`);
   }
+}
+
+export class SqliteWorkerRuntimeRepository implements WorkerRuntimeRepository {
+  constructor(private readonly store: SqliteBrokerStateStore) {}
+
+  getWorker(nodeId: string): WorkerRecord | null {
+    return this.store.readHotWorkers({ nodeId })[0] ?? null;
+  }
+
+  listWorkers(filters: WorkerListFilters = {}): WorkerRecord[] {
+    return this.store
+      .readHotWorkers({ role: filters.role })
+      .filter((worker) => workerMatchesRuntimeFilters(worker, filters));
+  }
+
+  upsertWorker(worker: WorkerRecord): void {
+    this.store.upsertHotWorkers([worker]);
+  }
+}
+
+function workerMatchesRuntimeFilters(worker: WorkerRecord, filters: WorkerListFilters): boolean {
+  if (filters.role && worker.role !== filters.role) {
+    return false;
+  }
+  if (filters.environment && !worker.capabilities.environments.includes(filters.environment)) {
+    return false;
+  }
+  if (filters.workspaceId && !worker.capabilities.workspaceIds.includes(filters.workspaceId)) {
+    return false;
+  }
+  return true;
 }
 
 export function emptySnapshot(): BrokerSnapshot {

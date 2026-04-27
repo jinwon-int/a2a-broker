@@ -10,6 +10,7 @@ import {
   CURRENT_BROKER_STATE_VERSION,
   JsonFileBrokerStateStore,
   SqliteBrokerStateStore,
+  SqliteWorkerRuntimeRepository,
   buildHotEntityHintCoverage,
   emptySnapshot,
   serializeBrokerSnapshot,
@@ -548,6 +549,35 @@ test("SqliteBrokerStateStore reads hot entities from mirrored tables with filter
       store.readHotAuditEvents({ action: "task.created" }).map((event) => event.targetId),
       ["task-queued"],
     );
+    store.close();
+  } finally {
+    temp.cleanup();
+  }
+});
+
+test("SqliteWorkerRuntimeRepository writes worker state directly to broker_workers", () => {
+  const temp = withTempFile("state.sqlite");
+  try {
+    const store = new SqliteBrokerStateStore(temp.filePath);
+    const repository = new SqliteWorkerRuntimeRepository(store);
+
+    repository.upsertWorker(makeWorker("worker-runtime"));
+    repository.upsertWorker({
+      ...makeWorker("worker-runtime"),
+      displayName: "runtime worker",
+      updatedAt: "2026-04-27T00:01:00.000Z",
+      lastSeenAt: "2026-04-27T00:01:00.000Z",
+      metadata: { heartbeat: "direct" },
+    });
+
+    const worker = repository.getWorker("worker-runtime");
+    assert.equal(worker?.displayName, "runtime worker");
+    assert.deepEqual(worker?.metadata, { heartbeat: "direct" });
+    assert.deepEqual(
+      repository.listWorkers({ role: "analyst", environment: "research", workspaceId: "smoke" }).map((item) => item.nodeId),
+      ["worker-runtime"],
+    );
+    assert.deepEqual(store.load().workers, []);
     store.close();
   } finally {
     temp.cleanup();

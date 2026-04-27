@@ -1,9 +1,14 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import { InMemoryA2ABroker, type TaskUpdate, type BufferedTaskEvent } from "./broker.js";
 import {
   CURRENT_BROKER_STATE_VERSION,
+  SqliteBrokerStateStore,
+  SqliteWorkerRuntimeRepository,
   emptySnapshot,
   type BrokerSnapshot,
   type BrokerStateSaveHints,
@@ -115,6 +120,54 @@ test("broker passes dirty task, audit, and worker hints to state store saves", (
   const claimHints = saveHints.at(-1);
   assert.deepEqual(claimHints?.hotTasks?.map((item) => [item.id, item.status]), [[task.id, "claimed"]]);
   assert.deepEqual(claimHints?.hotAuditEvents?.map((item) => item.action), ["task.claimed"]);
+});
+
+test("broker worker mutations can use the SQLite runtime repository without JSON hot hints", () => {
+  const dir = mkdtempSync(join(tmpdir(), "a2a-broker-worker-repo-"));
+  const sqliteStore = new SqliteBrokerStateStore(join(dir, "state.sqlite"));
+  const snapshots: BrokerSnapshot[] = [];
+  const noopStore: BrokerStateStore = {
+    load: () => emptySnapshot(),
+    save: (snapshot) => snapshots.push(snapshot),
+  };
+
+  try {
+    const broker = new InMemoryA2ABroker(noopStore, noopStore.load(), {
+      workerRepository: new SqliteWorkerRuntimeRepository(sqliteStore),
+    });
+
+    broker.registerWorker({
+      nodeId: "worker-sqlite",
+      role: "analyst",
+      capabilities: {
+        canAnalyze: true,
+        canBackfill: false,
+        canPatchWorkspace: false,
+        canPromoteLive: false,
+        workspaceIds: ["repo-seam"],
+        environments: ["research"],
+      },
+    });
+
+    assert.equal(sqliteStore.readHotWorkers({ nodeId: "worker-sqlite" })[0]?.nodeId, "worker-sqlite");
+
+    const heartbeat = broker.heartbeatWorker("worker-sqlite", { metadata: { check: "alive" } });
+    const row = sqliteStore.readHotWorkers({ nodeId: "worker-sqlite" })[0]!;
+
+    assert.equal(row.lastSeenAt, heartbeat.lastSeenAt);
+    assert.deepEqual(row.metadata, { check: "alive" });
+    assert.deepEqual(broker.getWorker("worker-sqlite"), row);
+    assert.deepEqual(
+      broker.listWorkers({ role: "analyst", environment: "research", workspaceId: "repo-seam" }).map((worker) => worker.nodeId),
+      ["worker-sqlite"],
+    );
+    assert.equal(snapshots.at(-1)?.workers[0]?.nodeId, row.nodeId);
+    assert.equal(snapshots.at(-1)?.workers[0]?.lastSeenAt, row.lastSeenAt);
+    assert.deepEqual(snapshots.at(-1)?.workers[0]?.metadata, row.metadata);
+  } finally {
+    sqliteStore.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test("accepted exchange thread creates and links an exchange task", () => {
