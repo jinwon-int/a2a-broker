@@ -1016,7 +1016,7 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
       }
 
       if (req.method === "GET" && segments[0] === "tasks" && segments[1] && segments.length === 2) {
-        const task = broker.getTask(segments[1]);
+        const task = getTaskForReadPath(stateStore, broker, segments[1]);
         if (!task) {
           throw new BrokerError("not_found", "task not found");
         }
@@ -1541,6 +1541,17 @@ function listTasksForReadPath(
     });
   }
   return broker.listTasks(filters);
+}
+
+function getTaskForReadPath(
+  stateStore: BrokerStateStore,
+  broker: InMemoryA2ABroker,
+  taskId: string,
+): TaskRecord | null {
+  if (stateStore instanceof SqliteBrokerStateStore) {
+    return stateStore.readHotTasks({ id: taskId })[0] ?? null;
+  }
+  return broker.getTask(taskId);
 }
 
 function canUseSqliteTaskHotRead(filters: TaskListFilters): boolean {
