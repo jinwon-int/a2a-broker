@@ -680,6 +680,115 @@ test("server reads task diagnostics tombstones from SQLite hot tables when SQLit
   }
 });
 
+test("server reads task diagnostics worker and requeue context from SQLite hot tables when SQLite store is active", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "a2a-broker-sqlite-task-diagnostics-context-"));
+  const store = new SqliteBrokerStateStore(join(dir, "state.sqlite"));
+  const now = new Date().toISOString();
+  const task: BrokerSnapshot["tasks"][number] = {
+    id: "task-diagnostics-context-from-sqlite",
+    intent: "chat",
+    requester: { id: "requester", kind: "session", role: "hub" },
+    target: { id: "worker-a", kind: "node", role: "analyst" },
+    targetNodeId: "worker-a",
+    assignedWorkerId: "worker-a",
+    payload: {},
+    status: "running",
+    requeueCount: 1,
+    createdAt: now,
+    updatedAt: now,
+    claimedAt: now,
+    lastHeartbeatAt: now,
+  };
+  const snapshotWorker: BrokerSnapshot["workers"][number] = {
+    nodeId: "worker-a",
+    role: "analyst",
+    capabilities: {
+      canAnalyze: true,
+      canBackfill: false,
+      canPatchWorkspace: false,
+      canPromoteLive: false,
+      workspaceIds: ["test"],
+      environments: ["research"],
+    },
+    createdAt: now,
+    updatedAt: now,
+    lastSeenAt: now,
+  };
+  store.save({
+    ...emptySnapshot(),
+    tasks: [task],
+    workers: [snapshotWorker],
+    auditEvents: [
+      {
+        id: "audit-snapshot-requeue",
+        actorId: "broker",
+        action: "task.requeued",
+        targetType: "task",
+        targetId: task.id,
+        note: "snapshot requeue context",
+        createdAt: "2026-04-27T00:01:00.000Z",
+      },
+    ],
+  });
+  store.upsertHotWorkers([
+    {
+      ...snapshotWorker,
+      updatedAt: "2000-01-01T00:00:00.000Z",
+      lastSeenAt: "2000-01-01T00:00:00.000Z",
+    },
+  ]);
+  store.upsertHotAuditEvents([
+    {
+      id: "audit-hot-requeue",
+      actorId: "broker",
+      action: "task.requeued",
+      targetType: "task",
+      targetId: task.id,
+      note: "hot sqlite requeue context",
+      createdAt: "2026-04-27T00:02:00.000Z",
+    },
+  ]);
+  const runtime = createBrokerServer({
+    host: "127.0.0.1",
+    port: 0,
+    publicBaseUrl: "https://broker.test/",
+    stateStore: store,
+    enforceRequesterIdentity: false,
+    staleReaperEnabled: false,
+  });
+  try {
+    runtime.broker.getTaskDiagnostics = (() => {
+      throw new Error("task diagnostics should use SQLite hot read path");
+    }) as typeof runtime.broker.getTaskDiagnostics;
+    runtime.server.listen(0, "127.0.0.1");
+    await once(runtime.server, "listening");
+    const address = runtime.server.address();
+    if (!address || typeof address === "string") {
+      throw new Error("failed to bind test server");
+    }
+
+    const detailRes = await fetch(`http://127.0.0.1:${address.port}/tasks/${task.id}/diagnostics`);
+    assert.equal(detailRes.status, 200);
+    const detail = await detailRes.json();
+    assert.equal(detail.brokerHints.staleWorker, true);
+    assert.equal(detail.brokerHints.workerLastSeenAt, "2000-01-01T00:00:00.000Z");
+    assert.equal(detail.brokerHints.lastRequeueReason, "hot sqlite requeue context");
+    assert.equal(detail.interruption.kind, "stale_worker");
+
+    const listRes = await fetch(`http://127.0.0.1:${address.port}/tasks/diagnostics`);
+    assert.equal(listRes.status, 200);
+    const list = await listRes.json();
+    assert.equal(list.items[0].brokerHints.staleWorker, true);
+    assert.equal(list.items[0].brokerHints.workerLastSeenAt, "2000-01-01T00:00:00.000Z");
+    assert.equal(list.items[0].brokerHints.lastRequeueReason, "hot sqlite requeue context");
+  } finally {
+    runtime.stopStaleReaper();
+    await new Promise<void>((resolve) => runtime.server.close(() => resolve()));
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("server reads /workers from SQLite hot tables when SQLite store is active", async () => {
   const dir = mkdtempSync(join(tmpdir(), "a2a-broker-sqlite-workers-"));
   const store = new SqliteBrokerStateStore(join(dir, "state.sqlite"));
