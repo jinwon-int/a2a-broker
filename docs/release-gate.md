@@ -36,7 +36,7 @@ Brings up a fresh docker-compose stack with the echo worker and verifies:
 4. `POST /tasks` is accepted (`status: queued`)
 5. Task transitions to `succeeded` with result
 6. Audit trail contains: `task.created`, `task.claimed`, `task.started`, `task.succeeded`
-7. Optional SQLite/WAL persistence mode can be exercised by setting `BROKER_PERSISTENCE_BACKEND=sqlite`. In SQLite mode, the compose gate also runs the runtime-image JSON export script, verifies the exported snapshot contains the seeded task, executes runtime-image SQLite task/audit/worker retention planning plus hot-table pruning proofs, confirms hinted writes cover all 9 mirrored hot tables, and proves diagnostics read hot task/tombstone/worker/audit context through `/tasks/:id/diagnostics` and `/tasks/diagnostics`.
+7. Optional SQLite/WAL persistence mode can be exercised by setting `BROKER_PERSISTENCE_BACKEND=sqlite`. In SQLite mode, the compose gate also runs the runtime-image JSON export script, verifies the exported snapshot contains the seeded task, executes runtime-image SQLite task/audit/worker retention planning plus hot-table pruning proofs, confirms hinted writes cover all 9 mirrored hot tables, proves diagnostics read hot task/tombstone/worker/audit context through `/tasks/:id/diagnostics` and `/tasks/diagnostics`, and checks Round 35 task/worker/audit/tombstone runtime repository writes can be read back from reopened SQLite hot tables.
 8. Live-impact approval lifecycle is proved:
    - `promote_to_live` task starts as `blocked`
    - `POST /tasks/:id/approve` records an approved outcome and returns the task to `queued`
@@ -73,6 +73,7 @@ SQLite mode should include these human-readable summary lines:
 ```text
 sqlite hinted writes: 9/9 tables covered
 sqlite diagnostics: hot task/tombstone/worker/audit covered (4/4 tables)
+sqlite runtime repositories: task/worker/audit/tombstone write/read covered
 ```
 
 ## Expected Artifacts
