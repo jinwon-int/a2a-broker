@@ -107,6 +107,44 @@ Operator check:
 
 If `ok=false`, at least one mirrored SQLite hot table is missing dirty hinted-write support. Treat that as a schema/write-path drift signal before relying on hot-table read performance for that deployment.
 
+## Schema v8 and diagnostics hot reads
+
+SQLite schema version `8` is the Round 34 operator-read baseline. It keeps the
+canonical snapshot contract intact while making all mirrored hot-table coverage
+visible to operators:
+
+- `broker_tasks`
+- `broker_tombstones`
+- `broker_workers`
+- `broker_audit_events`
+- `broker_exchanges`
+- `broker_exchange_messages`
+- `broker_proposals`
+- `broker_artifacts`
+- `broker_validations`
+
+Task diagnostics now read hot SQLite context for task, tombstone, worker, and
+audit data through the HTTP diagnostics endpoints:
+
+- `GET /tasks/:id/diagnostics`
+- `GET /tasks/diagnostics`
+
+The release gate seeds runtime SQLite rows directly into the hot task,
+tombstone, worker, and audit tables, then verifies the diagnostics endpoints use
+those rows. This proves the diagnostics read path is not only reporting broker
+memory state.
+
+Expected SQLite release-gate summary lines:
+
+```text
+sqlite hinted writes: 9/9 tables covered
+sqlite diagnostics: hot task/tombstone/worker/audit covered (4/4 tables)
+```
+
+For a healthy Round 34 SQLite deployment, operators should see
+`schemaVersion=8`, `hotEntityHintCoverage.ok=true`, `supportedCount=9`,
+`totalCount=9`, and `missingTables=[]`.
+
 JSON mode continues to report:
 
 ```json
