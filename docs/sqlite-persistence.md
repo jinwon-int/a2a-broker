@@ -147,11 +147,14 @@ For a healthy Round 34 SQLite deployment, operators should see
 
 ## Round 35 runtime repository seams
 
-Round 35 starts the table-native runtime cutover with narrow repository seams.
-When SQLite mode is active, the broker binds selected high-churn runtime reads
-and writes to hot-table repositories while still hydrating the in-memory broker
-maps for existing lifecycle code. Canonical snapshot writes, JSON export,
-rollback inspection, and public HTTP/JSON-RPC contracts remain unchanged.
+Round 35 completes the table-native runtime repository seam pass for the
+mirrored hot tables. See
+[`release-notes-round-35-sqlite-runtime.md`](./release-notes-round-35-sqlite-runtime.md)
+for the closeout summary and remaining Round 36-oriented limitations. When
+SQLite mode is active, the broker binds these high-churn runtime reads and
+writes to hot-table repositories while still hydrating the in-memory broker maps
+for existing lifecycle code. Canonical snapshot writes, JSON export, rollback
+inspection, and public HTTP/JSON-RPC contracts remain unchanged.
 
 The current repository seams cover:
 
@@ -224,4 +227,9 @@ The SQLite store also exposes task/audit/worker hot-table retention planning hel
 
 ## Current limitation
 
-The snapshot remains export-compatible and continues to be written after runtime mutations. Exchange, exchange-message, proposal, proposal artifact metadata, and proposal validation runtime state now have SQLite repository seams. The next dependency is reducing snapshot-only ownership of cross-entity retention/export/import and cold-start hydration while keeping the public HTTP and JSON-RPC contract stable.
+The snapshot remains export-compatible and continues to be written and loaded for
+runtime state. All mirrored hot tables now have Round 35 SQLite runtime
+repository seams, but retention, export/import, and cold-start hydration remain
+snapshot-owned unless covered by the existing hot-table planning/pruning helpers
+above. The next dependency is reducing that snapshot ownership while keeping the
+public HTTP and JSON-RPC contract stable.
