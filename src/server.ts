@@ -34,6 +34,7 @@ import {
   SqliteBrokerStateStore,
   SqliteExchangeMessageRuntimeRepository,
   SqliteExchangeRuntimeRepository,
+  SqliteProposalRuntimeRepository,
   SqliteTaskRuntimeRepository,
   SqliteTombstoneRuntimeRepository,
   SqliteWorkerRuntimeRepository,
@@ -336,6 +337,9 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
         : undefined,
       exchangeMessageRepository: stateStore instanceof SqliteBrokerStateStore
         ? new SqliteExchangeMessageRuntimeRepository(stateStore)
+        : undefined,
+      proposalRepository: stateStore instanceof SqliteBrokerStateStore
+        ? new SqliteProposalRuntimeRepository(stateStore)
         : undefined,
       retention: retentionPolicy,
       maxRequeueAttempts,

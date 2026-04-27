@@ -11,6 +11,7 @@ import {
   SqliteBrokerStateStore,
   SqliteExchangeMessageRuntimeRepository,
   SqliteExchangeRuntimeRepository,
+  SqliteProposalRuntimeRepository,
   SqliteTaskRuntimeRepository,
   SqliteTombstoneRuntimeRepository,
   SqliteWorkerRuntimeRepository,
@@ -19,7 +20,7 @@ import {
   type BrokerStateSaveHints,
   type BrokerStateStore,
 } from "./store.js";
-import type { AuditEvent, TaskTombstone, WorkerRecord } from "./types.js";
+import type { AuditEvent, ChangeProposal, TaskTombstone, WorkerRecord } from "./types.js";
 
 function registerWorker(broker: InMemoryA2ABroker, nodeId: string): void {
   broker.registerWorker({
@@ -234,6 +235,79 @@ test("broker task lifecycle keeps the JSON/default state path without a runtime 
   assert.equal(broker.listTasks({ status: "succeeded" })[0]?.id, task.id);
   assert.equal(snapshots.at(-1)?.tasks.find((item) => item.id === task.id)?.status, "succeeded");
   assert.deepEqual(saveHints.at(-1)?.hotTasks?.map((item) => [item.id, item.status]), [[task.id, "succeeded"]]);
+});
+
+test("broker proposal lifecycle can use the SQLite runtime repository without JSON hot hints", () => {
+  const dir = mkdtempSync(join(tmpdir(), "a2a-broker-proposal-repo-"));
+  const sqliteStore = new SqliteBrokerStateStore(join(dir, "state.sqlite"));
+  const snapshots: BrokerSnapshot[] = [];
+  const noopStore: BrokerStateStore = {
+    load: () => emptySnapshot(),
+    save: (snapshot) => snapshots.push(snapshot),
+  };
+
+  try {
+    const broker = new InMemoryA2ABroker(noopStore, noopStore.load(), {
+      proposalRepository: new SqliteProposalRuntimeRepository(sqliteStore),
+    });
+
+    const created = broker.createProposal({
+      source: { id: "research-a", kind: "node", role: "researcher" },
+      target: { id: "live-a", kind: "node", role: "live-trader" },
+      kind: "patch",
+      summary: "create through runtime repo",
+      workspace: { nodeId: "live-a", workspaceId: "repo" },
+      patchText: "diff --git a/file b/file",
+    });
+    assert.equal(sqliteStore.readHotProposals({ id: created.id })[0]?.status, "submitted");
+    assert.deepEqual(sqliteStore.load().proposals, []);
+
+    broker.submitValidationResult(created.id, {
+      nodeId: "live-a",
+      kind: "smoke",
+      verdict: "pass",
+    });
+    assert.equal(sqliteStore.readHotProposals({ id: created.id })[0]?.status, "validated");
+    broker.approveProposal(created.id, { actor: { id: "live-a", kind: "node", role: "live-trader" } });
+    assert.equal(sqliteStore.readHotProposals({ id: created.id })[0]?.status, "approved");
+    broker.applyProposalLocally(created.id, {
+      actor: { id: "live-a", kind: "node", role: "live-trader" },
+      workspace: { nodeId: "live-a", workspaceId: "repo" },
+    });
+    assert.equal(sqliteStore.readHotProposals({ id: created.id })[0]?.status, "applied");
+
+    const externalProposal: ChangeProposal = {
+      id: "proposal-external-hot",
+      source: { id: "operator-a", kind: "service", role: "operator" },
+      target: { id: "worker-hot", kind: "node", role: "analyst" },
+      sourceNodeId: "operator-a",
+      targetNodeId: "worker-hot",
+      kind: "params",
+      summary: "external proposal from runtime repo",
+      workspace: { nodeId: "worker-hot", workspaceId: "repo" },
+      parameterPayload: { threshold: 2 },
+      artifactIds: [],
+      status: "submitted",
+      createdAt: "2026-04-27T00:00:00.000Z",
+      updatedAt: "2026-04-27T00:00:00.000Z",
+    };
+    sqliteStore.upsertHotProposals([externalProposal]);
+
+    assert.equal(broker.getProposal("proposal-external-hot")?.kind, "params");
+    assert.deepEqual(
+      broker.listProposals({ status: "submitted", targetNodeId: "worker-hot", kind: "params" }).map((proposal) => proposal.id),
+      ["proposal-external-hot"],
+    );
+    const approved = broker.approveProposal("proposal-external-hot", {
+      actor: { id: "worker-hot", kind: "node", role: "analyst" },
+    });
+    assert.equal(approved.status, "approved");
+    assert.equal(sqliteStore.readHotProposals({ id: "proposal-external-hot" })[0]?.status, "approved");
+    assert.equal(snapshots.at(-1)?.proposals.find((proposal) => proposal.id === created.id)?.status, "applied");
+  } finally {
+    sqliteStore.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test("broker worker mutations can use the SQLite runtime repository without JSON hot hints", () => {
