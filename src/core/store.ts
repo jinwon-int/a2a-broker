@@ -132,6 +132,14 @@ export interface SqliteHotRetentionPlan {
   pruneIds: string[];
 }
 
+export interface SqliteHotRetentionApplyResult {
+  table: SqliteHotRetentionPlan["table"];
+  retainedCount: number;
+  requestedPruneCount: number;
+  prunedCount: number;
+  remainingCount: number;
+}
+
 export interface SqliteTaskHotRetentionPlanOptions {
   nowMs?: number;
   retentionMs: number;
@@ -780,6 +788,24 @@ export class SqliteBrokerStateStore implements BrokerStateStore {
     return planAuditRetentionFromRecords(records, options);
   }
 
+  applyHotRetentionPlan(plan: SqliteHotRetentionPlan): SqliteHotRetentionApplyResult {
+    let result: SqliteHotRetentionApplyResult | undefined;
+    this.runImmediateTransaction(() => {
+      result = this.applyHotRetentionPlanUnsafe(plan);
+    });
+    return result!;
+  }
+
+  applyHotRetentionPlans(plans: SqliteHotRetentionPlan[]): SqliteHotRetentionApplyResult[] {
+    const results: SqliteHotRetentionApplyResult[] = [];
+    this.runImmediateTransaction(() => {
+      for (const plan of plans) {
+        results.push(this.applyHotRetentionPlanUnsafe(plan));
+      }
+    });
+    return results;
+  }
+
   upsertHotTasks(tasks: TaskRecord[]): void {
     this.runImmediateTransaction(() => {
       this.upsertHotTasksUnsafe(tasks);
@@ -987,12 +1013,12 @@ export class SqliteBrokerStateStore implements BrokerStateStore {
       DELETE FROM broker_workers;
     `);
     if (hotTaskHints) {
-      this.deleteMissingHotEntityRows("broker_tasks", snapshot.tasks.map((task) => task.id));
+      this.applyCanonicalHotRetentionPlan("broker_tasks", snapshot.tasks.map((task) => task.id));
     } else {
       this.db.exec("DELETE FROM broker_tasks;");
     }
     if (hotAuditHints) {
-      this.deleteMissingHotEntityRows("broker_audit_events", snapshot.auditEvents.map((event) => event.id));
+      this.applyCanonicalHotRetentionPlan("broker_audit_events", snapshot.auditEvents.map((event) => event.id));
     } else {
       this.db.exec("DELETE FROM broker_audit_events;");
     }
@@ -1102,13 +1128,39 @@ export class SqliteBrokerStateStore implements BrokerStateStore {
     this.upsertHotAuditEventsUnsafe(hotAuditHints ?? snapshot.auditEvents);
   }
 
-  private deleteMissingHotEntityRows(tableName: "broker_tasks" | "broker_audit_events", retainedIds: string[]): void {
-    if (retainedIds.length === 0) {
-      this.db.exec(`DELETE FROM ${tableName};`);
-      return;
+  private applyCanonicalHotRetentionPlan(
+    tableName: SqliteHotRetentionPlan["table"],
+    retainedIds: string[],
+  ): SqliteHotRetentionApplyResult {
+    const retained = new Set(retainedIds);
+    const existingIds = this.readTableIds(tableName);
+    return this.applyHotRetentionPlanUnsafe({
+      table: tableName,
+      cutoffMs: 0,
+      retainedIds,
+      pruneIds: existingIds.filter((id) => !retained.has(id)),
+    });
+  }
+
+  private applyHotRetentionPlanUnsafe(plan: SqliteHotRetentionPlan): SqliteHotRetentionApplyResult {
+    const beforeIds = new Set(this.readTableIds(plan.table));
+    const pruneIds = plan.pruneIds.filter((id) => beforeIds.has(id));
+    if (pruneIds.length > 0) {
+      const placeholders = pruneIds.map(() => "?").join(", ");
+      this.db.prepare(`DELETE FROM ${plan.table} WHERE id IN (${placeholders})`).run(...pruneIds);
     }
-    const placeholders = retainedIds.map(() => "?").join(", ");
-    this.db.prepare(`DELETE FROM ${tableName} WHERE id NOT IN (${placeholders})`).run(...retainedIds);
+    return {
+      table: plan.table,
+      retainedCount: plan.retainedIds.length,
+      requestedPruneCount: plan.pruneIds.length,
+      prunedCount: pruneIds.length,
+      remainingCount: this.readTableCount(plan.table),
+    };
+  }
+
+  private readTableIds(tableName: SqliteHotRetentionPlan["table"]): string[] {
+    return (this.db.prepare(`SELECT id FROM ${tableName} ORDER BY id ASC`).all() as Array<{ id?: string }>)
+      .flatMap((row) => typeof row.id === "string" ? [row.id] : []);
   }
 
   private upsertHotTasksUnsafe(tasks: TaskRecord[]): void {

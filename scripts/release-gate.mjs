@@ -378,7 +378,9 @@ async function verifySqliteRetentionPlans({ compose, composeArgs, sqliteFile, ex
         retentionMs: 0,
         maxRecords: 1,
       });
-      process.stdout.write(JSON.stringify({ taskPlan, auditPlan }));
+      const [taskApply, auditApply] = store.applyHotRetentionPlans([taskPlan, auditPlan]);
+      const afterCounts = store.readHotEntityTableCounts();
+      process.stdout.write(JSON.stringify({ taskPlan, auditPlan, taskApply, auditApply, afterCounts }));
     } finally {
       store.close();
     }
@@ -402,6 +404,8 @@ async function verifySqliteRetentionPlans({ compose, composeArgs, sqliteFile, ex
 
   const taskPlan = plans?.taskPlan;
   const auditPlan = plans?.auditPlan;
+  const taskApply = plans?.taskApply;
+  const auditApply = plans?.auditApply;
   if (taskPlan?.table !== 'broker_tasks') {
     throw new Error(`unexpected task retention plan table: ${taskPlan?.table}`);
   }
@@ -428,15 +432,25 @@ async function verifySqliteRetentionPlans({ compose, composeArgs, sqliteFile, ex
   if (!Array.isArray(auditPlan.pruneIds) || auditPlan.pruneIds.length < 1) {
     throw new Error('SQLite audit retention plan produced no prunable rows under forced cutoff proof');
   }
+  if (taskApply?.table !== 'broker_tasks' || taskApply.prunedCount < 1) {
+    throw new Error(`SQLite task retention apply did not prune rows: ${JSON.stringify(taskApply)}`);
+  }
+  if (auditApply?.table !== 'broker_audit_events' || auditApply.prunedCount < 1) {
+    throw new Error(`SQLite audit retention apply did not prune rows: ${JSON.stringify(auditApply)}`);
+  }
   return {
     task: {
       retainedCount: taskPlan.retainedIds.length,
       pruneCount: taskPlan.pruneIds.length,
+      prunedCount: taskApply.prunedCount,
+      remainingCount: taskApply.remainingCount,
       verifiedTaskIds: expectedTaskIds,
     },
     audit: {
       retainedCount: auditPlan.retainedIds.length,
       pruneCount: auditPlan.pruneIds.length,
+      prunedCount: auditApply.prunedCount,
+      remainingCount: auditApply.remainingCount,
     },
   };
 }

@@ -718,6 +718,92 @@ test("SqliteBrokerStateStore plans audit hot-table retention with protected targ
   }
 });
 
+test("SqliteBrokerStateStore applies task and audit hot retention plans", () => {
+  const temp = withTempFile("state.sqlite");
+  try {
+    const taskKeep = makeTask("task-keep", "succeeded", "worker-a");
+    const taskPrune = makeTask("task-prune", "failed", "worker-a");
+    const auditKeep = makeAuditEvent("audit-keep", "task.succeeded", "task-keep");
+    const auditPrune = makeAuditEvent("audit-prune", "task.failed", "task-prune");
+    const store = new SqliteBrokerStateStore(temp.filePath);
+    store.save({
+      ...emptySnapshot(),
+      tasks: [taskKeep, taskPrune],
+      auditEvents: [auditKeep, auditPrune],
+    });
+
+    const [taskResult, auditResult] = store.applyHotRetentionPlans([
+      {
+        table: "broker_tasks",
+        cutoffMs: 0,
+        retainedIds: ["task-keep"],
+        pruneIds: ["task-prune", "task-missing"],
+      },
+      {
+        table: "broker_audit_events",
+        cutoffMs: 0,
+        retainedIds: ["audit-keep"],
+        pruneIds: ["audit-prune"],
+      },
+    ]);
+
+    assert.deepEqual(taskResult, {
+      table: "broker_tasks",
+      retainedCount: 1,
+      requestedPruneCount: 2,
+      prunedCount: 1,
+      remainingCount: 1,
+    });
+    assert.deepEqual(auditResult, {
+      table: "broker_audit_events",
+      retainedCount: 1,
+      requestedPruneCount: 1,
+      prunedCount: 1,
+      remainingCount: 1,
+    });
+    assert.deepEqual(store.readHotTasks().map((task) => task.id), ["task-keep"]);
+    assert.deepEqual(store.readHotAuditEvents().map((event) => event.id), ["audit-keep"]);
+    store.close();
+  } finally {
+    temp.cleanup();
+  }
+});
+
+test("SqliteBrokerStateStore save hints prune missing task and audit rows through retention plans", () => {
+  const temp = withTempFile("state.sqlite");
+  try {
+    const store = new SqliteBrokerStateStore(temp.filePath);
+    const taskKeep = makeTask("task-keep", "queued", "worker-a");
+    const taskPrune = makeTask("task-prune", "failed", "worker-a");
+    const auditKeep = makeAuditEvent("audit-keep", "task.created", "task-keep");
+    const auditPrune = makeAuditEvent("audit-prune", "task.failed", "task-prune");
+    store.save({
+      ...emptySnapshot(),
+      tasks: [taskKeep, taskPrune],
+      auditEvents: [auditKeep, auditPrune],
+    });
+
+    store.save(
+      {
+        ...emptySnapshot(),
+        tasks: [taskKeep],
+        auditEvents: [auditKeep],
+      },
+      {
+        hotTasks: [taskKeep],
+        hotAuditEvents: [auditKeep],
+      },
+    );
+
+    assert.deepEqual(store.readHotTasks().map((task) => task.id), ["task-keep"]);
+    assert.deepEqual(store.readHotAuditEvents().map((event) => event.id), ["audit-keep"]);
+    assert.equal(store.readHotEntityMirrorStatus().ok, true);
+    store.close();
+  } finally {
+    temp.cleanup();
+  }
+});
+
 test("SqliteBrokerStateStore migrates v2 task hot table with task origin column", () => {
   const temp = withTempFile("state.sqlite");
   try {
