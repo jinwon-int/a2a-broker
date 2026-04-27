@@ -184,6 +184,7 @@ test("SqliteBrokerStateStore saves and reloads snapshots with WAL metadata", () 
       kind: "sqlite",
       dbFile: temp.filePath,
       stateVersion: CURRENT_BROKER_STATE_VERSION,
+      loadSource: "snapshot",
       schemaVersion: 8,
       journalMode: "wal",
       hotEntityTables: [
@@ -649,6 +650,63 @@ test("SqliteBrokerStateStore hot runtime projection can diverge from stale canon
     assert.deepEqual(store.load(), staleSnapshot);
     assert.deepEqual(store.readHotRuntimeSnapshot().tasks, [hotTask]);
     assert.notDeepEqual(store.readHotRuntimeSnapshot(), store.load());
+    store.close();
+  } finally {
+    temp.cleanup();
+  }
+});
+
+test("SqliteBrokerStateStore can opt into hot-table runtime load source", () => {
+  const temp = withTempFile("state.sqlite");
+  try {
+    const staleTask = makeTask("task-stale", "queued", "worker-a");
+    const hotTask = {
+      ...staleTask,
+      status: "claimed" as const,
+      claimedBy: "worker-a",
+      claimedAt: "2026-04-27T00:02:00.000Z",
+      updatedAt: "2026-04-27T00:02:00.000Z",
+    };
+    const staleSnapshot: BrokerSnapshot = {
+      ...emptySnapshot(),
+      tasks: [staleTask],
+    };
+    const hotSnapshot: BrokerSnapshot = {
+      ...emptySnapshot(),
+      tasks: [hotTask],
+    };
+
+    const canonicalStore = new SqliteBrokerStateStore(temp.filePath);
+    canonicalStore.save(staleSnapshot);
+    canonicalStore.upsertHotTasks([hotTask]);
+    canonicalStore.close();
+
+    const hotLoadStore = new SqliteBrokerStateStore(temp.filePath, { loadSource: "hot-tables" });
+    assert.deepEqual(hotLoadStore.load(), hotSnapshot);
+    assert.equal(hotLoadStore.getPersistenceInfo().loadSource, "hot-tables");
+    hotLoadStore.close();
+  } finally {
+    temp.cleanup();
+  }
+});
+
+test("SqliteBrokerStateStore hot-table load source preserves first-load JSON import", () => {
+  const temp = withTempFile("state.sqlite");
+  try {
+    const importedSnapshot: BrokerSnapshot = {
+      ...emptySnapshot(),
+      tasks: [makeTask("task-imported-hot-load", "queued", "worker-a")],
+    };
+    const jsonFile = join(temp.dir, "state.json");
+    writeBrokerSnapshotFile(jsonFile, importedSnapshot);
+
+    const store = new SqliteBrokerStateStore(temp.filePath, {
+      importJsonFile: jsonFile,
+      loadSource: "hot-tables",
+    });
+
+    assert.deepEqual(store.load(), importedSnapshot);
+    assert.deepEqual(store.readHotRuntimeSnapshot(), importedSnapshot);
     store.close();
   } finally {
     temp.cleanup();

@@ -469,6 +469,49 @@ test("server reads /tasks from SQLite hot tables for supported filters", async (
   }
 });
 
+test("server can hydrate broker runtime from SQLite hot-table load source", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "a2a-broker-sqlite-hot-load-"));
+  const sqliteFile = join(dir, "state.sqlite");
+  const hotTask: BrokerSnapshot["tasks"][number] = {
+    id: "task-hot-load-source",
+    intent: "chat",
+    requester: { id: "requester", kind: "session", role: "hub" },
+    target: { id: "worker-a", kind: "node", role: "analyst" },
+    targetNodeId: "worker-a",
+    assignedWorkerId: "worker-a",
+    payload: { source: "sqlite-hot-load-source" },
+    status: "queued",
+    createdAt: "2026-04-27T00:00:00.000Z",
+    updatedAt: "2026-04-27T00:00:00.000Z",
+    taskOrigin: "api",
+  };
+  const seedStore = new SqliteBrokerStateStore(sqliteFile);
+  seedStore.upsertHotTasks([hotTask]);
+  seedStore.close();
+
+  const runtime = createBrokerServer({
+    host: "127.0.0.1",
+    port: 0,
+    publicBaseUrl: "https://broker.test/",
+    persistenceBackend: "sqlite",
+    sqliteFile,
+    sqliteLoadSource: "hot-tables",
+    stateStore: undefined,
+    enforceRequesterIdentity: false,
+    staleReaperEnabled: false,
+  });
+  try {
+    const loadedTask = runtime.broker.getTask("task-hot-load-source");
+    assert.equal(runtime.config.sqliteLoadSource, "hot-tables");
+    assert.equal(loadedTask?.id, hotTask.id);
+    assert.equal(loadedTask?.status, "queued");
+    assert.equal(loadedTask?.payload.source, "sqlite-hot-load-source");
+  } finally {
+    runtime.stopStaleReaper();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("server falls back to broker task reads for unsupported SQLite task filters", async () => {
   const dir = mkdtempSync(join(tmpdir(), "a2a-broker-sqlite-tasks-fallback-"));
   const store = new SqliteBrokerStateStore(join(dir, "state.sqlite"));

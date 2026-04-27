@@ -66,6 +66,7 @@ export interface BrokerStateSaveHints {
 export interface BrokerPersistenceInfo {
   kind: string;
   stateVersion: number;
+  loadSource?: string;
   schemaVersion?: number;
   stateFile?: string;
   dbFile?: string;
@@ -104,9 +105,12 @@ export interface JsonFileBrokerStateStoreOptions {
   maxBytes?: number;
 }
 
+export type SqliteBrokerLoadSource = "snapshot" | "hot-tables";
+
 export interface SqliteBrokerStateStoreOptions {
   maxBytes?: number;
   importJsonFile?: string;
+  loadSource?: SqliteBrokerLoadSource;
 }
 
 export interface SqliteTaskHotTableFilters {
@@ -609,6 +613,7 @@ export class JsonFileBrokerStateStore implements BrokerStateStore {
 export class SqliteBrokerStateStore implements BrokerStateStore {
   private readonly maxBytes: number;
   private readonly importJsonFile?: string;
+  private readonly loadSource: SqliteBrokerLoadSource;
   private readonly db: DatabaseSync;
   private readonly journalMode: string;
 
@@ -618,6 +623,7 @@ export class SqliteBrokerStateStore implements BrokerStateStore {
   ) {
     this.maxBytes = Math.max(1, options.maxBytes ?? DEFAULT_BROKER_STATE_MAX_BYTES);
     this.importJsonFile = options.importJsonFile;
+    this.loadSource = options.loadSource ?? "snapshot";
     if (dbFile !== ":memory:") {
       mkdirSync(dirname(dbFile), { recursive: true });
     }
@@ -626,22 +632,10 @@ export class SqliteBrokerStateStore implements BrokerStateStore {
   }
 
   load(): BrokerSnapshot {
-    const row = this.db
-      .prepare("SELECT payload FROM broker_snapshots WHERE id = 1")
-      .get() as { payload?: string } | undefined;
-    if (typeof row?.payload === "string") {
-      return parseSnapshotPayload(row.payload, `SQLite broker snapshot at ${this.dbFile}`, this.maxBytes);
+    if (this.loadSource === "hot-tables") {
+      return this.loadHotRuntimeSnapshot();
     }
-
-    if (this.importJsonFile && existsSync(this.importJsonFile)) {
-      const imported = new JsonFileBrokerStateStore(this.importJsonFile, {
-        maxBytes: this.maxBytes,
-      }).load();
-      this.saveImportedJsonSnapshot(imported, this.importJsonFile);
-      return imported;
-    }
-
-    return emptySnapshot();
+    return this.loadCanonicalSnapshot();
   }
 
   save(snapshot: BrokerSnapshot, hints?: BrokerStateSaveHints): void {
@@ -825,6 +819,7 @@ export class SqliteBrokerStateStore implements BrokerStateStore {
       kind: "sqlite",
       dbFile: this.dbFile,
       stateVersion: CURRENT_BROKER_STATE_VERSION,
+      loadSource: this.loadSource,
       schemaVersion: SQLITE_SCHEMA_VERSION,
       journalMode: this.journalMode,
       hotEntityTables: [...SQLITE_HOT_ENTITY_TABLES],
@@ -1126,6 +1121,50 @@ export class SqliteBrokerStateStore implements BrokerStateStore {
       this.writeMetadata("imported_from_json_file", jsonFile);
       this.writeMetadata("last_import_at", importedAt);
     });
+  }
+
+  private loadCanonicalSnapshot(): BrokerSnapshot {
+    const row = this.db
+      .prepare("SELECT payload FROM broker_snapshots WHERE id = 1")
+      .get() as { payload?: string } | undefined;
+    if (typeof row?.payload === "string") {
+      return parseSnapshotPayload(row.payload, `SQLite broker snapshot at ${this.dbFile}`, this.maxBytes);
+    }
+
+    if (this.importJsonFile && existsSync(this.importJsonFile)) {
+      const imported = new JsonFileBrokerStateStore(this.importJsonFile, {
+        maxBytes: this.maxBytes,
+      }).load();
+      this.saveImportedJsonSnapshot(imported, this.importJsonFile);
+      return imported;
+    }
+
+    return emptySnapshot();
+  }
+
+  private loadHotRuntimeSnapshot(): BrokerSnapshot {
+    const hotSnapshot = this.readHotRuntimeSnapshot();
+    if (
+      hasSnapshotRuntimeRows(hotSnapshot) ||
+      this.hasCanonicalSnapshot() ||
+      !this.importJsonFile ||
+      !existsSync(this.importJsonFile)
+    ) {
+      return hotSnapshot;
+    }
+
+    const imported = new JsonFileBrokerStateStore(this.importJsonFile, {
+      maxBytes: this.maxBytes,
+    }).load();
+    this.saveImportedJsonSnapshot(imported, this.importJsonFile);
+    return this.readHotRuntimeSnapshot();
+  }
+
+  private hasCanonicalSnapshot(): boolean {
+    const row = this.db
+      .prepare("SELECT 1 AS found FROM broker_snapshots WHERE id = 1")
+      .get() as { found?: number } | undefined;
+    return row?.found === 1;
   }
 
   private saveSnapshot(snapshot: BrokerSnapshot, hints?: BrokerStateSaveHints): void {
@@ -1839,6 +1878,12 @@ function buildHotTableSelect(
 function countSnapshotEntities(snapshot: BrokerSnapshot): Record<string, number> {
   return Object.fromEntries(
     Object.values(SQLITE_HOT_ENTITY_SNAPSHOT_KEYS).map((key) => [key, (snapshot[key] ?? []).length]),
+  );
+}
+
+function hasSnapshotRuntimeRows(snapshot: BrokerSnapshot): boolean {
+  return Object.values(SQLITE_HOT_ENTITY_SNAPSHOT_KEYS).some(
+    (key) => (snapshot[key] ?? []).length > 0,
   );
 }
 

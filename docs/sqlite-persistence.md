@@ -17,15 +17,18 @@ Environment:
 
 - `BROKER_PERSISTENCE_BACKEND=sqlite` — enable SQLite mode.
 - `BROKER_SQLITE_FILE` or `SQLITE_STATE_FILE` — SQLite DB path. If omitted, the broker uses `${STATE_FILE}.sqlite`.
+- `BROKER_SQLITE_LOAD_SOURCE=hot-tables` — optional Round 36 cold-start mode that hydrates broker runtime state from mirrored hot tables instead of the canonical snapshot row. Default: `snapshot`.
 - `STATE_FILE` — remains meaningful as the optional JSON import source.
 
-## Import behavior
+## Import and load behavior
 
-On first SQLite load:
+Default SQLite load source is `snapshot`:
 
 1. If the SQLite DB already contains a broker snapshot, the broker loads it.
 2. If no SQLite snapshot exists and `STATE_FILE` exists, the broker validates and imports that JSON snapshot transactionally.
 3. If neither exists, the broker starts with an empty snapshot.
+
+With `BROKER_SQLITE_LOAD_SOURCE=hot-tables`, startup reconstructs the broker snapshot shape from the 9 mirrored hot tables. If the DB has no canonical snapshot and the hot tables are empty, the first-load JSON import path still runs so existing JSON deployments can migrate without a separate bootstrap step.
 
 Malformed JSON import fails startup/load with the same bounded validation errors as the JSON store. The original JSON file is not modified by import.
 
@@ -39,6 +42,7 @@ Malformed JSON import fails startup/load with the same bounded validation errors
     "kind": "sqlite",
     "dbFile": "/var/lib/a2a-broker/state.sqlite",
     "stateVersion": 7,
+    "loadSource": "snapshot",
     "schemaVersion": 8,
     "journalMode": "wal",
     "hotEntityTables": [
@@ -225,19 +229,18 @@ This slice is still snapshot-compatible for broker runtime load, but SQLite also
 
 The SQLite store also exposes task/audit/worker hot-table retention planning helpers. These compute retained/prunable row ids from the hot tables with the same cutoff/newest-cap/protected-target shape used by broker retention. Verified plans can be applied to prune task/audit/worker hot rows directly in SQLite; canonical snapshot retention remains the source of truth until broader runtime paths move fully into dedicated repositories.
 
-## Round 36 slice 1 hot runtime projection
+## Round 36 hot runtime load source
 
 SQLite now has a tested hot-table runtime snapshot projection primitive that can
-reconstruct a `BrokerSnapshot`-shaped view from the 9 mirrored hot tables. This
-is a proof point for a future cold-start hydration cutover: default `load()`
-remains canonical-snapshot owned in this slice, and JSON export/import behavior
-is unchanged.
+reconstruct a `BrokerSnapshot`-shaped view from the 9 mirrored hot tables. Round
+36 also adds the opt-in `BROKER_SQLITE_LOAD_SOURCE=hot-tables` cold-start source
+so operators can hydrate runtime broker maps from table-native rows while the
+default remains canonical-snapshot compatible.
 
 ## Current limitation
 
-The snapshot remains export-compatible and continues to be written and loaded for
-runtime state. All mirrored hot tables now have Round 35 SQLite runtime
-repository seams, but retention, export/import, and cold-start hydration remain
-snapshot-owned unless covered by the existing hot-table planning/pruning helpers
-above. The next dependency is reducing that snapshot ownership while keeping the
-public HTTP and JSON-RPC contract stable.
+The snapshot remains export-compatible and is still the default load source. All
+mirrored hot tables now have Round 35 SQLite runtime repository seams, but
+retention and export/import remain snapshot-owned unless covered by the existing
+hot-table planning/pruning helpers above. The next dependency is reducing that
+snapshot ownership while keeping the public HTTP and JSON-RPC contract stable.
