@@ -584,6 +584,166 @@ test("server returns 404 for missing /tasks/:id from SQLite hot tables", async (
   }
 });
 
+test("server reads /workers from SQLite hot tables when SQLite store is active", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "a2a-broker-sqlite-workers-"));
+  const store = new SqliteBrokerStateStore(join(dir, "state.sqlite"));
+  const lastSeenAt = new Date().toISOString();
+  const snapshot: BrokerSnapshot = {
+    ...emptySnapshot(),
+    workers: [
+      {
+        nodeId: "worker-from-sqlite",
+        role: "analyst",
+        capabilities: {
+          canAnalyze: true,
+          canBackfill: false,
+          canPatchWorkspace: false,
+          canPromoteLive: false,
+          workspaceIds: ["test"],
+          environments: ["research"],
+        },
+        createdAt: "2026-04-27T00:00:00.000Z",
+        updatedAt: "2026-04-27T00:00:00.000Z",
+        lastSeenAt,
+      },
+      {
+        nodeId: "worker-filtered-out",
+        role: "analyst",
+        capabilities: {
+          canAnalyze: true,
+          canBackfill: false,
+          canPatchWorkspace: false,
+          canPromoteLive: false,
+          workspaceIds: ["other"],
+          environments: ["research"],
+        },
+        createdAt: "2026-04-27T00:00:00.000Z",
+        updatedAt: "2026-04-27T00:00:00.000Z",
+        lastSeenAt,
+      },
+    ],
+  };
+  store.save(snapshot);
+  const runtime = createBrokerServer({
+    host: "127.0.0.1",
+    port: 0,
+    publicBaseUrl: "https://broker.test/",
+    stateStore: store,
+    enforceRequesterIdentity: false,
+    staleReaperEnabled: false,
+  });
+  try {
+    runtime.broker.listWorkerViews = (() => {
+      throw new Error("/workers should use SQLite hot read path");
+    }) as typeof runtime.broker.listWorkerViews;
+    runtime.server.listen(0, "127.0.0.1");
+    await once(runtime.server, "listening");
+    const address = runtime.server.address();
+    if (!address || typeof address === "string") {
+      throw new Error("failed to bind test server");
+    }
+
+    const res = await fetch(`http://127.0.0.1:${address.port}/workers?role=analyst&environment=research&workspaceId=test`);
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.deepEqual(body.items, [{ ...snapshot.workers[0], status: "online" }]);
+  } finally {
+    runtime.stopStaleReaper();
+    await new Promise<void>((resolve) => runtime.server.close(() => resolve()));
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("server reads /workers/:id from SQLite hot tables when SQLite store is active", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "a2a-broker-sqlite-worker-detail-"));
+  const store = new SqliteBrokerStateStore(join(dir, "state.sqlite"));
+  const lastSeenAt = new Date().toISOString();
+  const snapshot: BrokerSnapshot = {
+    ...emptySnapshot(),
+    workers: [
+      {
+        nodeId: "worker-detail-from-sqlite",
+        role: "analyst",
+        capabilities: {
+          canAnalyze: true,
+          canBackfill: false,
+          canPatchWorkspace: false,
+          canPromoteLive: false,
+          workspaceIds: ["test"],
+          environments: ["research"],
+        },
+        createdAt: "2026-04-27T00:00:00.000Z",
+        updatedAt: "2026-04-27T00:00:00.000Z",
+        lastSeenAt,
+      },
+    ],
+  };
+  store.save(snapshot);
+  const runtime = createBrokerServer({
+    host: "127.0.0.1",
+    port: 0,
+    publicBaseUrl: "https://broker.test/",
+    stateStore: store,
+    enforceRequesterIdentity: false,
+    staleReaperEnabled: false,
+  });
+  try {
+    runtime.broker.getWorkerView = (() => {
+      throw new Error("/workers/:id should use SQLite hot read path");
+    }) as typeof runtime.broker.getWorkerView;
+    runtime.server.listen(0, "127.0.0.1");
+    await once(runtime.server, "listening");
+    const address = runtime.server.address();
+    if (!address || typeof address === "string") {
+      throw new Error("failed to bind test server");
+    }
+
+    const res = await fetch(`http://127.0.0.1:${address.port}/workers/worker-detail-from-sqlite`);
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.deepEqual(body, { ...snapshot.workers[0], status: "online" });
+  } finally {
+    runtime.stopStaleReaper();
+    await new Promise<void>((resolve) => runtime.server.close(() => resolve()));
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("server returns 404 for missing /workers/:id from SQLite hot tables", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "a2a-broker-sqlite-worker-detail-missing-"));
+  const store = new SqliteBrokerStateStore(join(dir, "state.sqlite"));
+  store.save(emptySnapshot());
+  const runtime = createBrokerServer({
+    host: "127.0.0.1",
+    port: 0,
+    publicBaseUrl: "https://broker.test/",
+    stateStore: store,
+    enforceRequesterIdentity: false,
+    staleReaperEnabled: false,
+  });
+  try {
+    runtime.broker.getWorkerView = (() => {
+      throw new Error("missing /workers/:id should use SQLite hot read path");
+    }) as typeof runtime.broker.getWorkerView;
+    runtime.server.listen(0, "127.0.0.1");
+    await once(runtime.server, "listening");
+    const address = runtime.server.address();
+    if (!address || typeof address === "string") {
+      throw new Error("failed to bind test server");
+    }
+
+    const res = await fetch(`http://127.0.0.1:${address.port}/workers/missing-worker`);
+    assert.equal(res.status, 404);
+  } finally {
+    runtime.stopStaleReaper();
+    await new Promise<void>((resolve) => runtime.server.close(() => resolve()));
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("server returns subtree items and thread structure for exchange messages", async () => {
   const server = await startTestServer();
   try {

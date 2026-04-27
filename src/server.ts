@@ -64,6 +64,8 @@ import type {
   TaskWakePlanRequest,
   WorkerHeartbeatRequest,
   WorkerListFilters,
+  WorkerRecord,
+  WorkerView,
   A2AWorkerEnvironment,
   A2APartyRole,
 } from "./core/types.js";
@@ -656,7 +658,7 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
 
       if (req.method === "GET" && path === "/workers") {
         const filters = workerFiltersFromUrl(url);
-        const items = broker.listWorkerViews(workerOfflineAfterSec * 1000, filters);
+        const items = listWorkerViewsForReadPath(stateStore, broker, workerOfflineAfterSec * 1000, filters);
         return sendJson(res, 200, { items });
       }
 
@@ -677,7 +679,7 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
       }
 
       if (req.method === "GET" && segments[0] === "workers" && segments[1] && segments.length === 2) {
-        const worker = broker.getWorkerView(segments[1], workerOfflineAfterSec * 1000);
+        const worker = getWorkerViewForReadPath(stateStore, broker, segments[1], workerOfflineAfterSec * 1000);
         if (!worker) {
           throw new BrokerError("not_found", "worker not found");
         }
@@ -1552,6 +1554,51 @@ function getTaskForReadPath(
     return stateStore.readHotTasks({ id: taskId })[0] ?? null;
   }
   return broker.getTask(taskId);
+}
+
+function listWorkerViewsForReadPath(
+  stateStore: BrokerStateStore,
+  broker: InMemoryA2ABroker,
+  offlineAfterMs: number,
+  filters: WorkerListFilters,
+): WorkerView[] {
+  if (stateStore instanceof SqliteBrokerStateStore) {
+    return stateStore
+      .readHotWorkers({ role: filters.role })
+      .filter((worker) => workerMatchesNonSqliteFilters(worker, filters))
+      .map((worker) => toWorkerView(worker, offlineAfterMs));
+  }
+  return broker.listWorkerViews(offlineAfterMs, filters);
+}
+
+function getWorkerViewForReadPath(
+  stateStore: BrokerStateStore,
+  broker: InMemoryA2ABroker,
+  nodeId: string,
+  offlineAfterMs: number,
+): WorkerView | null {
+  if (stateStore instanceof SqliteBrokerStateStore) {
+    const worker = stateStore.readHotWorkers({ nodeId })[0];
+    return worker ? toWorkerView(worker, offlineAfterMs) : null;
+  }
+  return broker.getWorkerView(nodeId, offlineAfterMs);
+}
+
+function workerMatchesNonSqliteFilters(worker: WorkerRecord, filters: WorkerListFilters): boolean {
+  if (filters.environment && !worker.capabilities.environments.includes(filters.environment)) {
+    return false;
+  }
+  if (filters.workspaceId && !worker.capabilities.workspaceIds.includes(filters.workspaceId)) {
+    return false;
+  }
+  return true;
+}
+
+function toWorkerView(worker: WorkerRecord, offlineAfterMs: number): WorkerView {
+  return {
+    ...worker,
+    status: Date.now() - Date.parse(worker.lastSeenAt) <= offlineAfterMs ? "online" : "stale",
+  };
 }
 
 function canUseSqliteTaskHotRead(filters: TaskListFilters): boolean {
