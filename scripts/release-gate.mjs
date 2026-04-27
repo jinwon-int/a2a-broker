@@ -411,6 +411,12 @@ async function gateComposeSmoke({ edgeSecret, timeoutMs }) {
         edgeSecret,
         expectedTaskId: approvalProof.rejectTaskId,
       });
+      console.log('[compose] verifying SQLite runtime repository write/read seams…');
+      report.sqliteRuntimeRepositoryProof = await verifySqliteRuntimeRepositoryProof({
+        compose,
+        composeArgs,
+        sqliteFile,
+      });
     }
 
     report.ok = true;
@@ -432,6 +438,172 @@ async function gateComposeSmoke({ edgeSecret, timeoutMs }) {
     // clean override
     try { await run('rm', ['-rf', overrideDir]); } catch {}
   }
+}
+
+async function verifySqliteRuntimeRepositoryProof({ compose, composeArgs, sqliteFile }) {
+  const proofId = `release-gate-r35-runtime-${Date.now()}-${randomUUID().slice(0, 8)}`;
+  const code = `
+    import {
+      SqliteAuditRuntimeRepository,
+      SqliteBrokerStateStore,
+      SqliteTaskRuntimeRepository,
+      SqliteTombstoneRuntimeRepository,
+      SqliteWorkerRuntimeRepository,
+    } from './dist/core/store.js';
+
+    const sqliteFile = process.argv[1];
+    const proofId = process.argv[2];
+    const workerId = proofId + '-worker';
+    const taskId = proofId + '-task';
+    const auditId = proofId + '-audit';
+    const createdAt = new Date().toISOString();
+    const tombstonedAt = new Date(Date.now() + 1000).toISOString();
+
+    const writer = new SqliteBrokerStateStore(sqliteFile);
+    try {
+      const workers = new SqliteWorkerRuntimeRepository(writer);
+      const tasks = new SqliteTaskRuntimeRepository(writer);
+      const audit = new SqliteAuditRuntimeRepository(writer);
+      const tombstones = new SqliteTombstoneRuntimeRepository(writer);
+
+      workers.upsertWorker({
+        nodeId: workerId,
+        role: 'analyst',
+        capabilities: {
+          canAnalyze: true,
+          canBackfill: false,
+          canPatchWorkspace: false,
+          canPromoteLive: false,
+          workspaceIds: ['release-gate-r35'],
+          environments: ['research'],
+        },
+        displayName: 'Round 35 runtime repository proof worker',
+        createdAt,
+        updatedAt: createdAt,
+        lastSeenAt: createdAt,
+      });
+      tasks.upsertTask({
+        id: taskId,
+        intent: 'chat',
+        requester: { id: 'release-gate-r35', kind: 'service', role: 'operator' },
+        target: { id: workerId, kind: 'node', role: 'analyst' },
+        message: 'Round 35 SQLite runtime repository release-gate proof',
+        targetNodeId: workerId,
+        assignedWorkerId: workerId,
+        payload: { proofId },
+        status: 'failed',
+        error: { code: 'release_gate_runtime_repository_proof', message: 'synthetic proof row' },
+        createdAt,
+        updatedAt: tombstonedAt,
+        taskOrigin: 'api',
+      });
+      audit.appendAuditEvent({
+        id: auditId,
+        actorId: 'release-gate-r35',
+        action: 'task.failed',
+        targetType: 'task',
+        targetId: taskId,
+        note: 'Round 35 runtime repository write/read proof',
+        createdAt: tombstonedAt,
+      });
+      tombstones.upsertTombstone({
+        taskId,
+        terminalStatus: 'failed',
+        tombstoneReason: 'failed',
+        durationMs: 1000,
+        requeueCount: 0,
+        error: { code: 'release_gate_runtime_repository_proof', message: 'synthetic proof row' },
+        tombstonedAt,
+      });
+    } finally {
+      writer.close();
+    }
+
+    const reader = new SqliteBrokerStateStore(sqliteFile);
+    try {
+      const workers = new SqliteWorkerRuntimeRepository(reader);
+      const tasks = new SqliteTaskRuntimeRepository(reader);
+      const audit = new SqliteAuditRuntimeRepository(reader);
+      const tombstones = new SqliteTombstoneRuntimeRepository(reader);
+      const worker = workers.getWorker(workerId);
+      const task = tasks.getTask(taskId);
+      const workerList = workers.listWorkers({ role: 'analyst', workspaceId: 'release-gate-r35', environment: 'research' });
+      const taskList = tasks.listTasks({ status: 'failed', assignedWorkerId: workerId, targetNodeId: workerId, taskOrigin: 'api' });
+      const auditList = audit.listAuditEvents({ targetId: taskId, action: 'task.failed' });
+      const tombstone = tombstones.getTombstone(taskId);
+      const tombstoneList = tombstones.listTombstones({ tombstoneReason: 'failed', since: createdAt });
+      const hotRows = {
+        worker: reader.readHotWorkers({ nodeId: workerId })[0] ?? null,
+        task: reader.readHotTasks({ id: taskId })[0] ?? null,
+        audit: reader.readHotAuditEvents({ targetId: taskId, action: 'task.failed' })[0] ?? null,
+        tombstone: reader.readHotTombstones({ taskId })[0] ?? null,
+      };
+      process.stdout.write(JSON.stringify({
+        proofId,
+        workerId,
+        taskId,
+        auditId,
+        repositoryReads: {
+          worker,
+          task,
+          workerListed: workerList.some((item) => item.nodeId === workerId),
+          taskListed: taskList.some((item) => item.id === taskId),
+          auditListed: auditList.some((item) => item.id === auditId),
+          tombstone,
+          tombstoneListed: tombstoneList.some((item) => item.taskId === taskId),
+        },
+        hotRows,
+      }));
+    } finally {
+      reader.close();
+    }
+  `;
+  const { stdout } = await run(compose.cmd, [
+    ...composeArgs('exec'),
+    '-T',
+    'a2a-broker',
+    'node',
+    '--input-type=module',
+    '-e',
+    code,
+    sqliteFile,
+    proofId,
+  ]);
+
+  let result;
+  try {
+    result = JSON.parse(stdout);
+  } catch (error) {
+    throw new Error(`SQLite runtime repository proof did not produce JSON: ${error instanceof Error ? error.message : String(error)}`);
+  }
+
+  const reads = result?.repositoryReads ?? {};
+  const hotRows = result?.hotRows ?? {};
+  if (reads.worker?.nodeId !== result.workerId || hotRows.worker?.nodeId !== result.workerId) {
+    throw new Error(`SQLite runtime repository proof missed worker row: ${JSON.stringify(result)}`);
+  }
+  if (reads.task?.id !== result.taskId || reads.task?.status !== 'failed' || hotRows.task?.id !== result.taskId) {
+    throw new Error(`SQLite runtime repository proof missed task row: ${JSON.stringify(result)}`);
+  }
+  if (reads.auditListed !== true || hotRows.audit?.id !== result.auditId) {
+    throw new Error(`SQLite runtime repository proof missed audit row: ${JSON.stringify(result)}`);
+  }
+  if (reads.tombstone?.taskId !== result.taskId || reads.tombstone?.tombstoneReason !== 'failed' || hotRows.tombstone?.taskId !== result.taskId) {
+    throw new Error(`SQLite runtime repository proof missed tombstone row: ${JSON.stringify(result)}`);
+  }
+  if (reads.workerListed !== true || reads.taskListed !== true || reads.tombstoneListed !== true) {
+    throw new Error(`SQLite runtime repository proof list filters missed rows: ${JSON.stringify(result)}`);
+  }
+
+  return {
+    proofId: result.proofId,
+    coveredRepositories: ['task', 'worker', 'audit', 'tombstone'],
+    coveredTables: ['broker_tasks', 'broker_workers', 'broker_audit_events', 'broker_tombstones'],
+    verifiedWorkerId: result.workerId,
+    verifiedTaskId: result.taskId,
+    verifiedAuditId: result.auditId,
+    reopenedStoreRead: true,
+  };
 }
 
 async function verifySqliteExport({ compose, composeArgs, sqliteFile, expectedTaskIds, expectedTombstoneTaskIds = [], expectedExchangeIds = [], expectedExchangeMessageIds = [], expectedProposalIds = [], expectedArtifactIds = [], expectedValidationIds = [] }) {
@@ -1258,6 +1430,11 @@ async function main() {
     if (r.sqliteDiagnosticsReadPath) {
       console.log(
         `     sqlite diagnostics: hot task/tombstone/worker/audit covered (${r.sqliteDiagnosticsReadPath.coveredTables.length}/4 tables)`,
+      );
+    }
+    if (r.sqliteRuntimeRepositoryProof) {
+      console.log(
+        `     sqlite runtime repositories: ${r.sqliteRuntimeRepositoryProof.coveredRepositories.join('/')} write/read covered`,
       );
     }
   }
