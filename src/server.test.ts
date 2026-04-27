@@ -598,6 +598,88 @@ test("server returns 404 for missing /tasks/:id from SQLite hot tables", async (
   }
 });
 
+test("server reads task diagnostics tombstones from SQLite hot tables when SQLite store is active", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "a2a-broker-sqlite-task-diagnostics-"));
+  const store = new SqliteBrokerStateStore(join(dir, "state.sqlite"));
+  const task: BrokerSnapshot["tasks"][number] = {
+    id: "task-diagnostics-from-sqlite",
+    intent: "chat",
+    requester: { id: "requester", kind: "session", role: "hub" },
+    target: { id: "worker-a", kind: "node", role: "analyst" },
+    targetNodeId: "worker-a",
+    payload: {},
+    status: "failed",
+    error: { code: "handler_error", message: "old broker tombstone" },
+    createdAt: "2026-04-27T00:00:00.000Z",
+    updatedAt: "2026-04-27T00:02:00.000Z",
+    completedAt: "2026-04-27T00:02:00.000Z",
+  };
+  store.save({
+    ...emptySnapshot(),
+    tasks: [task],
+    tombstones: [
+      {
+        taskId: task.id,
+        terminalStatus: "failed",
+        tombstoneReason: "failed",
+        durationMs: 120_000,
+        requeueCount: 0,
+        error: { code: "handler_error", message: "old broker tombstone" },
+        tombstonedAt: "2026-04-27T00:02:00.000Z",
+      },
+    ],
+  });
+  store.upsertHotTombstones([
+    {
+      taskId: task.id,
+      terminalStatus: "failed",
+      tombstoneReason: "dead_lettered",
+      durationMs: 130_000,
+      requeueCount: 5,
+      error: { code: "exceeded_requeue_limit", message: "hot tombstone from sqlite" },
+      tombstonedAt: "2026-04-27T00:03:00.000Z",
+    },
+  ]);
+  const runtime = createBrokerServer({
+    host: "127.0.0.1",
+    port: 0,
+    publicBaseUrl: "https://broker.test/",
+    stateStore: store,
+    enforceRequesterIdentity: false,
+    staleReaperEnabled: false,
+  });
+  try {
+    runtime.broker.getTaskDiagnostics = (() => {
+      throw new Error("task diagnostics should use SQLite hot read path");
+    }) as typeof runtime.broker.getTaskDiagnostics;
+    runtime.server.listen(0, "127.0.0.1");
+    await once(runtime.server, "listening");
+    const address = runtime.server.address();
+    if (!address || typeof address === "string") {
+      throw new Error("failed to bind test server");
+    }
+
+    const detailRes = await fetch(`http://127.0.0.1:${address.port}/tasks/${task.id}/diagnostics`);
+    assert.equal(detailRes.status, 200);
+    const detail = await detailRes.json();
+    assert.equal(detail.tombstone.tombstoneReason, "dead_lettered");
+    assert.equal(detail.tombstone.error.message, "hot tombstone from sqlite");
+    assert.equal(detail.brokerHints.tombstoneReason, "dead_lettered");
+    assert.equal(detail.interruption.kind, "dead_lettered");
+
+    const listRes = await fetch(`http://127.0.0.1:${address.port}/tasks/diagnostics`);
+    assert.equal(listRes.status, 200);
+    const list = await listRes.json();
+    assert.equal(list.items[0].taskId, task.id);
+    assert.equal(list.items[0].tombstone.tombstoneReason, "dead_lettered");
+  } finally {
+    runtime.stopStaleReaper();
+    await new Promise<void>((resolve) => runtime.server.close(() => resolve()));
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("server reads /workers from SQLite hot tables when SQLite store is active", async () => {
   const dir = mkdtempSync(join(tmpdir(), "a2a-broker-sqlite-workers-"));
   const store = new SqliteBrokerStateStore(join(dir, "state.sqlite"));
