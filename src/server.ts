@@ -40,12 +40,15 @@ import type {
   AuditAction,
   AuditListFilters,
   BrokerDashboard,
+  ChangeProposal,
   ApplyProposalRequest,
   AttachArtifactRequest,
   CreateProposalRequest,
   CreateTaskRequest,
   ProposalActorRequest,
+  ProposalDetails,
   ProposalKind,
+  ProposalListFilters,
   ProposalStatus,
   RegisterWorkerRequest,
   SubmitValidationRequest,
@@ -762,15 +765,7 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
 
       if (req.method === "GET" && path === "/proposals") {
         const filters = proposalFiltersFromUrl(url);
-        const items = broker.listProposals(filters).map((proposal) => ({
-          id: proposal.id,
-          sourceNodeId: proposal.sourceNodeId,
-          targetNodeId: proposal.targetNodeId,
-          kind: proposal.kind,
-          summary: proposal.summary,
-          status: proposal.status,
-          updatedAt: proposal.updatedAt,
-        }));
+        const items = listProposalSummariesForReadPath(stateStore, broker, filters);
         return sendJson(res, 200, { items });
       }
 
@@ -791,7 +786,7 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
       }
 
       if (req.method === "GET" && segments[0] === "proposals" && segments[1] && segments.length === 2) {
-        const details = broker.getProposalDetails(segments[1]);
+        const details = getProposalDetailsForReadPath(stateStore, broker, segments[1]);
         if (!details) {
           throw new BrokerError("not_found", "proposal not found");
         }
@@ -1610,6 +1605,53 @@ function listExchangeMessagesForReadPath(
     return items.filter((message) => allowedIds.has(message.id));
   }
   return items.filter((message) => message.parentMessageId === filters.parentMessageId);
+}
+
+function listProposalSummariesForReadPath(
+  stateStore: BrokerStateStore,
+  broker: InMemoryA2ABroker,
+  filters: ProposalListFilters,
+): Array<Pick<ChangeProposal, "id" | "sourceNodeId" | "targetNodeId" | "kind" | "summary" | "status" | "updatedAt">> {
+  const proposals = stateStore instanceof SqliteBrokerStateStore
+    ? stateStore.readHotProposals(filters)
+    : broker.listProposals(filters);
+  return proposals.map(toProposalSummary);
+}
+
+function getProposalDetailsForReadPath(
+  stateStore: BrokerStateStore,
+  broker: InMemoryA2ABroker,
+  proposalId: string,
+): ProposalDetails | null {
+  if (!(stateStore instanceof SqliteBrokerStateStore)) {
+    return broker.getProposalDetails(proposalId);
+  }
+
+  const proposal = stateStore.readHotProposals({ id: proposalId })[0];
+  if (!proposal) {
+    return null;
+  }
+
+  return {
+    proposal,
+    artifacts: broker.listArtifactsForProposal(proposalId),
+    validations: broker.listValidationsForProposal(proposalId),
+    audit: stateStore.readHotAuditEvents({ proposalId }),
+  };
+}
+
+function toProposalSummary(
+  proposal: ChangeProposal,
+): Pick<ChangeProposal, "id" | "sourceNodeId" | "targetNodeId" | "kind" | "summary" | "status" | "updatedAt"> {
+  return {
+    id: proposal.id,
+    sourceNodeId: proposal.sourceNodeId,
+    targetNodeId: proposal.targetNodeId,
+    kind: proposal.kind,
+    summary: proposal.summary,
+    status: proposal.status,
+    updatedAt: proposal.updatedAt,
+  };
 }
 
 function collectThreadMessageIds(

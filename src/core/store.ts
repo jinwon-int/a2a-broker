@@ -76,6 +76,14 @@ export interface SqliteExchangeMessageHotTableFilters {
   exchangeId?: string;
 }
 
+export interface SqliteProposalHotTableFilters {
+  id?: string;
+  status?: ChangeProposal["status"];
+  sourceNodeId?: string;
+  targetNodeId?: string;
+  kind?: ChangeProposal["kind"];
+}
+
 export interface SqliteAuditHotTableFilters {
   proposalId?: string;
   actorId?: string;
@@ -89,10 +97,11 @@ export interface SqliteWorkerHotTableFilters {
   role?: WorkerRecord["role"];
 }
 
-const SQLITE_SCHEMA_VERSION = 5;
+const SQLITE_SCHEMA_VERSION = 6;
 const SQLITE_HOT_ENTITY_TABLES = [
   "broker_exchanges",
   "broker_exchange_messages",
+  "broker_proposals",
   "broker_tasks",
   "broker_workers",
   "broker_audit_events",
@@ -550,6 +559,24 @@ export class SqliteBrokerStateStore implements BrokerStateStore {
       .map((row) => parseHotEntityPayload(row, exchangeMessageSchema, "broker_exchange_messages")) as A2AExchangeMessageRecord[];
   }
 
+  readHotProposals(filters: SqliteProposalHotTableFilters = {}): ChangeProposal[] {
+    const { sql, params } = buildHotTableSelect(
+      "broker_proposals",
+      [
+        ["id", filters.id],
+        ["status", filters.status],
+        ["source_node_id", filters.sourceNodeId],
+        ["target_node_id", filters.targetNodeId],
+        ["kind", filters.kind],
+      ],
+      "created_at DESC, id ASC",
+    );
+    return this.db
+      .prepare(sql)
+      .all(...params)
+      .map((row) => parseHotEntityPayload(row, proposalSchema, "broker_proposals")) as ChangeProposal[];
+  }
+
   readHotWorkers(filters: SqliteWorkerHotTableFilters = {}): WorkerRecord[] {
     const { sql, params } = buildHotTableSelect(
       "broker_workers",
@@ -666,6 +693,24 @@ export class SqliteBrokerStateStore implements BrokerStateStore {
         ON broker_exchange_messages(exchange_id, created_at);
       CREATE INDEX IF NOT EXISTS broker_exchange_messages_parent_idx
         ON broker_exchange_messages(exchange_id, parent_message_id);
+      CREATE TABLE IF NOT EXISTS broker_proposals (
+        id TEXT PRIMARY KEY,
+        status TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        source_node_id TEXT NOT NULL,
+        target_node_id TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        payload TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS broker_proposals_status_updated_idx
+        ON broker_proposals(status, updated_at);
+      CREATE INDEX IF NOT EXISTS broker_proposals_source_status_idx
+        ON broker_proposals(source_node_id, status);
+      CREATE INDEX IF NOT EXISTS broker_proposals_target_status_idx
+        ON broker_proposals(target_node_id, status);
+      CREATE INDEX IF NOT EXISTS broker_proposals_kind_status_idx
+        ON broker_proposals(kind, status);
       CREATE TABLE IF NOT EXISTS broker_workers (
         node_id TEXT PRIMARY KEY,
         role TEXT NOT NULL,
@@ -735,6 +780,7 @@ export class SqliteBrokerStateStore implements BrokerStateStore {
       DELETE FROM broker_tasks;
       DELETE FROM broker_exchanges;
       DELETE FROM broker_exchange_messages;
+      DELETE FROM broker_proposals;
       DELETE FROM broker_workers;
       DELETE FROM broker_audit_events;
     `);
@@ -771,6 +817,24 @@ export class SqliteBrokerStateStore implements BrokerStateStore {
         message.createdAt,
         message.updatedAt,
         JSON.stringify(message),
+      );
+    }
+
+    const insertProposal = this.db.prepare(
+      `INSERT INTO broker_proposals
+        (id, status, kind, source_node_id, target_node_id, created_at, updated_at, payload)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    );
+    for (const proposal of snapshot.proposals) {
+      insertProposal.run(
+        proposal.id,
+        proposal.status,
+        proposal.kind,
+        proposal.sourceNodeId,
+        proposal.targetNodeId,
+        proposal.createdAt,
+        proposal.updatedAt,
+        JSON.stringify(proposal),
       );
     }
 
@@ -923,6 +987,7 @@ function buildHotTableSelect(
   tableName:
     | "broker_exchanges"
     | "broker_exchange_messages"
+    | "broker_proposals"
     | "broker_tasks"
     | "broker_workers"
     | "broker_audit_events",
