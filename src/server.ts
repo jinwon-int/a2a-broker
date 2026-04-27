@@ -30,6 +30,7 @@ import {
   CURRENT_BROKER_STATE_VERSION,
   DEFAULT_BROKER_STATE_MAX_BYTES,
   JsonFileBrokerStateStore,
+  SqliteArtifactRuntimeRepository,
   SqliteAuditRuntimeRepository,
   SqliteBrokerStateStore,
   SqliteExchangeMessageRuntimeRepository,
@@ -340,6 +341,9 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
         : undefined,
       proposalRepository: stateStore instanceof SqliteBrokerStateStore
         ? new SqliteProposalRuntimeRepository(stateStore)
+        : undefined,
+      artifactRepository: stateStore instanceof SqliteBrokerStateStore
+        ? new SqliteArtifactRuntimeRepository(stateStore)
         : undefined,
       retention: retentionPolicy,
       maxRequeueAttempts,
@@ -1728,7 +1732,7 @@ function getProposalDetailsForReadPath(
 
   return {
     proposal,
-    artifacts: stateStore.readHotArtifacts({ proposalId }),
+    artifacts: broker.listArtifactsForProposal(proposalId),
     validations: stateStore.readHotValidations({ proposalId }),
     audit: stateStore.readHotAuditEvents({ proposalId }),
   };

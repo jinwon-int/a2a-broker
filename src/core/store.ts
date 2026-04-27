@@ -20,6 +20,7 @@ import type {
   WorkerListFilters,
   WorkerRecord,
 } from "./types.js";
+import type { ArtifactRuntimeRepository } from "./artifact-repository.js";
 import type { AuditRuntimeRepository } from "./audit-repository.js";
 import type { ExchangeMessageRuntimeRepository, ExchangeRuntimeRepository } from "./exchange-repository.js";
 import type { ProposalRuntimeRepository } from "./proposal-repository.js";
@@ -134,6 +135,7 @@ export interface SqliteProposalHotTableFilters {
 }
 
 export interface SqliteArtifactHotTableFilters {
+  id?: string;
   proposalId?: string;
 }
 
@@ -711,7 +713,10 @@ export class SqliteBrokerStateStore implements BrokerStateStore {
   readHotArtifacts(filters: SqliteArtifactHotTableFilters = {}): ArtifactRecord[] {
     const { sql, params } = buildHotTableSelect(
       "broker_artifacts",
-      [["proposal_id", filters.proposalId]],
+      [
+        ["id", filters.id],
+        ["proposal_id", filters.proposalId],
+      ],
       "created_at DESC, id ASC",
     );
     return this.db
@@ -1601,6 +1606,22 @@ export class SqliteProposalRuntimeRepository implements ProposalRuntimeRepositor
 
   upsertProposal(proposal: ChangeProposal): void {
     this.store.upsertHotProposals([proposal]);
+  }
+}
+
+export class SqliteArtifactRuntimeRepository implements ArtifactRuntimeRepository {
+  constructor(private readonly store: SqliteBrokerStateStore) {}
+
+  getArtifact(id: string): ArtifactRecord | null {
+    return this.store.readHotArtifacts({ id })[0] ?? null;
+  }
+
+  listArtifactsForProposal(proposalId: string): ArtifactRecord[] {
+    return this.store.readHotArtifacts({ proposalId });
+  }
+
+  upsertArtifact(artifact: ArtifactRecord): void {
+    this.store.upsertHotArtifacts([artifact]);
   }
 }
 

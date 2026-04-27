@@ -9,6 +9,7 @@ import test from "node:test";
 import {
   CURRENT_BROKER_STATE_VERSION,
   JsonFileBrokerStateStore,
+  SqliteArtifactRuntimeRepository,
   SqliteAuditRuntimeRepository,
   SqliteBrokerStateStore,
   SqliteExchangeMessageRuntimeRepository,
@@ -660,6 +661,41 @@ test("SqliteProposalRuntimeRepository writes proposal state directly to broker_p
       [{ threshold: 3 }],
     );
     assert.deepEqual(store.load().proposals, []);
+    store.close();
+  } finally {
+    temp.cleanup();
+  }
+});
+
+test("SqliteArtifactRuntimeRepository writes artifact metadata directly to broker_artifacts", () => {
+  const temp = withTempFile("state.sqlite");
+  try {
+    const store = new SqliteBrokerStateStore(temp.filePath);
+    const repository = new SqliteArtifactRuntimeRepository(store);
+
+    repository.upsertArtifact(makeArtifact("artifact-runtime", "proposal-runtime"));
+    repository.upsertArtifact({
+      ...makeArtifact("artifact-runtime", "proposal-runtime"),
+      summary: "runtime artifact updated",
+      uri: "memory://runtime-artifact-updated",
+      createdAt: "2026-04-27T00:02:00.000Z",
+    });
+    repository.upsertArtifact({
+      ...makeArtifact("artifact-runtime-other", "proposal-runtime", "2026-04-27T00:01:00.000Z"),
+      kind: "bundle",
+      contentType: "application/json",
+      sizeBytes: 123,
+    });
+    repository.upsertArtifact(makeArtifact("artifact-runtime-foreign", "proposal-foreign", "2026-04-27T00:03:00.000Z"));
+
+    const artifact = repository.getArtifact("artifact-runtime");
+    assert.equal(artifact?.summary, "runtime artifact updated");
+    assert.equal(artifact?.uri, "memory://runtime-artifact-updated");
+    assert.deepEqual(
+      repository.listArtifactsForProposal("proposal-runtime").map((item) => [item.id, item.kind]),
+      [["artifact-runtime", "report"], ["artifact-runtime-other", "bundle"]],
+    );
+    assert.deepEqual(store.load().artifacts, []);
     store.close();
   } finally {
     temp.cleanup();
