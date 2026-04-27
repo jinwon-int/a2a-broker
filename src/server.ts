@@ -32,6 +32,8 @@ import {
   JsonFileBrokerStateStore,
   SqliteAuditRuntimeRepository,
   SqliteBrokerStateStore,
+  SqliteExchangeMessageRuntimeRepository,
+  SqliteExchangeRuntimeRepository,
   SqliteTaskRuntimeRepository,
   SqliteTombstoneRuntimeRepository,
   SqliteWorkerRuntimeRepository,
@@ -328,6 +330,12 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
         : undefined,
       workerRepository: stateStore instanceof SqliteBrokerStateStore
         ? new SqliteWorkerRuntimeRepository(stateStore)
+        : undefined,
+      exchangeRepository: stateStore instanceof SqliteBrokerStateStore
+        ? new SqliteExchangeRuntimeRepository(stateStore)
+        : undefined,
+      exchangeMessageRepository: stateStore instanceof SqliteBrokerStateStore
+        ? new SqliteExchangeMessageRuntimeRepository(stateStore)
         : undefined,
       retention: retentionPolicy,
       maxRequeueAttempts,
