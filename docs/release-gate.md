@@ -33,6 +33,11 @@ Brings up a fresh docker-compose stack with the echo worker and verifies:
 4. `POST /tasks` is accepted (`status: queued`)
 5. Task transitions to `succeeded` with result
 6. Audit trail contains: `task.created`, `task.claimed`, `task.started`, `task.succeeded`
+7. Live-impact approval lifecycle is proved:
+   - `promote_to_live` task starts as `blocked`
+   - `POST /tasks/:id/approve` records an approved outcome and returns the task to `queued`
+   - approved task is claimed and succeeds
+   - `POST /tasks/:id/reject-approval` records a rejected outcome and cancels without worker execution
 
 The stack is torn down after verification. **This gate is fully self-contained** — no secrets, no external services.
 
@@ -63,7 +68,7 @@ A human-readable summary and a machine-readable JSON block are printed at the en
 
 | Gate | Artifact |
 |------|----------|
-| Compose smoke | Clean audit trail (4 events) in JSON output |
+| Compose smoke | Clean base audit trail plus approval lifecycle proof in JSON output |
 | Restart recovery | Audit trail including `task.requeued`, status progression |
 
 ## When to Stop vs Escalate
