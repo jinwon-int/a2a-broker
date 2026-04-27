@@ -39,6 +39,7 @@ import type {
   A2AExchangeRequest,
   A2AExchangeState,
   AuditAction,
+  AuditEvent,
   AuditListFilters,
   BrokerDashboard,
   ChangeProposal,
@@ -1565,8 +1566,17 @@ function getTaskDiagnosticsForReadPath(
     if (!task) {
       throw new BrokerError("not_found", "task not found");
     }
+    const assignedWorker = task.assignedWorkerId
+      ? stateStore.readHotWorkers({ nodeId: task.assignedWorkerId })[0] ?? null
+      : null;
+    const lastRequeueEvent = latestAuditEvent(stateStore.readHotAuditEvents({
+      targetId: taskId,
+      action: "task.requeued",
+    }));
     return broker.getTaskDiagnosticsForRecord(task, options, {
       tombstone: stateStore.readHotTombstones({ taskId })[0] ?? null,
+      assignedWorker,
+      lastRequeueEvent,
     });
   }
   return broker.getTaskDiagnostics(taskId, options);
@@ -1581,11 +1591,33 @@ function listTaskDiagnosticsForReadPath(
     const tombstonesByTaskId = new Map<string, TaskTombstone>(
       stateStore.readHotTombstones().map((tombstone) => [tombstone.taskId, tombstone]),
     );
+    const workersByNodeId = new Map<string, WorkerRecord>(
+      stateStore.readHotWorkers().map((worker) => [worker.nodeId, worker]),
+    );
+    const latestRequeueEventByTaskId = new Map<string, AuditEvent>();
+    for (const event of stateStore.readHotAuditEvents({ action: "task.requeued" })) {
+      const existing = latestRequeueEventByTaskId.get(event.targetId);
+      if (!existing || event.createdAt > existing.createdAt) {
+        latestRequeueEventByTaskId.set(event.targetId, event);
+      }
+    }
     return stateStore.readHotTasks().map((task) => broker.getTaskDiagnosticsForRecord(task, options, {
       tombstone: tombstonesByTaskId.get(task.id) ?? null,
+      assignedWorker: task.assignedWorkerId ? workersByNodeId.get(task.assignedWorkerId) ?? null : null,
+      lastRequeueEvent: latestRequeueEventByTaskId.get(task.id) ?? null,
     }));
   }
   return broker.listTasks().map((task) => broker.getTaskDiagnostics(task.id, options));
+}
+
+function latestAuditEvent(events: AuditEvent[]): AuditEvent | null {
+  let latest: AuditEvent | null = null;
+  for (const event of events) {
+    if (!latest || event.createdAt > latest.createdAt) {
+      latest = event;
+    }
+  }
+  return latest;
 }
 
 function listExchangesForReadPath(

@@ -2496,7 +2496,11 @@ export class InMemoryA2ABroker {
   getTaskDiagnosticsForRecord(
     task: TaskRecord,
     options?: TaskDiagnosticsOptions,
-    overrides?: { tombstone?: TaskTombstone | null },
+    overrides?: {
+      tombstone?: TaskTombstone | null;
+      assignedWorker?: WorkerRecord | null;
+      lastRequeueEvent?: AuditEvent | null;
+    },
   ): TaskDiagnosticReport {
     const nowMs = options?.nowMs ?? Date.now();
     const staleAfterMs = options?.staleAfterMs ?? 120_000; // 2 min default
@@ -2507,11 +2511,17 @@ export class InMemoryA2ABroker {
       ? overrides.tombstone ?? undefined
       : this.tombstones.get(task.id);
     const diagnosticStatus = computeTaskDiagnosticStatus(task, staleAfterMs, longRunningAfterMs, nowMs);
-    const assignedWorker = task.assignedWorkerId ? this.workers.get(task.assignedWorkerId) : undefined;
+    const assignedWorker = overrides && "assignedWorker" in overrides
+      ? overrides.assignedWorker ?? undefined
+      : task.assignedWorkerId
+        ? this.workers.get(task.assignedWorkerId)
+        : undefined;
     const staleWorker = assignedWorker
       ? isWorkerStale(assignedWorker.lastSeenAt, workerOfflineAfterMs, nowMs)
       : false;
-    const lastRequeueEvent = findLatestTaskAuditEvent(this.auditEvents.values(), task.id, "task.requeued");
+    const lastRequeueEvent = overrides && "lastRequeueEvent" in overrides
+      ? overrides.lastRequeueEvent ?? undefined
+      : findLatestTaskAuditEvent(this.auditEvents.values(), task.id, "task.requeued");
     const durableSignals = projectTaskDurableSignals({
       task,
       diagnosticStatus,
