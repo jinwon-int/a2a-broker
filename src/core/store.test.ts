@@ -953,6 +953,61 @@ test("SqliteBrokerStateStore supports exchange hot-table upserts and hinted prun
   }
 });
 
+test("SqliteBrokerStateStore supports proposal artifact and validation hot-table upserts and hinted pruning", () => {
+  const temp = withTempFile("state.sqlite");
+  try {
+    const store = new SqliteBrokerStateStore(temp.filePath);
+    const proposalKeep = makeProposal("proposal-keep", "submitted", "worker-a");
+    const proposalPrune = makeProposal("proposal-prune", "rejected", "worker-a");
+    const artifactKeep = makeArtifact("artifact-keep", "proposal-keep");
+    const artifactPrune = makeArtifact("artifact-prune", "proposal-prune");
+    const validationKeep = makeValidation("validation-keep", "proposal-keep");
+    const validationPrune = makeValidation("validation-prune", "proposal-prune");
+    store.save({
+      ...emptySnapshot(),
+      proposals: [proposalKeep, proposalPrune],
+      artifacts: [artifactKeep, artifactPrune],
+      validations: [validationKeep, validationPrune],
+    });
+
+    const updatedProposal = {
+      ...proposalKeep,
+      status: "validated" as const,
+      artifactIds: [artifactKeep.id],
+      updatedAt: "2026-04-27T00:03:00.000Z",
+    };
+    const updatedArtifact = {
+      ...artifactKeep,
+      summary: "kept artifact",
+    };
+    const updatedValidation = {
+      ...validationKeep,
+      verdict: "pass" as const,
+    };
+    store.save(
+      {
+        ...emptySnapshot(),
+        proposals: [updatedProposal],
+        artifacts: [updatedArtifact],
+        validations: [updatedValidation],
+      },
+      {
+        hotProposals: [updatedProposal],
+        hotArtifacts: [updatedArtifact],
+        hotValidations: [updatedValidation],
+      },
+    );
+
+    assert.deepEqual(store.readHotProposals().map((proposal) => [proposal.id, proposal.status]), [["proposal-keep", "validated"]]);
+    assert.deepEqual(store.readHotArtifacts().map((artifact) => [artifact.id, artifact.summary]), [["artifact-keep", "kept artifact"]]);
+    assert.deepEqual(store.readHotValidations().map((validation) => [validation.id, validation.verdict]), [["validation-keep", "pass"]]);
+    assert.equal(store.readHotEntityMirrorStatus().ok, true);
+    store.close();
+  } finally {
+    temp.cleanup();
+  }
+});
+
 test("SqliteBrokerStateStore migrates v2 task hot table with task origin column", () => {
   const temp = withTempFile("state.sqlite");
   try {

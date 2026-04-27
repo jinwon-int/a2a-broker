@@ -320,6 +320,54 @@ async function gateComposeSmoke({ edgeSecret, timeoutMs }) {
       threadMessageId: threadMessage.id,
     };
 
+    console.log('[compose] seeding proposal hot-write proof…');
+    const proposal = await requestJson(baseUrl, 'POST', '/proposals', {
+      requester,
+      edgeSecret,
+      body: {
+        source: requester,
+        target: { id: 'echo-worker-1', kind: 'node', role: 'analyst' },
+        kind: 'patch',
+        summary: 'release-gate proposal hot-write proof',
+        workspace: { nodeId: 'echo-worker-1', workspaceId: 'release-gate' },
+        patchText: 'diff --git a/release-gate b/release-gate',
+      },
+    });
+    if (!proposal?.id) {
+      throw new Error(`proposal proof did not create a proposal: ${JSON.stringify(proposal)}`);
+    }
+    const artifact = await requestJson(baseUrl, 'POST', `/proposals/${proposal.id}/artifacts`, {
+      requester,
+      edgeSecret,
+      body: {
+        kind: 'report',
+        uri: `memory://release-gate/${proposal.id}`,
+        summary: 'release-gate proposal artifact proof',
+      },
+    });
+    if (artifact?.proposalId !== proposal.id) {
+      throw new Error(`proposal proof did not attach an artifact: ${JSON.stringify(artifact)}`);
+    }
+    const validation = await requestJson(baseUrl, 'POST', `/proposals/${proposal.id}/validate`, {
+      requester: { id: 'echo-worker-1', kind: 'node', role: 'analyst' },
+      edgeSecret,
+      body: {
+        nodeId: 'echo-worker-1',
+        kind: 'smoke',
+        verdict: 'pass',
+        artifactIds: [artifact.id],
+        note: 'release-gate proposal validation proof',
+      },
+    });
+    if (validation?.proposalId !== proposal.id) {
+      throw new Error(`proposal proof did not submit a validation: ${JSON.stringify(validation)}`);
+    }
+    report.proposalProof = {
+      proposalId: proposal.id,
+      artifactId: artifact.id,
+      validationId: validation.id,
+    };
+
     if (persistenceBackend === 'sqlite') {
       console.log('[compose] verifying SQLite JSON export from runtime image…');
       report.sqliteExport = await verifySqliteExport({
@@ -329,6 +377,9 @@ async function gateComposeSmoke({ edgeSecret, timeoutMs }) {
         expectedTaskIds: [taskId],
         expectedExchangeIds: [exchange.id],
         expectedExchangeMessageIds: [threadMessage.id],
+        expectedProposalIds: [proposal.id],
+        expectedArtifactIds: [artifact.id],
+        expectedValidationIds: [validation.id],
       });
       console.log('[compose] verifying SQLite retention plans from runtime image…');
       report.sqliteRetentionPlans = await verifySqliteRetentionPlans({
@@ -361,7 +412,7 @@ async function gateComposeSmoke({ edgeSecret, timeoutMs }) {
   }
 }
 
-async function verifySqliteExport({ compose, composeArgs, sqliteFile, expectedTaskIds, expectedExchangeIds = [], expectedExchangeMessageIds = [] }) {
+async function verifySqliteExport({ compose, composeArgs, sqliteFile, expectedTaskIds, expectedExchangeIds = [], expectedExchangeMessageIds = [], expectedProposalIds = [], expectedArtifactIds = [], expectedValidationIds = [] }) {
   const { stdout } = await run(compose.cmd, [
     ...composeArgs('exec'),
     '-T',
@@ -382,6 +433,9 @@ async function verifySqliteExport({ compose, composeArgs, sqliteFile, expectedTa
   const auditEvents = Array.isArray(snapshot.auditEvents) ? snapshot.auditEvents : [];
   const exchanges = Array.isArray(snapshot.exchanges) ? snapshot.exchanges : [];
   const exchangeMessages = Array.isArray(snapshot.exchangeMessages) ? snapshot.exchangeMessages : [];
+  const proposals = Array.isArray(snapshot.proposals) ? snapshot.proposals : [];
+  const artifacts = Array.isArray(snapshot.artifacts) ? snapshot.artifacts : [];
+  const validations = Array.isArray(snapshot.validations) ? snapshot.validations : [];
   const missingTaskIds = expectedTaskIds.filter((id) => !tasks.some((task) => task?.id === id));
   if (missingTaskIds.length) {
     throw new Error(`SQLite export missing task ids: ${missingTaskIds.join(', ')}`);
@@ -394,6 +448,18 @@ async function verifySqliteExport({ compose, composeArgs, sqliteFile, expectedTa
   if (missingMessageIds.length) {
     throw new Error(`SQLite export missing exchange message ids: ${missingMessageIds.join(', ')}`);
   }
+  const missingProposalIds = expectedProposalIds.filter((id) => !proposals.some((proposal) => proposal?.id === id));
+  if (missingProposalIds.length) {
+    throw new Error(`SQLite export missing proposal ids: ${missingProposalIds.join(', ')}`);
+  }
+  const missingArtifactIds = expectedArtifactIds.filter((id) => !artifacts.some((artifact) => artifact?.id === id));
+  if (missingArtifactIds.length) {
+    throw new Error(`SQLite export missing artifact ids: ${missingArtifactIds.join(', ')}`);
+  }
+  const missingValidationIds = expectedValidationIds.filter((id) => !validations.some((validation) => validation?.id === id));
+  if (missingValidationIds.length) {
+    throw new Error(`SQLite export missing validation ids: ${missingValidationIds.join(', ')}`);
+  }
   if (snapshot.version !== 7) {
     throw new Error(`SQLite export used unexpected snapshot version: ${snapshot.version}`);
   }
@@ -403,9 +469,15 @@ async function verifySqliteExport({ compose, composeArgs, sqliteFile, expectedTa
     auditEventCount: auditEvents.length,
     exchangeCount: exchanges.length,
     exchangeMessageCount: exchangeMessages.length,
+    proposalCount: proposals.length,
+    artifactCount: artifacts.length,
+    validationCount: validations.length,
     verifiedTaskIds: expectedTaskIds,
     verifiedExchangeIds: expectedExchangeIds,
     verifiedExchangeMessageIds: expectedExchangeMessageIds,
+    verifiedProposalIds: expectedProposalIds,
+    verifiedArtifactIds: expectedArtifactIds,
+    verifiedValidationIds: expectedValidationIds,
   };
 }
 

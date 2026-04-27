@@ -193,6 +193,9 @@ export class InMemoryA2ABroker {
   private readonly pendingHotWorkers = new Map<string, WorkerRecord>();
   private readonly pendingHotExchanges = new Map<string, A2AExchangeState>();
   private readonly pendingHotExchangeMessages = new Map<string, A2AExchangeMessageRecord>();
+  private readonly pendingHotProposals = new Map<string, ChangeProposal>();
+  private readonly pendingHotArtifacts = new Map<string, ArtifactRecord>();
+  private readonly pendingHotValidations = new Map<string, ValidationResult>();
   private readonly stateListeners = new Set<BrokerStateListener>();
   private readonly maxBufferedEventsPerTask: number;
   private readonly taskEventStream: TaskEventStream;
@@ -621,7 +624,7 @@ export class InMemoryA2ABroker {
       updatedAt: now,
     };
 
-    this.proposals.set(proposal.id, proposal);
+    this.setProposalRecord(proposal);
     this.appendAuditEvent({
       actorId: request.source.id,
       action: "proposal.created",
@@ -690,10 +693,10 @@ export class InMemoryA2ABroker {
       createdAt: isoNow(),
     };
 
-    this.artifacts.set(artifact.id, artifact);
+    this.setArtifactRecord(artifact);
     proposal.artifactIds = uniqueIds([...proposal.artifactIds, artifact.id]);
     proposal.updatedAt = isoNow();
-    this.proposals.set(proposal.id, proposal);
+    this.setProposalRecord(proposal);
 
     this.appendAuditEvent({
       actorId: proposal.sourceNodeId,
@@ -735,11 +738,11 @@ export class InMemoryA2ABroker {
       createdAt: isoNow(),
     };
 
-    this.validations.set(validation.id, validation);
+    this.setValidationRecord(validation);
     proposal.status = "validated";
     proposal.updatedAt = isoNow();
     proposal.artifactIds = uniqueIds([...proposal.artifactIds, ...validation.artifactIds]);
-    this.proposals.set(proposal.id, proposal);
+    this.setProposalRecord(proposal);
 
     this.appendAuditEvent({
       actorId: request.nodeId,
@@ -766,7 +769,7 @@ export class InMemoryA2ABroker {
 
     proposal.status = "approved";
     proposal.updatedAt = isoNow();
-    this.proposals.set(proposal.id, proposal);
+    this.setProposalRecord(proposal);
     this.appendAuditEvent({
       actorId: request.actor.id,
       action: "proposal.approved",
@@ -791,7 +794,7 @@ export class InMemoryA2ABroker {
 
     proposal.status = "rejected";
     proposal.updatedAt = isoNow();
-    this.proposals.set(proposal.id, proposal);
+    this.setProposalRecord(proposal);
     this.appendAuditEvent({
       actorId: request.actor.id,
       action: "proposal.rejected",
@@ -823,7 +826,7 @@ export class InMemoryA2ABroker {
 
     proposal.status = "applied";
     proposal.updatedAt = isoNow();
-    this.proposals.set(proposal.id, proposal);
+    this.setProposalRecord(proposal);
     this.appendAuditEvent({
       actorId: request.actor.id,
       action: "proposal.applied",
@@ -2061,6 +2064,21 @@ export class InMemoryA2ABroker {
     this.pendingHotExchangeMessages.set(message.id, structuredClone(message));
   }
 
+  private setProposalRecord(proposal: ChangeProposal): void {
+    this.proposals.set(proposal.id, proposal);
+    this.pendingHotProposals.set(proposal.id, structuredClone(proposal));
+  }
+
+  private setArtifactRecord(artifact: ArtifactRecord): void {
+    this.artifacts.set(artifact.id, artifact);
+    this.pendingHotArtifacts.set(artifact.id, structuredClone(artifact));
+  }
+
+  private setValidationRecord(validation: ValidationResult): void {
+    this.validations.set(validation.id, validation);
+    this.pendingHotValidations.set(validation.id, structuredClone(validation));
+  }
+
   private setWorkerRecord(worker: WorkerRecord): void {
     this.workers.set(worker.nodeId, worker);
     this.pendingHotWorkers.set(worker.nodeId, structuredClone(worker));
@@ -2070,6 +2088,9 @@ export class InMemoryA2ABroker {
     if (
       this.pendingHotExchanges.size === 0 &&
       this.pendingHotExchangeMessages.size === 0 &&
+      this.pendingHotProposals.size === 0 &&
+      this.pendingHotArtifacts.size === 0 &&
+      this.pendingHotValidations.size === 0 &&
       this.pendingHotTasks.size === 0 &&
       this.pendingHotAuditEvents.size === 0 &&
       this.pendingHotWorkers.size === 0
@@ -2078,22 +2099,34 @@ export class InMemoryA2ABroker {
     }
     const retainedExchangeIds = new Set(snapshot.exchanges.map((exchange) => exchange.id));
     const retainedExchangeMessageIds = new Set(snapshot.exchangeMessages.map((message) => message.id));
+    const retainedProposalIds = new Set(snapshot.proposals.map((proposal) => proposal.id));
+    const retainedArtifactIds = new Set(snapshot.artifacts.map((artifact) => artifact.id));
+    const retainedValidationIds = new Set(snapshot.validations.map((validation) => validation.id));
     const retainedTaskIds = new Set(snapshot.tasks.map((task) => task.id));
     const retainedAuditEventIds = new Set(snapshot.auditEvents.map((event) => event.id));
     const retainedWorkerIds = new Set(snapshot.workers.map((worker) => worker.nodeId));
     const hotExchanges = [...this.pendingHotExchanges.values()].filter((exchange) => retainedExchangeIds.has(exchange.id));
     const hotExchangeMessages = [...this.pendingHotExchangeMessages.values()].filter((message) => retainedExchangeMessageIds.has(message.id));
+    const hotProposals = [...this.pendingHotProposals.values()].filter((proposal) => retainedProposalIds.has(proposal.id));
+    const hotArtifacts = [...this.pendingHotArtifacts.values()].filter((artifact) => retainedArtifactIds.has(artifact.id));
+    const hotValidations = [...this.pendingHotValidations.values()].filter((validation) => retainedValidationIds.has(validation.id));
     const hotTasks = [...this.pendingHotTasks.values()].filter((task) => retainedTaskIds.has(task.id));
     const hotAuditEvents = [...this.pendingHotAuditEvents.values()].filter((event) => retainedAuditEventIds.has(event.id));
     const hotWorkers = [...this.pendingHotWorkers.values()].filter((worker) => retainedWorkerIds.has(worker.nodeId));
     this.pendingHotExchanges.clear();
     this.pendingHotExchangeMessages.clear();
+    this.pendingHotProposals.clear();
+    this.pendingHotArtifacts.clear();
+    this.pendingHotValidations.clear();
     this.pendingHotTasks.clear();
     this.pendingHotAuditEvents.clear();
     this.pendingHotWorkers.clear();
     return {
       ...(hotExchanges.length ? { hotExchanges } : {}),
       ...(hotExchangeMessages.length ? { hotExchangeMessages } : {}),
+      ...(hotProposals.length ? { hotProposals } : {}),
+      ...(hotArtifacts.length ? { hotArtifacts } : {}),
+      ...(hotValidations.length ? { hotValidations } : {}),
       ...(hotTasks.length ? { hotTasks } : {}),
       ...(hotAuditEvents.length ? { hotAuditEvents } : {}),
       ...(hotWorkers.length ? { hotWorkers } : {}),
@@ -2812,7 +2845,7 @@ export class InMemoryA2ABroker {
       if (artifactIds.length > 0) {
         proposal.artifactIds = uniqueIds([...proposal.artifactIds, ...artifactIds]);
         proposal.updatedAt = isoNow();
-        this.proposals.set(proposal.id, proposal);
+        this.setProposalRecord(proposal);
       }
     }
   }

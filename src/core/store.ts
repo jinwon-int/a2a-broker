@@ -41,6 +41,9 @@ export interface BrokerStateStore {
 export interface BrokerStateSaveHints {
   hotExchanges?: A2AExchangeState[];
   hotExchangeMessages?: A2AExchangeMessageRecord[];
+  hotProposals?: ChangeProposal[];
+  hotArtifacts?: ArtifactRecord[];
+  hotValidations?: ValidationResult[];
   hotTasks?: TaskRecord[];
   hotAuditEvents?: AuditEvent[];
   hotWorkers?: WorkerRecord[];
@@ -129,7 +132,7 @@ export interface SqliteWorkerHotTableFilters {
 }
 
 export interface SqliteHotRetentionPlan {
-  table: "broker_exchanges" | "broker_exchange_messages" | "broker_tasks" | "broker_audit_events" | "broker_workers";
+  table: "broker_exchanges" | "broker_exchange_messages" | "broker_proposals" | "broker_artifacts" | "broker_validations" | "broker_tasks" | "broker_audit_events" | "broker_workers";
   cutoffMs: number;
   retainedIds: string[];
   pruneIds: string[];
@@ -842,6 +845,24 @@ export class SqliteBrokerStateStore implements BrokerStateStore {
     });
   }
 
+  upsertHotProposals(proposals: ChangeProposal[]): void {
+    this.runImmediateTransaction(() => {
+      this.upsertHotProposalsUnsafe(proposals);
+    });
+  }
+
+  upsertHotArtifacts(artifacts: ArtifactRecord[]): void {
+    this.runImmediateTransaction(() => {
+      this.upsertHotArtifactsUnsafe(artifacts);
+    });
+  }
+
+  upsertHotValidations(validations: ValidationResult[]): void {
+    this.runImmediateTransaction(() => {
+      this.upsertHotValidationsUnsafe(validations);
+    });
+  }
+
   upsertHotAuditEvents(events: AuditEvent[]): void {
     this.runImmediateTransaction(() => {
       this.upsertHotAuditEventsUnsafe(events);
@@ -1040,14 +1061,12 @@ export class SqliteBrokerStateStore implements BrokerStateStore {
   private writeHotEntityTables(snapshot: BrokerSnapshot, hints?: BrokerStateSaveHints): void {
     const hotExchangeHints = hints?.hotExchanges;
     const hotExchangeMessageHints = hints?.hotExchangeMessages;
+    const hotProposalHints = hints?.hotProposals;
+    const hotArtifactHints = hints?.hotArtifacts;
+    const hotValidationHints = hints?.hotValidations;
     const hotTaskHints = hints?.hotTasks;
     const hotAuditHints = hints?.hotAuditEvents;
     const hotWorkerHints = hints?.hotWorkers;
-    this.db.exec(`
-      DELETE FROM broker_proposals;
-      DELETE FROM broker_artifacts;
-      DELETE FROM broker_validations;
-    `);
     if (hotExchangeHints) {
       this.applyCanonicalHotRetentionPlan("broker_exchanges", snapshot.exchanges.map((exchange) => exchange.id));
     } else {
@@ -1057,6 +1076,21 @@ export class SqliteBrokerStateStore implements BrokerStateStore {
       this.applyCanonicalHotRetentionPlan("broker_exchange_messages", snapshot.exchangeMessages.map((message) => message.id));
     } else {
       this.db.exec("DELETE FROM broker_exchange_messages;");
+    }
+    if (hotProposalHints) {
+      this.applyCanonicalHotRetentionPlan("broker_proposals", snapshot.proposals.map((proposal) => proposal.id));
+    } else {
+      this.db.exec("DELETE FROM broker_proposals;");
+    }
+    if (hotArtifactHints) {
+      this.applyCanonicalHotRetentionPlan("broker_artifacts", snapshot.artifacts.map((artifact) => artifact.id));
+    } else {
+      this.db.exec("DELETE FROM broker_artifacts;");
+    }
+    if (hotValidationHints) {
+      this.applyCanonicalHotRetentionPlan("broker_validations", snapshot.validations.map((validation) => validation.id));
+    } else {
+      this.db.exec("DELETE FROM broker_validations;");
     }
     if (hotTaskHints) {
       this.applyCanonicalHotRetentionPlan("broker_tasks", snapshot.tasks.map((task) => task.id));
@@ -1077,55 +1111,9 @@ export class SqliteBrokerStateStore implements BrokerStateStore {
     this.upsertHotExchangesUnsafe(hotExchangeHints ?? snapshot.exchanges);
     this.upsertHotExchangeMessagesUnsafe(hotExchangeMessageHints ?? snapshot.exchangeMessages);
 
-    const insertProposal = this.db.prepare(
-      `INSERT INTO broker_proposals
-        (id, status, kind, source_node_id, target_node_id, created_at, updated_at, payload)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-    );
-    for (const proposal of snapshot.proposals) {
-      insertProposal.run(
-        proposal.id,
-        proposal.status,
-        proposal.kind,
-        proposal.sourceNodeId,
-        proposal.targetNodeId,
-        proposal.createdAt,
-        proposal.updatedAt,
-        JSON.stringify(proposal),
-      );
-    }
-
-    const insertArtifact = this.db.prepare(
-      `INSERT INTO broker_artifacts
-        (id, proposal_id, kind, created_at, payload)
-       VALUES (?, ?, ?, ?, ?)`,
-    );
-    for (const artifact of snapshot.artifacts) {
-      insertArtifact.run(
-        artifact.id,
-        artifact.proposalId,
-        artifact.kind,
-        artifact.createdAt,
-        JSON.stringify(artifact),
-      );
-    }
-
-    const insertValidation = this.db.prepare(
-      `INSERT INTO broker_validations
-        (id, proposal_id, node_id, kind, verdict, created_at, payload)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
-    );
-    for (const validation of snapshot.validations) {
-      insertValidation.run(
-        validation.id,
-        validation.proposalId,
-        validation.nodeId,
-        validation.kind,
-        validation.verdict,
-        validation.createdAt,
-        JSON.stringify(validation),
-      );
-    }
+    this.upsertHotProposalsUnsafe(hotProposalHints ?? snapshot.proposals);
+    this.upsertHotArtifactsUnsafe(hotArtifactHints ?? snapshot.artifacts);
+    this.upsertHotValidationsUnsafe(hotValidationHints ?? snapshot.validations);
 
     this.upsertHotTasksUnsafe(hotTaskHints ?? snapshot.tasks);
 
@@ -1249,6 +1237,82 @@ export class SqliteBrokerStateStore implements BrokerStateStore {
         message.createdAt,
         message.updatedAt,
         JSON.stringify(message),
+      );
+    }
+  }
+
+  private upsertHotProposalsUnsafe(proposals: ChangeProposal[]): void {
+    const upsertProposal = this.db.prepare(
+      `INSERT INTO broker_proposals
+        (id, status, kind, source_node_id, target_node_id, created_at, updated_at, payload)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET
+         status = excluded.status,
+         kind = excluded.kind,
+         source_node_id = excluded.source_node_id,
+         target_node_id = excluded.target_node_id,
+         created_at = excluded.created_at,
+         updated_at = excluded.updated_at,
+         payload = excluded.payload`,
+    );
+    for (const proposal of proposals) {
+      upsertProposal.run(
+        proposal.id,
+        proposal.status,
+        proposal.kind,
+        proposal.sourceNodeId,
+        proposal.targetNodeId,
+        proposal.createdAt,
+        proposal.updatedAt,
+        JSON.stringify(proposal),
+      );
+    }
+  }
+
+  private upsertHotArtifactsUnsafe(artifacts: ArtifactRecord[]): void {
+    const upsertArtifact = this.db.prepare(
+      `INSERT INTO broker_artifacts
+        (id, proposal_id, kind, created_at, payload)
+       VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET
+         proposal_id = excluded.proposal_id,
+         kind = excluded.kind,
+         created_at = excluded.created_at,
+         payload = excluded.payload`,
+    );
+    for (const artifact of artifacts) {
+      upsertArtifact.run(
+        artifact.id,
+        artifact.proposalId,
+        artifact.kind,
+        artifact.createdAt,
+        JSON.stringify(artifact),
+      );
+    }
+  }
+
+  private upsertHotValidationsUnsafe(validations: ValidationResult[]): void {
+    const upsertValidation = this.db.prepare(
+      `INSERT INTO broker_validations
+        (id, proposal_id, node_id, kind, verdict, created_at, payload)
+       VALUES (?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET
+         proposal_id = excluded.proposal_id,
+         node_id = excluded.node_id,
+         kind = excluded.kind,
+         verdict = excluded.verdict,
+         created_at = excluded.created_at,
+         payload = excluded.payload`,
+    );
+    for (const validation of validations) {
+      upsertValidation.run(
+        validation.id,
+        validation.proposalId,
+        validation.nodeId,
+        validation.kind,
+        validation.verdict,
+        validation.createdAt,
+        JSON.stringify(validation),
       );
     }
   }
