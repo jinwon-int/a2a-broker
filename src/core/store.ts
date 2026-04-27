@@ -46,8 +46,23 @@ export interface BrokerPersistenceInfo {
   dbFile?: string;
   journalMode?: string;
   hotEntityTables?: string[];
+  hotEntityMirror?: BrokerHotEntityMirrorStatus;
   importedFromJsonFile?: string;
   lastImportAt?: string;
+}
+
+export interface BrokerHotEntityMirrorStatus {
+  ok: boolean;
+  tableCounts: Record<string, number>;
+  snapshotCounts?: Record<string, number>;
+  mismatches: BrokerHotEntityMirrorMismatch[];
+}
+
+export interface BrokerHotEntityMirrorMismatch {
+  table: string;
+  snapshotKey: string;
+  tableCount: number;
+  snapshotCount: number;
 }
 
 export interface JsonFileBrokerStateStoreOptions {
@@ -115,7 +130,21 @@ const SQLITE_HOT_ENTITY_TABLES = [
   "broker_tasks",
   "broker_workers",
   "broker_audit_events",
-];
+] as const;
+type SqliteHotEntityTable = typeof SQLITE_HOT_ENTITY_TABLES[number];
+type BrokerSnapshotArrayKey = Exclude<{
+  [K in keyof BrokerSnapshot]: BrokerSnapshot[K] extends unknown[] | undefined ? K : never;
+}[keyof BrokerSnapshot], undefined>;
+const SQLITE_HOT_ENTITY_SNAPSHOT_KEYS: Record<SqliteHotEntityTable, BrokerSnapshotArrayKey> = {
+  broker_exchanges: "exchanges",
+  broker_exchange_messages: "exchangeMessages",
+  broker_proposals: "proposals",
+  broker_artifacts: "artifacts",
+  broker_validations: "validations",
+  broker_tasks: "tasks",
+  broker_workers: "workers",
+  broker_audit_events: "auditEvents",
+};
 
 const partyRefSchema = z
   .object({
@@ -651,10 +680,52 @@ export class SqliteBrokerStateStore implements BrokerStateStore {
       stateVersion: CURRENT_BROKER_STATE_VERSION,
       schemaVersion: SQLITE_SCHEMA_VERSION,
       journalMode: this.journalMode,
-      hotEntityTables: SQLITE_HOT_ENTITY_TABLES,
+      hotEntityTables: [...SQLITE_HOT_ENTITY_TABLES],
+      hotEntityMirror: this.readHotEntityMirrorStatus(),
       importedFromJsonFile: this.readMetadata("imported_from_json_file"),
       lastImportAt: this.readMetadata("last_import_at"),
     };
+  }
+
+  readHotEntityMirrorStatus(): BrokerHotEntityMirrorStatus {
+    const tableCounts = this.readHotEntityTableCounts();
+    const snapshotCounts = this.readSnapshotEntityCounts();
+    if (!snapshotCounts) {
+      return {
+        ok: Object.values(tableCounts).every((count) => count === 0),
+        tableCounts,
+        mismatches: Object.entries(tableCounts)
+          .filter(([, tableCount]) => tableCount !== 0)
+          .map(([table, tableCount]) => ({
+            table,
+            snapshotKey: SQLITE_HOT_ENTITY_SNAPSHOT_KEYS[table as SqliteHotEntityTable],
+            tableCount,
+            snapshotCount: 0,
+          })),
+      };
+    }
+
+    const mismatches = SQLITE_HOT_ENTITY_TABLES.flatMap((table) => {
+      const snapshotKey = SQLITE_HOT_ENTITY_SNAPSHOT_KEYS[table];
+      const tableCount = tableCounts[table] ?? 0;
+      const snapshotCount = snapshotCounts[snapshotKey] ?? 0;
+      if (tableCount === snapshotCount) {
+        return [];
+      }
+      return [{ table, snapshotKey, tableCount, snapshotCount }];
+    });
+    return {
+      ok: mismatches.length === 0,
+      tableCounts,
+      snapshotCounts,
+      mismatches,
+    };
+  }
+
+  readHotEntityTableCounts(): Record<string, number> {
+    return Object.fromEntries(
+      SQLITE_HOT_ENTITY_TABLES.map((table) => [table, this.readTableCount(table)]),
+    );
   }
 
   private initializeDatabase(): string {
@@ -818,6 +889,26 @@ export class SqliteBrokerStateStore implements BrokerStateStore {
       )
       .run(CURRENT_BROKER_STATE_VERSION, payload, updatedAt);
     this.writeHotEntityTables(snapshot);
+  }
+
+  private readSnapshotEntityCounts(): Record<string, number> | undefined {
+    const row = this.db
+      .prepare("SELECT payload FROM broker_snapshots WHERE id = 1")
+      .get() as { payload?: string } | undefined;
+    if (typeof row?.payload !== "string") {
+      return undefined;
+    }
+    return countSnapshotEntities(
+      parseSnapshotPayload(row.payload, `SQLite broker snapshot at ${this.dbFile}`, this.maxBytes),
+    );
+  }
+
+  private readTableCount(tableName: SqliteHotEntityTable): number {
+    const row = this.db.prepare(`SELECT COUNT(*) AS count FROM ${tableName}`).get() as { count?: number | bigint } | undefined;
+    if (typeof row?.count === "bigint") {
+      return Number(row.count);
+    }
+    return typeof row?.count === "number" ? row.count : 0;
   }
 
   private writeHotEntityTables(snapshot: BrokerSnapshot): void {
@@ -1078,15 +1169,7 @@ function parseSnapshotPayload(payload: string, source: string, maxBytes: number)
 }
 
 function buildHotTableSelect(
-  tableName:
-    | "broker_exchanges"
-    | "broker_exchange_messages"
-    | "broker_proposals"
-    | "broker_artifacts"
-    | "broker_validations"
-    | "broker_tasks"
-    | "broker_workers"
-    | "broker_audit_events",
+  tableName: SqliteHotEntityTable,
   filters: Array<[string, string | undefined]>,
   orderBy: string,
 ): { sql: string; params: string[] } {
@@ -1102,6 +1185,12 @@ function buildHotTableSelect(
     sql: `SELECT payload FROM ${tableName}${clauses.length ? ` WHERE ${clauses.join(" AND ")}` : ""} ORDER BY ${orderBy}`,
     params,
   };
+}
+
+function countSnapshotEntities(snapshot: BrokerSnapshot): Record<string, number> {
+  return Object.fromEntries(
+    Object.values(SQLITE_HOT_ENTITY_SNAPSHOT_KEYS).map((key) => [key, (snapshot[key] ?? []).length]),
+  );
 }
 
 function parseHotEntityPayload<T>(row: unknown, schema: z.ZodType<T>, tableName: string): T {

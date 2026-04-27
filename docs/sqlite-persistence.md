@@ -31,7 +31,7 @@ Malformed JSON import fails startup/load with the same bounded validation errors
 
 ## Health metadata
 
-`GET /health` reports the active backend:
+`GET /health` reports the active backend, hot tables, and hot table mirror status:
 
 ```json
 {
@@ -51,6 +51,18 @@ Malformed JSON import fails startup/load with the same bounded validation errors
       "broker_workers",
       "broker_audit_events"
     ],
+    "hotEntityMirror": {
+      "ok": true,
+      "tableCounts": {
+        "broker_tasks": 12,
+        "broker_audit_events": 42
+      },
+      "snapshotCounts": {
+        "tasks": 12,
+        "auditEvents": 42
+      },
+      "mismatches": []
+    },
     "importedFromJsonFile": "/var/lib/a2a-broker/state.json",
     "lastImportAt": "2026-04-27T00:00:00.000Z"
   }
