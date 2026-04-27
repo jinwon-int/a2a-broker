@@ -109,4 +109,4 @@ For restore, stop the broker, place those files back under the configured path, 
 
 ## Current limitation
 
-This slice is still snapshot-first for broker runtime load, but SQLite also maintains normalized hot-entity inspection tables for public read paths in the same transaction as the snapshot write. The next slices should move runtime reads/writes for tasks, workers, audit events, exchanges, proposals, and tombstones into dedicated repositories while keeping the public HTTP and JSON-RPC contract stable.
+This slice is still snapshot-first for broker runtime load, but SQLite also maintains normalized hot-entity inspection tables for public read paths in the same transaction as the snapshot write. The store now exposes granular task and audit hot-table upsert seams for the next write-path migration slices; callers should continue treating the snapshot as canonical until those runtime paths are explicitly moved. The next slices should move runtime reads/writes for tasks, workers, audit events, exchanges, proposals, and tombstones into dedicated repositories while keeping the public HTTP and JSON-RPC contract stable.
