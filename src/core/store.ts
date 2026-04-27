@@ -59,6 +59,18 @@ export interface SqliteBrokerStateStoreOptions {
   importJsonFile?: string;
 }
 
+export interface SqliteTaskHotTableFilters {
+  id?: string;
+  status?: TaskRecord["status"];
+  assignedWorkerId?: string;
+}
+
+export interface SqliteAuditHotTableFilters {
+  action?: AuditEvent["action"];
+  targetType?: AuditEvent["targetType"];
+  targetId?: string;
+}
+
 const SQLITE_SCHEMA_VERSION = 2;
 const SQLITE_HOT_ENTITY_TABLES = ["broker_tasks", "broker_workers", "broker_audit_events"];
 
@@ -471,6 +483,45 @@ export class SqliteBrokerStateStore implements BrokerStateStore {
     this.saveSnapshot(snapshot);
   }
 
+  readHotTasks(filters: SqliteTaskHotTableFilters = {}): TaskRecord[] {
+    const { sql, params } = buildHotTableSelect(
+      "broker_tasks",
+      [
+        ["id", filters.id],
+        ["status", filters.status],
+        ["assigned_worker_id", filters.assignedWorkerId],
+      ],
+      "updated_at DESC, id ASC",
+    );
+    return this.db
+      .prepare(sql)
+      .all(...params)
+      .map((row) => parseHotEntityPayload(row, taskSchema, "broker_tasks")) as TaskRecord[];
+  }
+
+  readHotWorkers(): WorkerRecord[] {
+    return this.db
+      .prepare("SELECT payload FROM broker_workers ORDER BY node_id ASC")
+      .all()
+      .map((row) => parseHotEntityPayload(row, workerSchema, "broker_workers")) as WorkerRecord[];
+  }
+
+  readHotAuditEvents(filters: SqliteAuditHotTableFilters = {}): AuditEvent[] {
+    const { sql, params } = buildHotTableSelect(
+      "broker_audit_events",
+      [
+        ["action", filters.action],
+        ["target_type", filters.targetType],
+        ["target_id", filters.targetId],
+      ],
+      "created_at DESC, id ASC",
+    );
+    return this.db
+      .prepare(sql)
+      .all(...params)
+      .map((row) => parseHotEntityPayload(row, auditEventSchema, "broker_audit_events")) as AuditEvent[];
+  }
+
   close(): void {
     this.db.close();
   }
@@ -717,4 +768,46 @@ function parseSnapshotPayload(payload: string, source: string, maxBytes: number)
     );
   }
   return parsed.data as BrokerSnapshot;
+}
+
+function buildHotTableSelect(
+  tableName: "broker_tasks" | "broker_audit_events",
+  filters: Array<[string, string | undefined]>,
+  orderBy: string,
+): { sql: string; params: string[] } {
+  const params: string[] = [];
+  const clauses = filters.flatMap(([column, value]) => {
+    if (!value) {
+      return [];
+    }
+    params.push(value);
+    return [`${column} = ?`];
+  });
+  return {
+    sql: `SELECT payload FROM ${tableName}${clauses.length ? ` WHERE ${clauses.join(" AND ")}` : ""} ORDER BY ${orderBy}`,
+    params,
+  };
+}
+
+function parseHotEntityPayload<T>(row: unknown, schema: z.ZodType<T>, tableName: string): T {
+  const payload = readSqlitePayload(row, tableName);
+  const parsed = schema.safeParse(JSON.parse(payload));
+  if (!parsed.success) {
+    throw new Error(
+      `invalid hot entity payload in ${tableName}: ${parsed.error.issues[0]?.message ?? "unknown schema error"}`,
+    );
+  }
+  return parsed.data;
+}
+
+function readSqlitePayload(row: unknown, tableName: string): string {
+  if (
+    typeof row === "object" &&
+    row !== null &&
+    "payload" in row &&
+    typeof row.payload === "string"
+  ) {
+    return row.payload;
+  }
+  throw new Error(`missing payload column from ${tableName}`);
 }

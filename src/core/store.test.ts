@@ -230,7 +230,115 @@ test("SqliteBrokerStateStore imports an existing JSON snapshot atomically on fir
   }
 });
 
+test("SqliteBrokerStateStore reads hot entities from mirrored tables with filters", () => {
+  const temp = withTempFile("state.sqlite");
+  try {
+    const snapshot: BrokerSnapshot = {
+      ...emptySnapshot(),
+      workers: [
+        makeWorker("worker-a"),
+        makeWorker("worker-b"),
+      ],
+      tasks: [
+        makeTask("task-queued", "queued", "worker-a"),
+        makeTask("task-running", "running", "worker-a"),
+        makeTask("task-done", "succeeded", "worker-b"),
+      ],
+      auditEvents: [
+        makeAuditEvent("audit-1", "task.created", "task-queued"),
+        makeAuditEvent("audit-2", "task.started", "task-running"),
+        makeAuditEvent("audit-3", "task.succeeded", "task-done"),
+      ],
+    };
+
+    const store = new SqliteBrokerStateStore(temp.filePath);
+    store.save(snapshot);
+
+    assert.deepEqual(
+      store.readHotTasks({ assignedWorkerId: "worker-a" }).map((task) => task.id),
+      ["task-running", "task-queued"],
+    );
+    assert.deepEqual(
+      store.readHotTasks({ status: "succeeded" }).map((task) => task.id),
+      ["task-done"],
+    );
+    assert.deepEqual(
+      store.readHotTasks({ id: "task-queued" }).map((task) => task.payload),
+      [{ correlationId: "corr-task-queued" }],
+    );
+    assert.deepEqual(
+      store.readHotWorkers().map((worker) => worker.nodeId),
+      ["worker-a", "worker-b"],
+    );
+    assert.deepEqual(
+      store.readHotAuditEvents({ targetId: "task-running" }).map((event) => event.id),
+      ["audit-2"],
+    );
+    assert.deepEqual(
+      store.readHotAuditEvents({ action: "task.created" }).map((event) => event.targetId),
+      ["task-queued"],
+    );
+    store.close();
+  } finally {
+    temp.cleanup();
+  }
+});
+
 function readSqliteCount(db: DatabaseSync, tableName: string): number {
   const row = db.prepare(`SELECT count(*) AS count FROM ${tableName}`).get() as { count: number };
   return row.count;
+}
+
+function makeWorker(nodeId: string): BrokerSnapshot["workers"][number] {
+  return {
+    nodeId,
+    role: "analyst",
+    capabilities: {
+      canAnalyze: true,
+      canBackfill: false,
+      canPatchWorkspace: false,
+      canPromoteLive: false,
+      workspaceIds: ["smoke"],
+      environments: ["research"],
+    },
+    createdAt: "2026-04-27T00:00:00.000Z",
+    updatedAt: "2026-04-27T00:00:00.000Z",
+    lastSeenAt: "2026-04-27T00:00:00.000Z",
+  };
+}
+
+function makeTask(
+  id: string,
+  status: BrokerSnapshot["tasks"][number]["status"],
+  assignedWorkerId: string,
+): BrokerSnapshot["tasks"][number] {
+  return {
+    id,
+    intent: "chat",
+    requester: { id: "requester", kind: "session", role: "hub" },
+    target: { id: assignedWorkerId, kind: "node", role: "analyst" },
+    message: id,
+    targetNodeId: assignedWorkerId,
+    assignedWorkerId,
+    payload: { correlationId: `corr-${id}` },
+    status,
+    createdAt: "2026-04-27T00:00:00.000Z",
+    updatedAt: id === "task-running" ? "2026-04-27T00:02:00.000Z" : "2026-04-27T00:01:00.000Z",
+    taskOrigin: "api",
+  };
+}
+
+function makeAuditEvent(
+  id: string,
+  action: BrokerSnapshot["auditEvents"][number]["action"],
+  targetId: string,
+): BrokerSnapshot["auditEvents"][number] {
+  return {
+    id,
+    actorId: "operator-a",
+    action,
+    targetType: "task",
+    targetId,
+    createdAt: "2026-04-27T00:00:00.000Z",
+  };
 }
