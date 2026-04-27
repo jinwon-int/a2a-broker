@@ -84,6 +84,14 @@ export interface SqliteProposalHotTableFilters {
   kind?: ChangeProposal["kind"];
 }
 
+export interface SqliteArtifactHotTableFilters {
+  proposalId?: string;
+}
+
+export interface SqliteValidationHotTableFilters {
+  proposalId?: string;
+}
+
 export interface SqliteAuditHotTableFilters {
   proposalId?: string;
   actorId?: string;
@@ -97,11 +105,13 @@ export interface SqliteWorkerHotTableFilters {
   role?: WorkerRecord["role"];
 }
 
-const SQLITE_SCHEMA_VERSION = 6;
+const SQLITE_SCHEMA_VERSION = 7;
 const SQLITE_HOT_ENTITY_TABLES = [
   "broker_exchanges",
   "broker_exchange_messages",
   "broker_proposals",
+  "broker_artifacts",
+  "broker_validations",
   "broker_tasks",
   "broker_workers",
   "broker_audit_events",
@@ -577,6 +587,30 @@ export class SqliteBrokerStateStore implements BrokerStateStore {
       .map((row) => parseHotEntityPayload(row, proposalSchema, "broker_proposals")) as ChangeProposal[];
   }
 
+  readHotArtifacts(filters: SqliteArtifactHotTableFilters = {}): ArtifactRecord[] {
+    const { sql, params } = buildHotTableSelect(
+      "broker_artifacts",
+      [["proposal_id", filters.proposalId]],
+      "created_at DESC, id ASC",
+    );
+    return this.db
+      .prepare(sql)
+      .all(...params)
+      .map((row) => parseHotEntityPayload(row, artifactSchema, "broker_artifacts")) as ArtifactRecord[];
+  }
+
+  readHotValidations(filters: SqliteValidationHotTableFilters = {}): ValidationResult[] {
+    const { sql, params } = buildHotTableSelect(
+      "broker_validations",
+      [["proposal_id", filters.proposalId]],
+      "created_at DESC, id ASC",
+    );
+    return this.db
+      .prepare(sql)
+      .all(...params)
+      .map((row) => parseHotEntityPayload(row, validationSchema, "broker_validations")) as ValidationResult[];
+  }
+
   readHotWorkers(filters: SqliteWorkerHotTableFilters = {}): WorkerRecord[] {
     const { sql, params } = buildHotTableSelect(
       "broker_workers",
@@ -711,6 +745,28 @@ export class SqliteBrokerStateStore implements BrokerStateStore {
         ON broker_proposals(target_node_id, status);
       CREATE INDEX IF NOT EXISTS broker_proposals_kind_status_idx
         ON broker_proposals(kind, status);
+      CREATE TABLE IF NOT EXISTS broker_artifacts (
+        id TEXT PRIMARY KEY,
+        proposal_id TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        payload TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS broker_artifacts_proposal_created_idx
+        ON broker_artifacts(proposal_id, created_at);
+      CREATE TABLE IF NOT EXISTS broker_validations (
+        id TEXT PRIMARY KEY,
+        proposal_id TEXT NOT NULL,
+        node_id TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        verdict TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        payload TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS broker_validations_proposal_created_idx
+        ON broker_validations(proposal_id, created_at);
+      CREATE INDEX IF NOT EXISTS broker_validations_verdict_idx
+        ON broker_validations(verdict, created_at);
       CREATE TABLE IF NOT EXISTS broker_workers (
         node_id TEXT PRIMARY KEY,
         role TEXT NOT NULL,
@@ -781,6 +837,8 @@ export class SqliteBrokerStateStore implements BrokerStateStore {
       DELETE FROM broker_exchanges;
       DELETE FROM broker_exchange_messages;
       DELETE FROM broker_proposals;
+      DELETE FROM broker_artifacts;
+      DELETE FROM broker_validations;
       DELETE FROM broker_workers;
       DELETE FROM broker_audit_events;
     `);
@@ -835,6 +893,38 @@ export class SqliteBrokerStateStore implements BrokerStateStore {
         proposal.createdAt,
         proposal.updatedAt,
         JSON.stringify(proposal),
+      );
+    }
+
+    const insertArtifact = this.db.prepare(
+      `INSERT INTO broker_artifacts
+        (id, proposal_id, kind, created_at, payload)
+       VALUES (?, ?, ?, ?, ?)`,
+    );
+    for (const artifact of snapshot.artifacts) {
+      insertArtifact.run(
+        artifact.id,
+        artifact.proposalId,
+        artifact.kind,
+        artifact.createdAt,
+        JSON.stringify(artifact),
+      );
+    }
+
+    const insertValidation = this.db.prepare(
+      `INSERT INTO broker_validations
+        (id, proposal_id, node_id, kind, verdict, created_at, payload)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    );
+    for (const validation of snapshot.validations) {
+      insertValidation.run(
+        validation.id,
+        validation.proposalId,
+        validation.nodeId,
+        validation.kind,
+        validation.verdict,
+        validation.createdAt,
+        JSON.stringify(validation),
       );
     }
 
@@ -988,6 +1078,8 @@ function buildHotTableSelect(
     | "broker_exchanges"
     | "broker_exchange_messages"
     | "broker_proposals"
+    | "broker_artifacts"
+    | "broker_validations"
     | "broker_tasks"
     | "broker_workers"
     | "broker_audit_events",

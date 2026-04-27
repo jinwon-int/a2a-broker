@@ -335,12 +335,14 @@ test("server reports SQLite persistence metadata when SQLite backend is enabled"
     assert.equal(health.persistence.kind, "sqlite");
     assert.equal(health.persistence.dbFile, join(dir, "state.sqlite"));
     assert.equal(health.persistence.stateVersion, 7);
-    assert.equal(health.persistence.schemaVersion, 6);
+    assert.equal(health.persistence.schemaVersion, 7);
     assert.equal(health.persistence.journalMode, "wal");
     assert.deepEqual(health.persistence.hotEntityTables, [
       "broker_exchanges",
       "broker_exchange_messages",
       "broker_proposals",
+      "broker_artifacts",
+      "broker_validations",
       "broker_tasks",
       "broker_workers",
       "broker_audit_events",
@@ -1177,7 +1179,7 @@ test("server reads /proposals from SQLite hot tables when SQLite store is active
   }
 });
 
-test("server reads /proposals/:id proposal and audit from SQLite hot tables", async () => {
+test("server reads /proposals/:id details fully from SQLite hot tables", async () => {
   const dir = mkdtempSync(join(tmpdir(), "a2a-broker-sqlite-proposal-detail-"));
   const store = new SqliteBrokerStateStore(join(dir, "state.sqlite"));
   const snapshot: BrokerSnapshot = {
@@ -1245,6 +1247,12 @@ test("server reads /proposals/:id proposal and audit from SQLite hot tables", as
     runtime.broker.getProposalDetails = (() => {
       throw new Error("/proposals/:id should use SQLite hot read path for proposal details");
     }) as typeof runtime.broker.getProposalDetails;
+    runtime.broker.listArtifactsForProposal = (() => {
+      throw new Error("/proposals/:id should use SQLite hot read path for artifacts");
+    }) as typeof runtime.broker.listArtifactsForProposal;
+    runtime.broker.listValidationsForProposal = (() => {
+      throw new Error("/proposals/:id should use SQLite hot read path for validations");
+    }) as typeof runtime.broker.listValidationsForProposal;
     runtime.server.listen(0, "127.0.0.1");
     await once(runtime.server, "listening");
     const address = runtime.server.address();

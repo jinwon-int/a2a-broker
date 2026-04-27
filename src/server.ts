@@ -1634,8 +1634,8 @@ function getProposalDetailsForReadPath(
 
   return {
     proposal,
-    artifacts: broker.listArtifactsForProposal(proposalId),
-    validations: broker.listValidationsForProposal(proposalId),
+    artifacts: stateStore.readHotArtifacts({ proposalId }),
+    validations: stateStore.readHotValidations({ proposalId }),
     audit: stateStore.readHotAuditEvents({ proposalId }),
   };
 }

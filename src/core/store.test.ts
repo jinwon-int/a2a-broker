@@ -92,6 +92,8 @@ test("SqliteBrokerStateStore saves and reloads snapshots with WAL metadata", () 
       exchanges: [makeExchange("exchange-1", "worker-a")],
       exchangeMessages: [makeExchangeMessage("message-1", "exchange-1", "root")],
       proposals: [makeProposal("proposal-1", "submitted", "worker-a")],
+      artifacts: [makeArtifact("artifact-1", "proposal-1")],
+      validations: [makeValidation("validation-1", "proposal-1")],
       workers: [
         {
           nodeId: "worker-a",
@@ -147,12 +149,14 @@ test("SqliteBrokerStateStore saves and reloads snapshots with WAL metadata", () 
       kind: "sqlite",
       dbFile: temp.filePath,
       stateVersion: CURRENT_BROKER_STATE_VERSION,
-      schemaVersion: 6,
+      schemaVersion: 7,
       journalMode: "wal",
       hotEntityTables: [
         "broker_exchanges",
         "broker_exchange_messages",
         "broker_proposals",
+        "broker_artifacts",
+        "broker_validations",
         "broker_tasks",
         "broker_workers",
         "broker_audit_events",
@@ -167,6 +171,8 @@ test("SqliteBrokerStateStore saves and reloads snapshots with WAL metadata", () 
       assert.equal(readSqliteCount(db, "broker_exchanges"), 1);
       assert.equal(readSqliteCount(db, "broker_exchange_messages"), 1);
       assert.equal(readSqliteCount(db, "broker_proposals"), 1);
+      assert.equal(readSqliteCount(db, "broker_artifacts"), 1);
+      assert.equal(readSqliteCount(db, "broker_validations"), 1);
       assert.equal(readSqliteCount(db, "broker_tasks"), 1);
       assert.equal(readSqliteCount(db, "broker_workers"), 1);
       assert.equal(readSqliteCount(db, "broker_audit_events"), 1);
@@ -210,6 +216,24 @@ test("SqliteBrokerStateStore saves and reloads snapshots with WAL metadata", () 
       assert.equal(proposalRow.status, "submitted");
       assert.equal(proposalRow.kind, "patch");
       assert.equal(proposalRow.target_node_id, "worker-a");
+      const artifactRow = db.prepare("SELECT id, proposal_id, kind FROM broker_artifacts").get() as {
+        id: string;
+        proposal_id: string;
+        kind: string;
+      };
+      assert.equal(artifactRow.id, "artifact-1");
+      assert.equal(artifactRow.proposal_id, "proposal-1");
+      assert.equal(artifactRow.kind, "report");
+      const validationRow = db.prepare("SELECT id, proposal_id, node_id, verdict FROM broker_validations").get() as {
+        id: string;
+        proposal_id: string;
+        node_id: string;
+        verdict: string;
+      };
+      assert.equal(validationRow.id, "validation-1");
+      assert.equal(validationRow.proposal_id, "proposal-1");
+      assert.equal(validationRow.node_id, "validator-a");
+      assert.equal(validationRow.verdict, "pass");
     } finally {
       db.close();
     }
@@ -295,6 +319,16 @@ test("SqliteBrokerStateStore reads hot entities from mirrored tables with filter
         makeProposal("proposal-submitted", "submitted", "worker-a", "2026-04-27T00:01:00.000Z"),
         makeProposal("proposal-approved", "approved", "worker-b", "2026-04-27T00:02:00.000Z"),
       ],
+      artifacts: [
+        makeArtifact("artifact-old", "proposal-submitted", "2026-04-27T00:01:00.000Z"),
+        makeArtifact("artifact-new", "proposal-submitted", "2026-04-27T00:02:00.000Z"),
+        makeArtifact("artifact-other", "proposal-approved", "2026-04-27T00:03:00.000Z"),
+      ],
+      validations: [
+        makeValidation("validation-old", "proposal-submitted", "2026-04-27T00:01:00.000Z"),
+        makeValidation("validation-new", "proposal-submitted", "2026-04-27T00:02:00.000Z"),
+        makeValidation("validation-other", "proposal-approved", "2026-04-27T00:03:00.000Z"),
+      ],
       tasks: [
         makeTask("task-queued", "queued", "worker-a"),
         makeTask("task-running", "running", "worker-a"),
@@ -345,6 +379,14 @@ test("SqliteBrokerStateStore reads hot entities from mirrored tables with filter
     assert.deepEqual(
       store.readHotProposals({ status: "submitted", targetNodeId: "worker-a", kind: "patch" }).map((proposal) => proposal.id),
       ["proposal-submitted"],
+    );
+    assert.deepEqual(
+      store.readHotArtifacts({ proposalId: "proposal-submitted" }).map((artifact) => artifact.id),
+      ["artifact-new", "artifact-old"],
+    );
+    assert.deepEqual(
+      store.readHotValidations({ proposalId: "proposal-submitted" }).map((validation) => validation.id),
+      ["validation-new", "validation-old"],
     );
     assert.deepEqual(
       store.readHotWorkers().map((worker) => worker.nodeId),
@@ -399,7 +441,7 @@ test("SqliteBrokerStateStore migrates v2 task hot table with task origin column"
       store.readHotTasks({ taskOrigin: "api", targetNodeId: "worker-a" }).map((task) => task.id),
       ["task-migrated"],
     );
-    assert.equal(store.getPersistenceInfo().schemaVersion, 6);
+    assert.equal(store.getPersistenceInfo().schemaVersion, 7);
     store.close();
   } finally {
     temp.cleanup();
@@ -495,6 +537,37 @@ function makeProposal(
     status,
     createdAt,
     updatedAt: createdAt,
+  };
+}
+
+function makeArtifact(
+  id: string,
+  proposalId: string,
+  createdAt = "2026-04-27T00:00:00.000Z",
+): BrokerSnapshot["artifacts"][number] {
+  return {
+    id,
+    proposalId,
+    kind: "report",
+    uri: `memory://${id}`,
+    createdAt,
+  };
+}
+
+function makeValidation(
+  id: string,
+  proposalId: string,
+  createdAt = "2026-04-27T00:00:00.000Z",
+): BrokerSnapshot["validations"][number] {
+  return {
+    id,
+    proposalId,
+    nodeId: "validator-a",
+    kind: "smoke",
+    verdict: "pass",
+    metrics: {},
+    artifactIds: [],
+    createdAt,
   };
 }
 
