@@ -190,6 +190,7 @@ export class InMemoryA2ABroker {
   private readonly taskEventSeqs = new Map<string, number>();
   private readonly pendingHotTasks = new Map<string, TaskRecord>();
   private readonly pendingHotAuditEvents = new Map<string, AuditEvent>();
+  private readonly pendingHotWorkers = new Map<string, WorkerRecord>();
   private readonly stateListeners = new Set<BrokerStateListener>();
   private readonly maxBufferedEventsPerTask: number;
   private readonly taskEventStream: TaskEventStream;
@@ -506,7 +507,7 @@ export class InMemoryA2ABroker {
       lastSeenAt: now,
     };
 
-    this.workers.set(worker.nodeId, worker);
+    this.setWorkerRecord(worker);
     this.appendAuditEvent({
       actorId: worker.nodeId,
       action: "worker.registered",
@@ -531,7 +532,7 @@ export class InMemoryA2ABroker {
     worker.updatedAt = now;
     worker.lastSeenAt = now;
 
-    this.workers.set(worker.nodeId, worker);
+    this.setWorkerRecord(worker);
     this.appendAuditEvent({
       actorId: worker.nodeId,
       action: "worker.heartbeat",
@@ -2048,19 +2049,28 @@ export class InMemoryA2ABroker {
     this.pendingHotTasks.set(task.id, structuredClone(task));
   }
 
+  private setWorkerRecord(worker: WorkerRecord): void {
+    this.workers.set(worker.nodeId, worker);
+    this.pendingHotWorkers.set(worker.nodeId, structuredClone(worker));
+  }
+
   private consumeStateSaveHints(snapshot: BrokerSnapshot): BrokerStateSaveHints | undefined {
-    if (this.pendingHotTasks.size === 0 && this.pendingHotAuditEvents.size === 0) {
+    if (this.pendingHotTasks.size === 0 && this.pendingHotAuditEvents.size === 0 && this.pendingHotWorkers.size === 0) {
       return undefined;
     }
     const retainedTaskIds = new Set(snapshot.tasks.map((task) => task.id));
     const retainedAuditEventIds = new Set(snapshot.auditEvents.map((event) => event.id));
+    const retainedWorkerIds = new Set(snapshot.workers.map((worker) => worker.nodeId));
     const hotTasks = [...this.pendingHotTasks.values()].filter((task) => retainedTaskIds.has(task.id));
     const hotAuditEvents = [...this.pendingHotAuditEvents.values()].filter((event) => retainedAuditEventIds.has(event.id));
+    const hotWorkers = [...this.pendingHotWorkers.values()].filter((worker) => retainedWorkerIds.has(worker.nodeId));
     this.pendingHotTasks.clear();
     this.pendingHotAuditEvents.clear();
+    this.pendingHotWorkers.clear();
     return {
       ...(hotTasks.length ? { hotTasks } : {}),
       ...(hotAuditEvents.length ? { hotAuditEvents } : {}),
+      ...(hotWorkers.length ? { hotWorkers } : {}),
     };
   }
 

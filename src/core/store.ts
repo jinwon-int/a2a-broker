@@ -41,6 +41,7 @@ export interface BrokerStateStore {
 export interface BrokerStateSaveHints {
   hotTasks?: TaskRecord[];
   hotAuditEvents?: AuditEvent[];
+  hotWorkers?: WorkerRecord[];
 }
 
 export interface BrokerPersistenceInfo {
@@ -126,7 +127,7 @@ export interface SqliteWorkerHotTableFilters {
 }
 
 export interface SqliteHotRetentionPlan {
-  table: "broker_tasks" | "broker_audit_events";
+  table: "broker_tasks" | "broker_audit_events" | "broker_workers";
   cutoffMs: number;
   retainedIds: string[];
   pruneIds: string[];
@@ -162,6 +163,13 @@ export interface SqliteAuditHotRetentionPlanOptions {
   retentionMs: number;
   maxRecords: number;
   protectedIds?: SqliteAuditHotRetentionProtection;
+}
+
+export interface SqliteWorkerHotRetentionPlanOptions {
+  nowMs?: number;
+  retentionMs: number;
+  maxInactiveWorkers: number;
+  protectedWorkerIds?: string[];
 }
 
 const SQLITE_SCHEMA_VERSION = 7;
@@ -788,6 +796,14 @@ export class SqliteBrokerStateStore implements BrokerStateStore {
     return planAuditRetentionFromRecords(records, options);
   }
 
+  planHotWorkerRetention(options: SqliteWorkerHotRetentionPlanOptions): SqliteHotRetentionPlan {
+    const records = this.db
+      .prepare("SELECT payload FROM broker_workers")
+      .all()
+      .map((row) => parseHotEntityPayload(row, workerSchema, "broker_workers")) as WorkerRecord[];
+    return planWorkerRetentionFromRecords(records, options);
+  }
+
   applyHotRetentionPlan(plan: SqliteHotRetentionPlan): SqliteHotRetentionApplyResult {
     let result: SqliteHotRetentionApplyResult | undefined;
     this.runImmediateTransaction(() => {
@@ -815,6 +831,12 @@ export class SqliteBrokerStateStore implements BrokerStateStore {
   upsertHotAuditEvents(events: AuditEvent[]): void {
     this.runImmediateTransaction(() => {
       this.upsertHotAuditEventsUnsafe(events);
+    });
+  }
+
+  upsertHotWorkers(workers: WorkerRecord[]): void {
+    this.runImmediateTransaction(() => {
+      this.upsertHotWorkersUnsafe(workers);
     });
   }
 
@@ -1004,13 +1026,13 @@ export class SqliteBrokerStateStore implements BrokerStateStore {
   private writeHotEntityTables(snapshot: BrokerSnapshot, hints?: BrokerStateSaveHints): void {
     const hotTaskHints = hints?.hotTasks;
     const hotAuditHints = hints?.hotAuditEvents;
+    const hotWorkerHints = hints?.hotWorkers;
     this.db.exec(`
       DELETE FROM broker_exchanges;
       DELETE FROM broker_exchange_messages;
       DELETE FROM broker_proposals;
       DELETE FROM broker_artifacts;
       DELETE FROM broker_validations;
-      DELETE FROM broker_workers;
     `);
     if (hotTaskHints) {
       this.applyCanonicalHotRetentionPlan("broker_tasks", snapshot.tasks.map((task) => task.id));
@@ -1021,6 +1043,11 @@ export class SqliteBrokerStateStore implements BrokerStateStore {
       this.applyCanonicalHotRetentionPlan("broker_audit_events", snapshot.auditEvents.map((event) => event.id));
     } else {
       this.db.exec("DELETE FROM broker_audit_events;");
+    }
+    if (hotWorkerHints) {
+      this.applyCanonicalHotRetentionPlan("broker_workers", snapshot.workers.map((worker) => worker.nodeId));
+    } else {
+      this.db.exec("DELETE FROM broker_workers;");
     }
 
     const insertExchange = this.db.prepare(
@@ -1110,20 +1137,7 @@ export class SqliteBrokerStateStore implements BrokerStateStore {
 
     this.upsertHotTasksUnsafe(hotTaskHints ?? snapshot.tasks);
 
-    const insertWorker = this.db.prepare(
-      `INSERT INTO broker_workers
-        (node_id, role, last_seen_at, updated_at, payload)
-       VALUES (?, ?, ?, ?, ?)`,
-    );
-    for (const worker of snapshot.workers) {
-      insertWorker.run(
-        worker.nodeId,
-        worker.role,
-        worker.lastSeenAt,
-        worker.updatedAt,
-        JSON.stringify(worker),
-      );
-    }
+    this.upsertHotWorkersUnsafe(hotWorkerHints ?? snapshot.workers);
 
     this.upsertHotAuditEventsUnsafe(hotAuditHints ?? snapshot.auditEvents);
   }
@@ -1146,8 +1160,9 @@ export class SqliteBrokerStateStore implements BrokerStateStore {
     const beforeIds = new Set(this.readTableIds(plan.table));
     const pruneIds = plan.pruneIds.filter((id) => beforeIds.has(id));
     if (pruneIds.length > 0) {
+      const primaryKeyColumn = this.hotRetentionPrimaryKeyColumn(plan.table);
       const placeholders = pruneIds.map(() => "?").join(", ");
-      this.db.prepare(`DELETE FROM ${plan.table} WHERE id IN (${placeholders})`).run(...pruneIds);
+      this.db.prepare(`DELETE FROM ${plan.table} WHERE ${primaryKeyColumn} IN (${placeholders})`).run(...pruneIds);
     }
     return {
       table: plan.table,
@@ -1159,7 +1174,8 @@ export class SqliteBrokerStateStore implements BrokerStateStore {
   }
 
   private readTableIds(tableName: SqliteHotRetentionPlan["table"]): string[] {
-    return (this.db.prepare(`SELECT id FROM ${tableName} ORDER BY id ASC`).all() as Array<{ id?: string }>)
+    const primaryKeyColumn = this.hotRetentionPrimaryKeyColumn(tableName);
+    return (this.db.prepare(`SELECT ${primaryKeyColumn} AS id FROM ${tableName} ORDER BY ${primaryKeyColumn} ASC`).all() as Array<{ id?: string }>)
       .flatMap((row) => typeof row.id === "string" ? [row.id] : []);
   }
 
@@ -1213,6 +1229,32 @@ export class SqliteBrokerStateStore implements BrokerStateStore {
         JSON.stringify(audit),
       );
     }
+  }
+
+  private upsertHotWorkersUnsafe(workers: WorkerRecord[]): void {
+    const upsertWorker = this.db.prepare(
+      `INSERT INTO broker_workers
+        (node_id, role, last_seen_at, updated_at, payload)
+       VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT(node_id) DO UPDATE SET
+         role = excluded.role,
+         last_seen_at = excluded.last_seen_at,
+         updated_at = excluded.updated_at,
+         payload = excluded.payload`,
+    );
+    for (const worker of workers) {
+      upsertWorker.run(
+        worker.nodeId,
+        worker.role,
+        worker.lastSeenAt,
+        worker.updatedAt,
+        JSON.stringify(worker),
+      );
+    }
+  }
+
+  private hotRetentionPrimaryKeyColumn(tableName: SqliteHotRetentionPlan["table"]): "id" | "node_id" {
+    return tableName === "broker_workers" ? "node_id" : "id";
   }
 
   private runImmediateTransaction(fn: () => void): void {
@@ -1409,6 +1451,35 @@ function planAuditRetentionFromRecords(
     .forEach((entry) => retainedIds.add(entry.id));
 
   return buildRetentionPlan("broker_audit_events", cutoffMs, records.map((record) => record.id), retainedIds);
+}
+
+function planWorkerRetentionFromRecords(
+  records: WorkerRecord[],
+  options: SqliteWorkerHotRetentionPlanOptions,
+): SqliteHotRetentionPlan {
+  const nowMs = options.nowMs ?? Date.now();
+  const cutoffMs = nowMs - options.retentionMs;
+  const retainedIds = new Set(options.protectedWorkerIds ?? []);
+  const olderInactiveCandidates: Array<{ id: string; timestampMs: number }> = [];
+
+  for (const worker of records) {
+    if (retainedIds.has(worker.nodeId)) {
+      continue;
+    }
+    const timestampMs = parseRetentionTimestamp(worker.lastSeenAt);
+    if (timestampMs === null || timestampMs >= cutoffMs) {
+      retainedIds.add(worker.nodeId);
+      continue;
+    }
+    olderInactiveCandidates.push({ id: worker.nodeId, timestampMs });
+  }
+
+  [...olderInactiveCandidates]
+    .sort((a, b) => b.timestampMs - a.timestampMs || a.id.localeCompare(b.id))
+    .slice(0, options.maxInactiveWorkers)
+    .forEach((entry) => retainedIds.add(entry.id));
+
+  return buildRetentionPlan("broker_workers", cutoffMs, records.map((record) => record.nodeId), retainedIds);
 }
 
 function buildRetentionPlan(

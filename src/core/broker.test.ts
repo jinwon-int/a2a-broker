@@ -26,7 +26,7 @@ function registerWorker(broker: InMemoryA2ABroker, nodeId: string): void {
   });
 }
 
-test("broker passes dirty task and audit hints to state store saves", () => {
+test("broker passes dirty task, audit, and worker hints to state store saves", () => {
   const saveHints: Array<BrokerStateSaveHints | undefined> = [];
   const store: BrokerStateStore = {
     load: () => emptySnapshot(),
@@ -36,6 +36,14 @@ test("broker passes dirty task and audit hints to state store saves", () => {
   };
   const broker = new InMemoryA2ABroker(store, store.load());
   registerWorker(broker, "worker-a");
+  const registerHints = saveHints.at(-1);
+  assert.deepEqual(registerHints?.hotWorkers?.map((item) => item.nodeId), ["worker-a"]);
+  assert.deepEqual(registerHints?.hotAuditEvents?.map((item) => item.action), ["worker.registered"]);
+
+  broker.heartbeatWorker("worker-a", { metadata: { check: "alive" } });
+  const heartbeatHints = saveHints.at(-1);
+  assert.deepEqual(heartbeatHints?.hotWorkers?.map((item) => [item.nodeId, item.metadata]), [["worker-a", { check: "alive" }]]);
+  assert.deepEqual(heartbeatHints?.hotAuditEvents?.map((item) => item.action), ["worker.heartbeat"]);
 
   const task = broker.createTask({
     id: "task-hot-hints",
