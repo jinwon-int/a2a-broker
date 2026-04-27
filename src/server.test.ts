@@ -335,7 +335,7 @@ test("server reports SQLite persistence metadata when SQLite backend is enabled"
     assert.equal(health.persistence.kind, "sqlite");
     assert.equal(health.persistence.dbFile, join(dir, "state.sqlite"));
     assert.equal(health.persistence.stateVersion, 7);
-    assert.equal(health.persistence.schemaVersion, 7);
+    assert.equal(health.persistence.schemaVersion, 8);
     assert.equal(health.persistence.journalMode, "wal");
     assert.deepEqual(health.persistence.hotEntityTables, [
       "broker_exchanges",
@@ -344,6 +344,7 @@ test("server reports SQLite persistence metadata when SQLite backend is enabled"
       "broker_artifacts",
       "broker_validations",
       "broker_tasks",
+      "broker_tombstones",
       "broker_workers",
       "broker_audit_events",
     ]);
@@ -352,8 +353,8 @@ test("server reports SQLite persistence metadata when SQLite backend is enabled"
       ok: true,
       supportedTables: health.persistence.hotEntityTables,
       missingTables: [],
-      supportedCount: 8,
-      totalCount: 8,
+      supportedCount: 9,
+      totalCount: 9,
     });
   } finally {
     runtime.stopStaleReaper();

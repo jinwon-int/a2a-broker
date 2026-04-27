@@ -370,7 +370,7 @@ async function gateComposeSmoke({ edgeSecret, timeoutMs }) {
 
     if (persistenceBackend === 'sqlite') {
       const coverage = health?.persistence?.hotEntityHintCoverage;
-      if (!coverage?.ok || coverage.supportedCount !== coverage.totalCount || coverage.totalCount !== 8) {
+      if (!coverage?.ok || coverage.supportedCount !== coverage.totalCount || coverage.totalCount !== 9) {
         throw new Error(`SQLite hot entity hint coverage is incomplete: ${JSON.stringify(coverage)}`);
       }
       report.sqliteHotEntityHintCoverage = coverage;
@@ -380,11 +380,19 @@ async function gateComposeSmoke({ edgeSecret, timeoutMs }) {
         composeArgs,
         sqliteFile,
         expectedTaskIds: [taskId],
+        expectedTombstoneTaskIds: [approvalProof.rejectTaskId],
         expectedExchangeIds: [exchange.id],
         expectedExchangeMessageIds: [threadMessage.id],
         expectedProposalIds: [proposal.id],
         expectedArtifactIds: [artifact.id],
         expectedValidationIds: [validation.id],
+      });
+      console.log('[compose] verifying SQLite tombstone hot reads from runtime image…');
+      report.sqliteTombstoneHotRead = await verifySqliteTombstoneHotRead({
+        compose,
+        composeArgs,
+        sqliteFile,
+        expectedTaskId: approvalProof.rejectTaskId,
       });
       console.log('[compose] verifying SQLite retention plans from runtime image…');
       report.sqliteRetentionPlans = await verifySqliteRetentionPlans({
@@ -417,7 +425,7 @@ async function gateComposeSmoke({ edgeSecret, timeoutMs }) {
   }
 }
 
-async function verifySqliteExport({ compose, composeArgs, sqliteFile, expectedTaskIds, expectedExchangeIds = [], expectedExchangeMessageIds = [], expectedProposalIds = [], expectedArtifactIds = [], expectedValidationIds = [] }) {
+async function verifySqliteExport({ compose, composeArgs, sqliteFile, expectedTaskIds, expectedTombstoneTaskIds = [], expectedExchangeIds = [], expectedExchangeMessageIds = [], expectedProposalIds = [], expectedArtifactIds = [], expectedValidationIds = [] }) {
   const { stdout } = await run(compose.cmd, [
     ...composeArgs('exec'),
     '-T',
@@ -441,6 +449,7 @@ async function verifySqliteExport({ compose, composeArgs, sqliteFile, expectedTa
   const proposals = Array.isArray(snapshot.proposals) ? snapshot.proposals : [];
   const artifacts = Array.isArray(snapshot.artifacts) ? snapshot.artifacts : [];
   const validations = Array.isArray(snapshot.validations) ? snapshot.validations : [];
+  const tombstones = Array.isArray(snapshot.tombstones) ? snapshot.tombstones : [];
   const missingTaskIds = expectedTaskIds.filter((id) => !tasks.some((task) => task?.id === id));
   if (missingTaskIds.length) {
     throw new Error(`SQLite export missing task ids: ${missingTaskIds.join(', ')}`);
@@ -465,6 +474,10 @@ async function verifySqliteExport({ compose, composeArgs, sqliteFile, expectedTa
   if (missingValidationIds.length) {
     throw new Error(`SQLite export missing validation ids: ${missingValidationIds.join(', ')}`);
   }
+  const missingTombstoneTaskIds = expectedTombstoneTaskIds.filter((id) => !tombstones.some((tombstone) => tombstone?.taskId === id));
+  if (missingTombstoneTaskIds.length) {
+    throw new Error(`SQLite export missing tombstone task ids: ${missingTombstoneTaskIds.join(', ')}`);
+  }
   if (snapshot.version !== 7) {
     throw new Error(`SQLite export used unexpected snapshot version: ${snapshot.version}`);
   }
@@ -477,12 +490,58 @@ async function verifySqliteExport({ compose, composeArgs, sqliteFile, expectedTa
     proposalCount: proposals.length,
     artifactCount: artifacts.length,
     validationCount: validations.length,
+    tombstoneCount: tombstones.length,
     verifiedTaskIds: expectedTaskIds,
+    verifiedTombstoneTaskIds: expectedTombstoneTaskIds,
     verifiedExchangeIds: expectedExchangeIds,
     verifiedExchangeMessageIds: expectedExchangeMessageIds,
     verifiedProposalIds: expectedProposalIds,
     verifiedArtifactIds: expectedArtifactIds,
     verifiedValidationIds: expectedValidationIds,
+  };
+}
+
+async function verifySqliteTombstoneHotRead({ compose, composeArgs, sqliteFile, expectedTaskId }) {
+  const code = `
+    import { SqliteBrokerStateStore } from './dist/core/store.js';
+    const store = new SqliteBrokerStateStore(process.argv[1]);
+    try {
+      const expectedTaskId = process.argv[2];
+      const byTask = store.readHotTombstones({ taskId: expectedTaskId });
+      const byReason = store.readHotTombstones({ tombstoneReason: 'canceled' }).filter((tombstone) => tombstone.taskId === expectedTaskId);
+      process.stdout.write(JSON.stringify({ byTask, byReason }));
+    } finally {
+      store.close();
+    }
+  `;
+  const { stdout } = await run(compose.cmd, [
+    ...composeArgs('exec'),
+    '-T',
+    'a2a-broker',
+    'node',
+    '--input-type=module',
+    '-e',
+    code,
+    sqliteFile,
+    expectedTaskId,
+  ]);
+  let result;
+  try {
+    result = JSON.parse(stdout);
+  } catch (error) {
+    throw new Error(`SQLite tombstone hot read did not produce JSON: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  const tombstone = Array.isArray(result.byTask) ? result.byTask[0] : undefined;
+  if (tombstone?.taskId !== expectedTaskId || tombstone?.terminalStatus !== 'canceled' || tombstone?.tombstoneReason !== 'canceled') {
+    throw new Error(`SQLite tombstone hot read missed canceled task tombstone: ${JSON.stringify(result)}`);
+  }
+  if (!Array.isArray(result.byReason) || !result.byReason.some((entry) => entry?.taskId === expectedTaskId)) {
+    throw new Error(`SQLite tombstone hot read by reason missed canceled task tombstone: ${JSON.stringify(result)}`);
+  }
+  return {
+    verifiedTaskId: expectedTaskId,
+    terminalStatus: tombstone.terminalStatus,
+    tombstoneReason: tombstone.tombstoneReason,
   };
 }
 
@@ -637,6 +696,7 @@ async function verifyApprovalLifecycle({ baseUrl, edgeSecret, workerId, timeoutM
   const report = {};
 
   const approvedTaskId = randomUUID();
+  report.approveTaskId = approvedTaskId;
   console.log(`[compose] seeding approval-gated task ${approvedTaskId.slice(0, 8)}…`);
   const blocked = await requestJson(baseUrl, 'POST', '/tasks', {
     requester: analyst,
@@ -708,6 +768,7 @@ async function verifyApprovalLifecycle({ baseUrl, edgeSecret, workerId, timeoutM
   }
 
   const rejectedTaskId = randomUUID();
+  report.rejectTaskId = rejectedTaskId;
   console.log(`[compose] seeding rejected approval task ${rejectedTaskId.slice(0, 8)}…`);
   const rejectBlocked = await requestJson(baseUrl, 'POST', '/tasks', {
     requester: analyst,

@@ -189,6 +189,7 @@ export class InMemoryA2ABroker {
   private readonly taskEventBuffers = new Map<string, BufferedTaskEvent[]>();
   private readonly taskEventSeqs = new Map<string, number>();
   private readonly pendingHotTasks = new Map<string, TaskRecord>();
+  private readonly pendingHotTombstones = new Map<string, TaskTombstone>();
   private readonly pendingHotAuditEvents = new Map<string, AuditEvent>();
   private readonly pendingHotWorkers = new Map<string, WorkerRecord>();
   private readonly pendingHotExchanges = new Map<string, A2AExchangeState>();
@@ -2092,6 +2093,7 @@ export class InMemoryA2ABroker {
       this.pendingHotArtifacts.size === 0 &&
       this.pendingHotValidations.size === 0 &&
       this.pendingHotTasks.size === 0 &&
+      this.pendingHotTombstones.size === 0 &&
       this.pendingHotAuditEvents.size === 0 &&
       this.pendingHotWorkers.size === 0
     ) {
@@ -2103,6 +2105,7 @@ export class InMemoryA2ABroker {
     const retainedArtifactIds = new Set(snapshot.artifacts.map((artifact) => artifact.id));
     const retainedValidationIds = new Set(snapshot.validations.map((validation) => validation.id));
     const retainedTaskIds = new Set(snapshot.tasks.map((task) => task.id));
+    const retainedTombstoneTaskIds = new Set((snapshot.tombstones ?? []).map((tombstone) => tombstone.taskId));
     const retainedAuditEventIds = new Set(snapshot.auditEvents.map((event) => event.id));
     const retainedWorkerIds = new Set(snapshot.workers.map((worker) => worker.nodeId));
     const hotExchanges = [...this.pendingHotExchanges.values()].filter((exchange) => retainedExchangeIds.has(exchange.id));
@@ -2111,6 +2114,7 @@ export class InMemoryA2ABroker {
     const hotArtifacts = [...this.pendingHotArtifacts.values()].filter((artifact) => retainedArtifactIds.has(artifact.id));
     const hotValidations = [...this.pendingHotValidations.values()].filter((validation) => retainedValidationIds.has(validation.id));
     const hotTasks = [...this.pendingHotTasks.values()].filter((task) => retainedTaskIds.has(task.id));
+    const hotTombstones = [...this.pendingHotTombstones.values()].filter((tombstone) => retainedTombstoneTaskIds.has(tombstone.taskId));
     const hotAuditEvents = [...this.pendingHotAuditEvents.values()].filter((event) => retainedAuditEventIds.has(event.id));
     const hotWorkers = [...this.pendingHotWorkers.values()].filter((worker) => retainedWorkerIds.has(worker.nodeId));
     this.pendingHotExchanges.clear();
@@ -2119,6 +2123,7 @@ export class InMemoryA2ABroker {
     this.pendingHotArtifacts.clear();
     this.pendingHotValidations.clear();
     this.pendingHotTasks.clear();
+    this.pendingHotTombstones.clear();
     this.pendingHotAuditEvents.clear();
     this.pendingHotWorkers.clear();
     return {
@@ -2128,6 +2133,7 @@ export class InMemoryA2ABroker {
       ...(hotArtifacts.length ? { hotArtifacts } : {}),
       ...(hotValidations.length ? { hotValidations } : {}),
       ...(hotTasks.length ? { hotTasks } : {}),
+      ...(hotTombstones.length ? { hotTombstones } : {}),
       ...(hotAuditEvents.length ? { hotAuditEvents } : {}),
       ...(hotWorkers.length ? { hotWorkers } : {}),
     };
@@ -2619,6 +2625,7 @@ export class InMemoryA2ABroker {
     };
 
     this.tombstones.set(task.id, tombstone);
+    this.pendingHotTombstones.set(task.id, structuredClone(tombstone));
     this.appendAuditEvent({
       actorId: context?.actorId ?? "broker",
       action: "task.tombstoned",

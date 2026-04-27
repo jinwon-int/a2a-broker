@@ -45,6 +45,7 @@ export interface BrokerStateSaveHints {
   hotArtifacts?: ArtifactRecord[];
   hotValidations?: ValidationResult[];
   hotTasks?: TaskRecord[];
+  hotTombstones?: TaskTombstone[];
   hotAuditEvents?: AuditEvent[];
   hotWorkers?: WorkerRecord[];
 }
@@ -141,8 +142,15 @@ export interface SqliteWorkerHotTableFilters {
   role?: WorkerRecord["role"];
 }
 
+export interface SqliteTombstoneHotTableFilters {
+  taskId?: string;
+  tombstoneReason?: TaskTombstone["tombstoneReason"];
+  terminalStatus?: TaskTombstone["terminalStatus"];
+  since?: string;
+}
+
 export interface SqliteHotRetentionPlan {
-  table: "broker_exchanges" | "broker_exchange_messages" | "broker_proposals" | "broker_artifacts" | "broker_validations" | "broker_tasks" | "broker_audit_events" | "broker_workers";
+  table: "broker_exchanges" | "broker_exchange_messages" | "broker_proposals" | "broker_artifacts" | "broker_validations" | "broker_tasks" | "broker_tombstones" | "broker_audit_events" | "broker_workers";
   cutoffMs: number;
   retainedIds: string[];
   pruneIds: string[];
@@ -187,7 +195,7 @@ export interface SqliteWorkerHotRetentionPlanOptions {
   protectedWorkerIds?: string[];
 }
 
-const SQLITE_SCHEMA_VERSION = 7;
+const SQLITE_SCHEMA_VERSION = 8;
 const SQLITE_HOT_ENTITY_TABLES = [
   "broker_exchanges",
   "broker_exchange_messages",
@@ -195,6 +203,7 @@ const SQLITE_HOT_ENTITY_TABLES = [
   "broker_artifacts",
   "broker_validations",
   "broker_tasks",
+  "broker_tombstones",
   "broker_workers",
   "broker_audit_events",
 ] as const;
@@ -205,6 +214,7 @@ const SQLITE_HOT_ENTITY_HINT_TABLES = [
   "broker_artifacts",
   "broker_validations",
   "broker_tasks",
+  "broker_tombstones",
   "broker_workers",
   "broker_audit_events",
 ] as const;
@@ -219,6 +229,7 @@ const SQLITE_HOT_ENTITY_SNAPSHOT_KEYS: Record<SqliteHotEntityTable, BrokerSnapsh
   broker_artifacts: "artifacts",
   broker_validations: "validations",
   broker_tasks: "tasks",
+  broker_tombstones: "tombstones",
   broker_workers: "workers",
   broker_audit_events: "auditEvents",
 };
@@ -721,6 +732,25 @@ export class SqliteBrokerStateStore implements BrokerStateStore {
       .map((row) => parseHotEntityPayload(row, workerSchema, "broker_workers")) as WorkerRecord[];
   }
 
+  readHotTombstones(filters: SqliteTombstoneHotTableFilters = {}): TaskTombstone[] {
+    const { sql, params } = buildHotTableSelect(
+      "broker_tombstones",
+      [
+        ["task_id", filters.taskId],
+        ["tombstone_reason", filters.tombstoneReason],
+        ["terminal_status", filters.terminalStatus],
+      ],
+      "tombstoned_at DESC, task_id ASC",
+    );
+    const tombstones = this.db
+      .prepare(sql)
+      .all(...params)
+      .map((row) => parseHotEntityPayload(row, tombstoneSchema, "broker_tombstones")) as TaskTombstone[];
+    return filters.since
+      ? tombstones.filter((tombstone) => tombstone.tombstonedAt >= filters.since!)
+      : tombstones;
+  }
+
   readHotAuditEvents(filters: SqliteAuditHotTableFilters = {}): AuditEvent[] {
     const { sql, params } = buildHotTableSelect(
       "broker_audit_events",
@@ -901,6 +931,12 @@ export class SqliteBrokerStateStore implements BrokerStateStore {
     });
   }
 
+  upsertHotTombstones(tombstones: TaskTombstone[]): void {
+    this.runImmediateTransaction(() => {
+      this.upsertHotTombstonesUnsafe(tombstones);
+    });
+  }
+
   private initializeDatabase(): string {
     const journal = this.db.prepare("PRAGMA journal_mode = WAL").get() as
       | { journal_mode?: string }
@@ -1009,6 +1045,17 @@ export class SqliteBrokerStateStore implements BrokerStateStore {
       );
       CREATE INDEX IF NOT EXISTS broker_workers_last_seen_idx
         ON broker_workers(last_seen_at);
+      CREATE TABLE IF NOT EXISTS broker_tombstones (
+        task_id TEXT PRIMARY KEY,
+        terminal_status TEXT NOT NULL,
+        tombstone_reason TEXT NOT NULL,
+        tombstoned_at TEXT NOT NULL,
+        payload TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS broker_tombstones_reason_idx
+        ON broker_tombstones(tombstone_reason, tombstoned_at);
+      CREATE INDEX IF NOT EXISTS broker_tombstones_status_idx
+        ON broker_tombstones(terminal_status, tombstoned_at);
       CREATE TABLE IF NOT EXISTS broker_audit_events (
         id TEXT PRIMARY KEY,
         action TEXT NOT NULL,
@@ -1091,6 +1138,7 @@ export class SqliteBrokerStateStore implements BrokerStateStore {
     const hotArtifactHints = hints?.hotArtifacts;
     const hotValidationHints = hints?.hotValidations;
     const hotTaskHints = hints?.hotTasks;
+    const hotTombstoneHints = hints?.hotTombstones;
     const hotAuditHints = hints?.hotAuditEvents;
     const hotWorkerHints = hints?.hotWorkers;
     if (hotExchangeHints) {
@@ -1123,6 +1171,11 @@ export class SqliteBrokerStateStore implements BrokerStateStore {
     } else {
       this.db.exec("DELETE FROM broker_tasks;");
     }
+    if (hotTombstoneHints) {
+      this.applyCanonicalHotRetentionPlan("broker_tombstones", (snapshot.tombstones ?? []).map((tombstone) => tombstone.taskId));
+    } else {
+      this.db.exec("DELETE FROM broker_tombstones;");
+    }
     if (hotAuditHints) {
       this.applyCanonicalHotRetentionPlan("broker_audit_events", snapshot.auditEvents.map((event) => event.id));
     } else {
@@ -1142,6 +1195,8 @@ export class SqliteBrokerStateStore implements BrokerStateStore {
     this.upsertHotValidationsUnsafe(hotValidationHints ?? snapshot.validations);
 
     this.upsertHotTasksUnsafe(hotTaskHints ?? snapshot.tasks);
+
+    this.upsertHotTombstonesUnsafe(hotTombstoneHints ?? snapshot.tombstones ?? []);
 
     this.upsertHotWorkersUnsafe(hotWorkerHints ?? snapshot.workers);
 
@@ -1389,8 +1444,36 @@ export class SqliteBrokerStateStore implements BrokerStateStore {
     }
   }
 
-  private hotRetentionPrimaryKeyColumn(tableName: SqliteHotRetentionPlan["table"]): "id" | "node_id" {
-    return tableName === "broker_workers" ? "node_id" : "id";
+  private upsertHotTombstonesUnsafe(tombstones: TaskTombstone[]): void {
+    const upsertTombstone = this.db.prepare(
+      `INSERT INTO broker_tombstones
+        (task_id, terminal_status, tombstone_reason, tombstoned_at, payload)
+       VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT(task_id) DO UPDATE SET
+         terminal_status = excluded.terminal_status,
+         tombstone_reason = excluded.tombstone_reason,
+         tombstoned_at = excluded.tombstoned_at,
+         payload = excluded.payload`,
+    );
+    for (const tombstone of tombstones) {
+      upsertTombstone.run(
+        tombstone.taskId,
+        tombstone.terminalStatus,
+        tombstone.tombstoneReason,
+        tombstone.tombstonedAt,
+        JSON.stringify(tombstone),
+      );
+    }
+  }
+
+  private hotRetentionPrimaryKeyColumn(tableName: SqliteHotRetentionPlan["table"]): "id" | "node_id" | "task_id" {
+    if (tableName === "broker_workers") {
+      return "node_id";
+    }
+    if (tableName === "broker_tombstones") {
+      return "task_id";
+    }
+    return "id";
   }
 
   private runImmediateTransaction(fn: () => void): void {
