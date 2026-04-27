@@ -259,8 +259,19 @@ async function gateComposeSmoke({ edgeSecret, timeoutMs }) {
     const missing = expectedActions.filter(a => !auditActions.includes(a));
     if (missing.length) throw new Error(`missing audit actions: ${missing.join(', ')}`);
 
+    // 7. Prove live-impact approval lifecycle: blocked -> approved/queued -> worker success.
+    const approvalProof = await verifyApprovalLifecycle({
+      baseUrl,
+      edgeSecret,
+      workerId: 'echo-worker-1',
+      timeoutMs,
+    });
+    report.approvalLifecycle = approvalProof;
+
     report.ok = true;
-    console.log(`[compose] ✅ PASSED — ${auditActions.length} audit events`);
+    console.log(
+      `[compose] ✅ PASSED — ${auditActions.length} base audit events; approval lifecycle proved`,
+    );
     return { report, baseUrl, projectName, composeArgs };
 
   } finally {
@@ -276,6 +287,141 @@ async function gateComposeSmoke({ edgeSecret, timeoutMs }) {
     // clean override
     try { await run('rm', ['-rf', overrideDir]); } catch {}
   }
+}
+
+async function verifyApprovalLifecycle({ baseUrl, edgeSecret, workerId, timeoutMs }) {
+  const operator = { id: 'smoke-operator', kind: 'service', role: 'operator' };
+  const analyst = { id: 'smoke-analyst', kind: 'service', role: 'analyst' };
+  const report = {};
+
+  const approvedTaskId = randomUUID();
+  console.log(`[compose] seeding approval-gated task ${approvedTaskId.slice(0, 8)}…`);
+  const blocked = await requestJson(baseUrl, 'POST', '/tasks', {
+    requester: analyst,
+    edgeSecret,
+    body: {
+      id: approvedTaskId,
+      intent: 'promote_to_live',
+      requester: analyst,
+      target: { id: workerId, kind: 'node', role: 'analyst' },
+      assignedWorkerId: workerId,
+      message: 'release-gate approval lifecycle: approve path',
+    },
+  });
+  report.approveInitialStatus = blocked?.status;
+  if (blocked?.status !== 'blocked') {
+    throw new Error(`approval proof task did not block: ${blocked?.status}`);
+  }
+  if (blocked?.policyContext?.requiresApproval !== true) {
+    throw new Error('approval proof task missing requiresApproval policy context');
+  }
+
+  const approved = await requestJson(baseUrl, 'POST', `/tasks/${approvedTaskId}/approve`, {
+    requester: operator,
+    edgeSecret,
+    body: {
+      actor: operator,
+      approvalId: 'release-gate-approval',
+      reason: 'release gate approval lifecycle proof',
+    },
+  });
+  report.approveAfterDecisionStatus = approved?.status;
+  if (approved?.status !== 'queued') {
+    throw new Error(`approved task did not return to queued: ${approved?.status}`);
+  }
+  if (approved?.approvalOutcome?.status !== 'approved') {
+    throw new Error(`approved task missing approved outcome: ${JSON.stringify(approved?.approvalOutcome)}`);
+  }
+
+  const succeeded = await pollUntil(async () => {
+    try {
+      const t = await requestJson(baseUrl, 'GET', `/tasks/${approvedTaskId}`, {
+        requester: makeRequester('operator', 'compose-approval-poll'),
+        edgeSecret,
+      });
+      if (t?.status === 'succeeded') return t;
+    } catch {}
+    return null;
+  }, { intervalMs: 2000, timeoutMs, label: 'approved-task-succeeded' });
+  report.approveFinalStatus = succeeded?.status;
+
+  const approvedAudit = await requestJson(baseUrl, 'GET', `/audit?targetId=${approvedTaskId}`, {
+    requester: makeRequester('operator', 'compose-approval-audit'),
+    edgeSecret,
+  });
+  const approvedAuditActions = Array.isArray(approvedAudit?.items)
+    ? approvedAudit.items.map(i => i.action)
+    : [];
+  report.approveAuditActions = approvedAuditActions;
+  const expectedApprovedActions = [
+    'task.created',
+    'task.approved',
+    'task.claimed',
+    'task.started',
+    'task.succeeded',
+  ];
+  const missingApproved = expectedApprovedActions.filter(a => !approvedAuditActions.includes(a));
+  if (missingApproved.length) {
+    throw new Error(`approved task missing audit actions: ${missingApproved.join(', ')}`);
+  }
+
+  const rejectedTaskId = randomUUID();
+  console.log(`[compose] seeding rejected approval task ${rejectedTaskId.slice(0, 8)}…`);
+  const rejectBlocked = await requestJson(baseUrl, 'POST', '/tasks', {
+    requester: analyst,
+    edgeSecret,
+    body: {
+      id: rejectedTaskId,
+      intent: 'promote_to_live',
+      requester: analyst,
+      target: { id: workerId, kind: 'node', role: 'analyst' },
+      assignedWorkerId: workerId,
+      message: 'release-gate approval lifecycle: reject path',
+    },
+  });
+  report.rejectInitialStatus = rejectBlocked?.status;
+  if (rejectBlocked?.status !== 'blocked') {
+    throw new Error(`rejection proof task did not block: ${rejectBlocked?.status}`);
+  }
+
+  const rejected = await requestJson(baseUrl, 'POST', `/tasks/${rejectedTaskId}/reject-approval`, {
+    requester: operator,
+    edgeSecret,
+    body: {
+      actor: operator,
+      approvalId: 'release-gate-rejection',
+      status: 'rejected',
+      reason: 'release gate rejection lifecycle proof',
+    },
+  });
+  report.rejectFinalStatus = rejected?.status;
+  if (rejected?.status !== 'canceled') {
+    throw new Error(`rejected task did not cancel: ${rejected?.status}`);
+  }
+  if (rejected?.approvalOutcome?.status !== 'rejected') {
+    throw new Error(`rejected task missing rejected outcome: ${JSON.stringify(rejected?.approvalOutcome)}`);
+  }
+
+  // Give the echo worker a poll interval to prove the canceled task is not picked up.
+  await delay(2500);
+  const rejectedAudit = await requestJson(baseUrl, 'GET', `/audit?targetId=${rejectedTaskId}`, {
+    requester: makeRequester('operator', 'compose-rejection-audit'),
+    edgeSecret,
+  });
+  const rejectedAuditActions = Array.isArray(rejectedAudit?.items)
+    ? rejectedAudit.items.map(i => i.action)
+    : [];
+  report.rejectAuditActions = rejectedAuditActions;
+  if (!rejectedAuditActions.includes('task.approval_rejected')) {
+    throw new Error(`rejected task missing task.approval_rejected audit action: ${rejectedAuditActions.join(', ')}`);
+  }
+  const forbiddenRejectedActions = ['task.claimed', 'task.started', 'task.succeeded'];
+  const leakedRejectedActions = forbiddenRejectedActions.filter(a => rejectedAuditActions.includes(a));
+  if (leakedRejectedActions.length) {
+    throw new Error(`rejected task should not execute but saw: ${leakedRejectedActions.join(', ')}`);
+  }
+
+  return report;
 }
 
 // ---------------------------------------------------------------------------

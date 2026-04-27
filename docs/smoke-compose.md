@@ -140,6 +140,12 @@ Expected actions for a successful smoke:
 - `task.started`
 - `task.succeeded`
 
+The automated release gate (`npm run release_gate`) additionally exercises
+live-impact approval handling on this compose stack: an approved
+`promote_to_live` task must move `blocked → queued → succeeded`, while a
+rejected approval must move `blocked → canceled` without `task.claimed`,
+`task.started`, or `task.succeeded` audit actions.
+
 ## Tear down
 
 ```bash
