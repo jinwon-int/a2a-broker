@@ -631,6 +631,93 @@ test("SqliteBrokerStateStore save hints update dirty task and audit rows while p
   }
 });
 
+test("SqliteBrokerStateStore plans task hot-table retention from DB rows", () => {
+  const temp = withTempFile("state.sqlite");
+  try {
+    const oldFailed = {
+      ...makeTask("task-old-failed", "failed", "worker-a"),
+      completedAt: "2026-04-27T00:00:00.000Z",
+      updatedAt: "2026-04-27T00:00:00.000Z",
+    };
+    const oldSucceeded = {
+      ...makeTask("task-old-succeeded", "succeeded", "worker-a"),
+      completedAt: "2026-04-27T00:01:00.000Z",
+      updatedAt: "2026-04-27T00:01:00.000Z",
+    };
+    const oldProtected = {
+      ...makeTask("task-old-protected", "canceled", "worker-a"),
+      completedAt: "2026-04-27T00:02:00.000Z",
+      updatedAt: "2026-04-27T00:02:00.000Z",
+    };
+    const recentTerminal = {
+      ...makeTask("task-recent-terminal", "succeeded", "worker-a"),
+      completedAt: "2026-04-27T00:45:00.000Z",
+      updatedAt: "2026-04-27T00:45:00.000Z",
+    };
+    const running = {
+      ...makeTask("task-running-old", "running", "worker-a"),
+      updatedAt: "2026-04-27T00:00:00.000Z",
+    };
+    const store = new SqliteBrokerStateStore(temp.filePath);
+    store.save({
+      ...emptySnapshot(),
+      tasks: [oldFailed, oldSucceeded, oldProtected, recentTerminal, running],
+    });
+
+    const plan = store.planHotTaskRetention({
+      nowMs: Date.parse("2026-04-27T01:00:00.000Z"),
+      retentionMs: 30 * 60 * 1000,
+      maxTerminalRecords: 1,
+      protectedTaskIds: ["task-old-protected"],
+    });
+
+    assert.equal(plan.table, "broker_tasks");
+    assert.deepEqual(plan.pruneIds, ["task-old-failed"]);
+    assert.deepEqual(plan.retainedIds, [
+      "task-old-protected",
+      "task-old-succeeded",
+      "task-recent-terminal",
+      "task-running-old",
+    ]);
+    store.close();
+  } finally {
+    temp.cleanup();
+  }
+});
+
+test("SqliteBrokerStateStore plans audit hot-table retention with protected targets", () => {
+  const temp = withTempFile("state.sqlite");
+  try {
+    const oldPruned = makeAuditEvent("audit-old-pruned", "task.failed", "task-pruned", "2026-04-27T00:00:00.000Z");
+    const oldKeptByCap = makeAuditEvent("audit-old-kept", "task.succeeded", "task-kept", "2026-04-27T00:01:00.000Z");
+    const oldProtected = makeAuditEvent("audit-old-protected", "task.created", "task-protected", "2026-04-27T00:02:00.000Z");
+    const recent = makeAuditEvent("audit-recent", "task.claimed", "task-recent", "2026-04-27T00:45:00.000Z");
+    const store = new SqliteBrokerStateStore(temp.filePath);
+    store.save({
+      ...emptySnapshot(),
+      auditEvents: [oldPruned, oldKeptByCap, oldProtected, recent],
+    });
+
+    const plan = store.planHotAuditRetention({
+      nowMs: Date.parse("2026-04-27T01:00:00.000Z"),
+      retentionMs: 30 * 60 * 1000,
+      maxRecords: 1,
+      protectedIds: { taskIds: ["task-protected"] },
+    });
+
+    assert.equal(plan.table, "broker_audit_events");
+    assert.deepEqual(plan.pruneIds, ["audit-old-pruned"]);
+    assert.deepEqual(plan.retainedIds, [
+      "audit-old-kept",
+      "audit-old-protected",
+      "audit-recent",
+    ]);
+    store.close();
+  } finally {
+    temp.cleanup();
+  }
+});
+
 test("SqliteBrokerStateStore migrates v2 task hot table with task origin column", () => {
   const temp = withTempFile("state.sqlite");
   try {

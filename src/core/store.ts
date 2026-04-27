@@ -125,6 +125,37 @@ export interface SqliteWorkerHotTableFilters {
   role?: WorkerRecord["role"];
 }
 
+export interface SqliteHotRetentionPlan {
+  table: "broker_tasks" | "broker_audit_events";
+  cutoffMs: number;
+  retainedIds: string[];
+  pruneIds: string[];
+}
+
+export interface SqliteTaskHotRetentionPlanOptions {
+  nowMs?: number;
+  retentionMs: number;
+  maxTerminalRecords: number;
+  protectedTaskIds?: string[];
+}
+
+export interface SqliteAuditHotRetentionProtection {
+  proposalIds?: string[];
+  taskIds?: string[];
+  exchangeIds?: string[];
+  exchangeMessageIds?: string[];
+  artifactIds?: string[];
+  validationIds?: string[];
+  workerIds?: string[];
+}
+
+export interface SqliteAuditHotRetentionPlanOptions {
+  nowMs?: number;
+  retentionMs: number;
+  maxRecords: number;
+  protectedIds?: SqliteAuditHotRetentionProtection;
+}
+
 const SQLITE_SCHEMA_VERSION = 7;
 const SQLITE_HOT_ENTITY_TABLES = [
   "broker_exchanges",
@@ -733,6 +764,22 @@ export class SqliteBrokerStateStore implements BrokerStateStore {
     );
   }
 
+  planHotTaskRetention(options: SqliteTaskHotRetentionPlanOptions): SqliteHotRetentionPlan {
+    const records = this.db
+      .prepare("SELECT payload FROM broker_tasks")
+      .all()
+      .map((row) => parseHotEntityPayload(row, taskSchema, "broker_tasks")) as TaskRecord[];
+    return planTaskRetentionFromRecords(records, options);
+  }
+
+  planHotAuditRetention(options: SqliteAuditHotRetentionPlanOptions): SqliteHotRetentionPlan {
+    const records = this.db
+      .prepare("SELECT payload FROM broker_audit_events")
+      .all()
+      .map((row) => parseHotEntityPayload(row, auditEventSchema, "broker_audit_events")) as AuditEvent[];
+    return planAuditRetentionFromRecords(records, options);
+  }
+
   upsertHotTasks(tasks: TaskRecord[]): void {
     this.runImmediateTransaction(() => {
       this.upsertHotTasksUnsafe(tasks);
@@ -1249,6 +1296,132 @@ function countSnapshotEntities(snapshot: BrokerSnapshot): Record<string, number>
   return Object.fromEntries(
     Object.values(SQLITE_HOT_ENTITY_SNAPSHOT_KEYS).map((key) => [key, (snapshot[key] ?? []).length]),
   );
+}
+
+function planTaskRetentionFromRecords(
+  records: TaskRecord[],
+  options: SqliteTaskHotRetentionPlanOptions,
+): SqliteHotRetentionPlan {
+  const nowMs = options.nowMs ?? Date.now();
+  const cutoffMs = nowMs - options.retentionMs;
+  const retainedIds = new Set(options.protectedTaskIds ?? []);
+  const olderTerminalCandidates: Array<{ id: string; timestampMs: number }> = [];
+
+  for (const task of records) {
+    if (!isTerminalTaskStatus(task.status) || retainedIds.has(task.id)) {
+      retainedIds.add(task.id);
+      continue;
+    }
+    const timestampMs = parseRetentionTimestamp(task.completedAt ?? task.updatedAt);
+    if (timestampMs === null || timestampMs >= cutoffMs) {
+      retainedIds.add(task.id);
+      continue;
+    }
+    olderTerminalCandidates.push({ id: task.id, timestampMs });
+  }
+
+  [...olderTerminalCandidates]
+    .sort((a, b) => b.timestampMs - a.timestampMs || a.id.localeCompare(b.id))
+    .slice(0, options.maxTerminalRecords)
+    .forEach((entry) => retainedIds.add(entry.id));
+
+  return buildRetentionPlan("broker_tasks", cutoffMs, records.map((record) => record.id), retainedIds);
+}
+
+function planAuditRetentionFromRecords(
+  records: AuditEvent[],
+  options: SqliteAuditHotRetentionPlanOptions,
+): SqliteHotRetentionPlan {
+  const nowMs = options.nowMs ?? Date.now();
+  const cutoffMs = nowMs - options.retentionMs;
+  const retainedIds = new Set<string>();
+  const olderCandidates: Array<{ id: string; timestampMs: number }> = [];
+  const protectedIds = normalizeAuditRetentionProtection(options.protectedIds);
+
+  for (const event of records) {
+    const timestampMs = parseRetentionTimestamp(event.createdAt);
+    if (
+      isAuditEventProtected(event, protectedIds) ||
+      timestampMs === null ||
+      timestampMs >= cutoffMs
+    ) {
+      retainedIds.add(event.id);
+      continue;
+    }
+    olderCandidates.push({ id: event.id, timestampMs });
+  }
+
+  [...olderCandidates]
+    .sort((a, b) => b.timestampMs - a.timestampMs || a.id.localeCompare(b.id))
+    .slice(0, options.maxRecords)
+    .forEach((entry) => retainedIds.add(entry.id));
+
+  return buildRetentionPlan("broker_audit_events", cutoffMs, records.map((record) => record.id), retainedIds);
+}
+
+function buildRetentionPlan(
+  table: SqliteHotRetentionPlan["table"],
+  cutoffMs: number,
+  allIds: string[],
+  retainedIds: Set<string>,
+): SqliteHotRetentionPlan {
+  return {
+    table,
+    cutoffMs,
+    retainedIds: allIds.filter((id) => retainedIds.has(id)).sort(),
+    pruneIds: allIds.filter((id) => !retainedIds.has(id)).sort(),
+  };
+}
+
+function normalizeAuditRetentionProtection(
+  input: SqliteAuditHotRetentionProtection | undefined,
+): Required<Record<keyof SqliteAuditHotRetentionProtection, Set<string>>> {
+  return {
+    proposalIds: new Set(input?.proposalIds ?? []),
+    taskIds: new Set(input?.taskIds ?? []),
+    exchangeIds: new Set(input?.exchangeIds ?? []),
+    exchangeMessageIds: new Set(input?.exchangeMessageIds ?? []),
+    artifactIds: new Set(input?.artifactIds ?? []),
+    validationIds: new Set(input?.validationIds ?? []),
+    workerIds: new Set(input?.workerIds ?? []),
+  };
+}
+
+function isAuditEventProtected(
+  event: AuditEvent,
+  protectedIds: Required<Record<keyof SqliteAuditHotRetentionProtection, Set<string>>>,
+): boolean {
+  if (event.proposalId && protectedIds.proposalIds.has(event.proposalId)) {
+    return true;
+  }
+  switch (event.targetType) {
+    case "proposal":
+      return protectedIds.proposalIds.has(event.targetId);
+    case "artifact":
+      return protectedIds.artifactIds.has(event.targetId);
+    case "validation":
+      return protectedIds.validationIds.has(event.targetId);
+    case "worker":
+      return protectedIds.workerIds.has(event.targetId);
+    case "task":
+      return protectedIds.taskIds.has(event.targetId);
+    case "exchange":
+      return protectedIds.exchangeIds.has(event.targetId);
+    case "exchange-message":
+      return protectedIds.exchangeMessageIds.has(event.targetId);
+  }
+}
+
+function isTerminalTaskStatus(status: TaskRecord["status"]): boolean {
+  return status === "succeeded" || status === "failed" || status === "canceled";
+}
+
+function parseRetentionTimestamp(value: string | undefined): number | null {
+  if (!value) {
+    return null;
+  }
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : null;
 }
 
 function parseHotEntityPayload<T>(row: unknown, schema: z.ZodType<T>, tableName: string): T {
