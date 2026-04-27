@@ -38,6 +38,7 @@ import {
   SqliteProposalRuntimeRepository,
   SqliteTaskRuntimeRepository,
   SqliteTombstoneRuntimeRepository,
+  SqliteValidationRuntimeRepository,
   SqliteWorkerRuntimeRepository,
   type BrokerStateStore,
 } from "./core/store.js";
@@ -344,6 +345,9 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
         : undefined,
       artifactRepository: stateStore instanceof SqliteBrokerStateStore
         ? new SqliteArtifactRuntimeRepository(stateStore)
+        : undefined,
+      validationRepository: stateStore instanceof SqliteBrokerStateStore
+        ? new SqliteValidationRuntimeRepository(stateStore)
         : undefined,
       retention: retentionPolicy,
       maxRequeueAttempts,
@@ -1733,7 +1737,7 @@ function getProposalDetailsForReadPath(
   return {
     proposal,
     artifacts: broker.listArtifactsForProposal(proposalId),
-    validations: stateStore.readHotValidations({ proposalId }),
+    validations: broker.listValidationsForProposal(proposalId),
     audit: stateStore.readHotAuditEvents({ proposalId }),
   };
 }

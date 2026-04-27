@@ -23,6 +23,7 @@ import type { ExchangeMessageRuntimeRepository, ExchangeRuntimeRepository } from
 import type { ProposalRuntimeRepository } from "./proposal-repository.js";
 import type { TaskRuntimeRepository } from "./task-repository.js";
 import type { TombstoneRuntimeRepository } from "./tombstone-repository.js";
+import type { ValidationRuntimeRepository } from "./validation-repository.js";
 import type { WorkerRuntimeRepository } from "./worker-repository.js";
 import type {
   ApplyProposalRequest,
@@ -121,6 +122,8 @@ export interface InMemoryA2ABrokerOptions {
   proposalRepository?: ProposalRuntimeRepository;
   /** Optional table-native repository for proposal artifact metadata. */
   artifactRepository?: ArtifactRuntimeRepository;
+  /** Optional table-native repository for proposal validation results. */
+  validationRepository?: ValidationRuntimeRepository;
   retention?: Partial<BrokerRetentionPolicy>;
   /**
    * Maximum number of times the stale-task reaper (or manual requeue) is allowed to recycle a
@@ -242,6 +245,7 @@ export class InMemoryA2ABroker {
   private readonly exchangeMessageRepository?: ExchangeMessageRuntimeRepository;
   private readonly proposalRepository?: ProposalRuntimeRepository;
   private readonly artifactRepository?: ArtifactRuntimeRepository;
+  private readonly validationRepository?: ValidationRuntimeRepository;
 
   constructor(
     private readonly stateStore?: BrokerStateStore,
@@ -256,6 +260,7 @@ export class InMemoryA2ABroker {
     this.exchangeMessageRepository = options.exchangeMessageRepository;
     this.proposalRepository = options.proposalRepository;
     this.artifactRepository = options.artifactRepository;
+    this.validationRepository = options.validationRepository;
     this.retentionPolicy = normalizeBrokerRetentionPolicy(options.retention);
     this.maxRequeueAttempts = normalizeMaxRequeueAttempts(options.maxRequeueAttempts);
     this.maxBufferedEventsPerTask = options.maxBufferedEventsPerTask ?? 100;
@@ -1571,6 +1576,13 @@ export class InMemoryA2ABroker {
   }
 
   listValidationsForProposal(proposalId: string): ValidationResult[] {
+    const repositoryValidations = this.validationRepository?.listValidationsForProposal(proposalId);
+    if (repositoryValidations) {
+      for (const validation of repositoryValidations) {
+        this.validations.set(validation.id, validation);
+      }
+      return sortedCopy(repositoryValidations, sortNewestFirst);
+    }
     return sortedCopy(
       [...this.validations.values()].filter((validation) => validation.proposalId === proposalId),
       sortNewestFirst,
@@ -2164,6 +2176,7 @@ export class InMemoryA2ABroker {
   }
 
   private setValidationRecord(validation: ValidationResult): void {
+    this.validationRepository?.upsertValidation(structuredClone(validation));
     this.validations.set(validation.id, validation);
     this.pendingHotValidations.set(validation.id, structuredClone(validation));
   }

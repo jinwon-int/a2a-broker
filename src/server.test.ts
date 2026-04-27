@@ -1379,7 +1379,7 @@ test("server reads /proposals from SQLite hot tables when SQLite store is active
   }
 });
 
-test("server reads /proposals/:id details from SQLite hot paths and artifact repository seam", async () => {
+test("server reads /proposals/:id details from SQLite hot paths and artifact/validation repository seams", async () => {
   const dir = mkdtempSync(join(tmpdir(), "a2a-broker-sqlite-proposal-detail-"));
   const store = new SqliteBrokerStateStore(join(dir, "state.sqlite"));
   const snapshot: BrokerSnapshot = {
@@ -1447,9 +1447,6 @@ test("server reads /proposals/:id details from SQLite hot paths and artifact rep
     runtime.broker.getProposalDetails = (() => {
       throw new Error("/proposals/:id should use SQLite hot read path for proposal details");
     }) as typeof runtime.broker.getProposalDetails;
-    runtime.broker.listValidationsForProposal = (() => {
-      throw new Error("/proposals/:id should use SQLite hot read path for validations");
-    }) as typeof runtime.broker.listValidationsForProposal;
     runtime.server.listen(0, "127.0.0.1");
     await once(runtime.server, "listening");
     const address = runtime.server.address();
