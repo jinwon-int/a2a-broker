@@ -185,6 +185,30 @@ test("SqliteBrokerStateStore saves and reloads snapshots with WAL metadata", () 
         "broker_workers",
         "broker_audit_events",
       ],
+      hotEntityMirror: {
+        ok: true,
+        tableCounts: {
+          broker_exchanges: 1,
+          broker_exchange_messages: 1,
+          broker_proposals: 1,
+          broker_artifacts: 1,
+          broker_validations: 1,
+          broker_tasks: 1,
+          broker_workers: 1,
+          broker_audit_events: 1,
+        },
+        snapshotCounts: {
+          exchanges: 1,
+          exchangeMessages: 1,
+          proposals: 1,
+          artifacts: 1,
+          validations: 1,
+          tasks: 1,
+          workers: 1,
+          auditEvents: 1,
+        },
+        mismatches: [],
+      },
       importedFromJsonFile: undefined,
       lastImportAt: undefined,
     });
@@ -467,6 +491,43 @@ test("SqliteBrokerStateStore reads hot entities from mirrored tables with filter
       ["task-queued"],
     );
     store.close();
+  } finally {
+    temp.cleanup();
+  }
+});
+
+test("SqliteBrokerStateStore reports hot table mirror count drift", () => {
+  const temp = withTempFile("state.sqlite");
+  try {
+    const snapshot: BrokerSnapshot = {
+      ...emptySnapshot(),
+      tasks: [makeTask("task-counted", "queued", "worker-a")],
+    };
+
+    const store = new SqliteBrokerStateStore(temp.filePath);
+    store.save(snapshot);
+    assert.deepEqual(store.readHotEntityMirrorStatus().mismatches, []);
+    store.close();
+
+    const db = new DatabaseSync(temp.filePath);
+    try {
+      db.exec("DELETE FROM broker_tasks");
+    } finally {
+      db.close();
+    }
+
+    const reloaded = new SqliteBrokerStateStore(temp.filePath);
+    const status = reloaded.readHotEntityMirrorStatus();
+    assert.equal(status.ok, false);
+    assert.deepEqual(status.mismatches, [
+      {
+        table: "broker_tasks",
+        snapshotKey: "tasks",
+        tableCount: 0,
+        snapshotCount: 1,
+      },
+    ]);
+    reloaded.close();
   } finally {
     temp.cleanup();
   }
