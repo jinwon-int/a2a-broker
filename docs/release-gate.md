@@ -19,6 +19,9 @@ BROKER_URL=http://127.0.0.1:8787 BROKER_EDGE_SECRET=xxx \
 
 # Run compose smoke on a specific port
 PORT=19000 npm run release_gate
+
+# Run compose smoke against SQLite/WAL persistence mode
+BROKER_PERSISTENCE_BACKEND=sqlite npm run release_gate -- --skip-recovery
 ```
 
 ## What the Gate Covers
@@ -33,7 +36,8 @@ Brings up a fresh docker-compose stack with the echo worker and verifies:
 4. `POST /tasks` is accepted (`status: queued`)
 5. Task transitions to `succeeded` with result
 6. Audit trail contains: `task.created`, `task.claimed`, `task.started`, `task.succeeded`
-7. Live-impact approval lifecycle is proved:
+7. Optional SQLite/WAL persistence mode can be exercised by setting `BROKER_PERSISTENCE_BACKEND=sqlite`.
+8. Live-impact approval lifecycle is proved:
    - `promote_to_live` task starts as `blocked`
    - `POST /tasks/:id/approve` records an approved outcome and returns the task to `queued`
    - approved task is claimed and succeeds

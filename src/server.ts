@@ -29,6 +29,7 @@ import {
   CURRENT_BROKER_STATE_VERSION,
   DEFAULT_BROKER_STATE_MAX_BYTES,
   JsonFileBrokerStateStore,
+  SqliteBrokerStateStore,
   type BrokerStateStore,
 } from "./core/store.js";
 import type {
@@ -143,6 +144,8 @@ export interface BrokerServerOptions {
   serviceName?: string;
   publicBaseUrl?: string;
   stateFile?: string;
+  sqliteFile?: string;
+  persistenceBackend?: "json-file" | "sqlite";
   workerOfflineAfterSec?: number;
   rateLimitWindowSec?: number;
   rateLimitMaxRequests?: number;
@@ -207,6 +210,8 @@ export interface BrokerServerRuntime {
     serviceName: string;
     publicBaseUrl: string;
     stateFile: string;
+    sqliteFile?: string;
+    persistenceBackend: "json-file" | "sqlite";
     workerOfflineAfterSec: number;
     rateLimitWindowSec: number;
     rateLimitMaxRequests: number;
@@ -232,6 +237,9 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
   const serviceName = options.serviceName ?? process.env.SERVICE_NAME ?? "a2a-broker";
   const publicBaseUrl = resolvePublicBaseUrl(options.publicBaseUrl ?? process.env.PUBLIC_BASE_URL);
   const stateFile = options.stateFile ?? process.env.STATE_FILE ?? "/var/lib/a2a-broker/state.json";
+  const persistenceBackend =
+    options.persistenceBackend ?? normalizePersistenceBackend(process.env.BROKER_PERSISTENCE_BACKEND);
+  const sqliteFile = options.sqliteFile ?? process.env.SQLITE_STATE_FILE ?? process.env.BROKER_SQLITE_FILE;
   const workerOfflineAfterSec = options.workerOfflineAfterSec ?? Number(process.env.WORKER_OFFLINE_AFTER_SEC ?? 90);
   const rateLimitWindowSec = options.rateLimitWindowSec ?? Number(process.env.RATE_LIMIT_WINDOW_SEC ?? 60);
   const rateLimitMaxRequests = options.rateLimitMaxRequests ?? Number(process.env.RATE_LIMIT_MAX_REQUESTS ?? 10);
@@ -282,7 +290,13 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
     options.peerStatusEnabled ?? resolveBooleanEnv(process.env.A2A_PEER_STATUS_ENABLED, false);
 
   const stateStore =
-    options.stateStore ?? new JsonFileBrokerStateStore(stateFile, { maxBytes: maxSnapshotBytes });
+    options.stateStore ??
+    createDefaultStateStore({
+      backend: persistenceBackend,
+      stateFile,
+      sqliteFile,
+      maxSnapshotBytes,
+    });
   const broker =
     options.broker ??
     new InMemoryA2ABroker(stateStore, stateStore.load(), {
@@ -517,9 +531,8 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
           service: serviceName,
           publicBaseUrl,
           uptimeSec: Math.round(process.uptime()),
-          persistence: {
-            kind: "json-file",
-            stateFile,
+          persistence: stateStore.getPersistenceInfo?.() ?? {
+            kind: "custom",
             stateVersion: CURRENT_BROKER_STATE_VERSION,
           },
           workers: {
@@ -1171,6 +1184,8 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
       serviceName,
       publicBaseUrl,
       stateFile,
+      ...(sqliteFile ? { sqliteFile } : {}),
+      persistenceBackend,
       workerOfflineAfterSec,
       rateLimitWindowSec,
       rateLimitMaxRequests,
@@ -1267,6 +1282,29 @@ function resolveBooleanEnv(value: string | undefined, fallback: boolean): boolea
     return false;
   }
   return fallback;
+}
+
+function normalizePersistenceBackend(value: string | undefined): "json-file" | "sqlite" {
+  const normalized = value?.trim().toLowerCase();
+  if (normalized === "sqlite") {
+    return "sqlite";
+  }
+  return "json-file";
+}
+
+function createDefaultStateStore(params: {
+  backend: "json-file" | "sqlite";
+  stateFile: string;
+  sqliteFile?: string;
+  maxSnapshotBytes: number;
+}): BrokerStateStore {
+  if (params.backend === "sqlite") {
+    return new SqliteBrokerStateStore(params.sqliteFile ?? `${params.stateFile}.sqlite`, {
+      importJsonFile: params.stateFile,
+      maxBytes: params.maxSnapshotBytes,
+    });
+  }
+  return new JsonFileBrokerStateStore(params.stateFile, { maxBytes: params.maxSnapshotBytes });
 }
 
 function resolvePolicyNumber(

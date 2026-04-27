@@ -154,6 +154,9 @@ async function gateComposeSmoke({ edgeSecret, timeoutMs }) {
 
   const projectName = process.env.COMPOSE_PROJECT || `release-gate-${Date.now()}`;
   const port = parsePositiveInt(process.env.PORT, 0) || await findFreePort(18787);
+  const baseUrl = `http://127.0.0.1:${port}`;
+  const persistenceBackend = process.env.BROKER_PERSISTENCE_BACKEND?.trim();
+  const sqliteFile = process.env.BROKER_SQLITE_FILE?.trim() || '/var/lib/a2a-broker/state.sqlite';
 
   // Generate a temporary compose override. Compose merges sequence fields by
   // appending, so use the compose `!override` tag for ports; otherwise the
@@ -171,13 +174,18 @@ async function gateComposeSmoke({ edgeSecret, timeoutMs }) {
       `      - "127.0.0.1:${port}:8787"`,
       '    environment:',
       `      PUBLIC_BASE_URL: "http://127.0.0.1:${port}"`,
+      ...(persistenceBackend
+        ? [
+            `      BROKER_PERSISTENCE_BACKEND: "${persistenceBackend}"`,
+            `      BROKER_SQLITE_FILE: "${sqliteFile}"`,
+          ]
+        : []),
       '  echo-worker:',
       `    container_name: ${projectName}-echo-worker`,
       '',
     ].join('\n'),
   );
 
-  const baseUrl = `http://127.0.0.1:${port}`;
   let compose;
   const composeArgs = (sub) => [
     ...compose.args,
@@ -187,7 +195,13 @@ async function gateComposeSmoke({ edgeSecret, timeoutMs }) {
     sub,
   ];
 
-  const report = { gate: 'compose-smoke', ok: false, baseUrl, composeProject: projectName };
+  const report = {
+    gate: 'compose-smoke',
+    ok: false,
+    baseUrl,
+    composeProject: projectName,
+    ...(persistenceBackend ? { persistenceBackend } : {}),
+  };
 
   try {
     compose = await resolveComposeRunner();

@@ -1,5 +1,6 @@
-import { mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 
 import { z } from "zod";
 
@@ -34,11 +35,30 @@ export interface BrokerSnapshot {
 export interface BrokerStateStore {
   load(): BrokerSnapshot;
   save(snapshot: BrokerSnapshot): void;
+  getPersistenceInfo?(): BrokerPersistenceInfo;
+}
+
+export interface BrokerPersistenceInfo {
+  kind: string;
+  stateVersion: number;
+  schemaVersion?: number;
+  stateFile?: string;
+  dbFile?: string;
+  journalMode?: string;
+  importedFromJsonFile?: string;
+  lastImportAt?: string;
 }
 
 export interface JsonFileBrokerStateStoreOptions {
   maxBytes?: number;
 }
+
+export interface SqliteBrokerStateStoreOptions {
+  maxBytes?: number;
+  importJsonFile?: string;
+}
+
+const SQLITE_SCHEMA_VERSION = 1;
 
 const partyRefSchema = z
   .object({
@@ -397,6 +417,158 @@ export class JsonFileBrokerStateStore implements BrokerStateStore {
     writeFileSync(tempPath, payload, "utf8");
     renameSync(tempPath, this.filePath);
   }
+
+  getPersistenceInfo(): BrokerPersistenceInfo {
+    return {
+      kind: "json-file",
+      stateFile: this.filePath,
+      stateVersion: CURRENT_BROKER_STATE_VERSION,
+    };
+  }
+}
+
+export class SqliteBrokerStateStore implements BrokerStateStore {
+  private readonly maxBytes: number;
+  private readonly importJsonFile?: string;
+  private readonly db: DatabaseSync;
+  private readonly journalMode: string;
+
+  constructor(
+    private readonly dbFile: string,
+    options: SqliteBrokerStateStoreOptions = {},
+  ) {
+    this.maxBytes = Math.max(1, options.maxBytes ?? DEFAULT_BROKER_STATE_MAX_BYTES);
+    this.importJsonFile = options.importJsonFile;
+    if (dbFile !== ":memory:") {
+      mkdirSync(dirname(dbFile), { recursive: true });
+    }
+    this.db = new DatabaseSync(dbFile);
+    this.journalMode = this.initializeDatabase();
+  }
+
+  load(): BrokerSnapshot {
+    const row = this.db
+      .prepare("SELECT payload FROM broker_snapshots WHERE id = 1")
+      .get() as { payload?: string } | undefined;
+    if (typeof row?.payload === "string") {
+      return parseSnapshotPayload(row.payload, `SQLite broker snapshot at ${this.dbFile}`, this.maxBytes);
+    }
+
+    if (this.importJsonFile && existsSync(this.importJsonFile)) {
+      const imported = new JsonFileBrokerStateStore(this.importJsonFile, {
+        maxBytes: this.maxBytes,
+      }).load();
+      this.saveImportedJsonSnapshot(imported, this.importJsonFile);
+      return imported;
+    }
+
+    return emptySnapshot();
+  }
+
+  save(snapshot: BrokerSnapshot): void {
+    this.saveSnapshot(snapshot);
+  }
+
+  close(): void {
+    this.db.close();
+  }
+
+  getPersistenceInfo(): BrokerPersistenceInfo {
+    return {
+      kind: "sqlite",
+      dbFile: this.dbFile,
+      stateVersion: CURRENT_BROKER_STATE_VERSION,
+      schemaVersion: SQLITE_SCHEMA_VERSION,
+      journalMode: this.journalMode,
+      importedFromJsonFile: this.readMetadata("imported_from_json_file"),
+      lastImportAt: this.readMetadata("last_import_at"),
+    };
+  }
+
+  private initializeDatabase(): string {
+    const journal = this.db.prepare("PRAGMA journal_mode = WAL").get() as
+      | { journal_mode?: string }
+      | undefined;
+    this.db.exec(`
+      PRAGMA foreign_keys = ON;
+      CREATE TABLE IF NOT EXISTS broker_metadata (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS broker_snapshots (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        version INTEGER NOT NULL,
+        payload TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+    `);
+    this.writeMetadata("schema_version", String(SQLITE_SCHEMA_VERSION));
+    this.writeMetadata("state_version", String(CURRENT_BROKER_STATE_VERSION));
+    return journal?.journal_mode ?? "unknown";
+  }
+
+  private saveImportedJsonSnapshot(snapshot: BrokerSnapshot, jsonFile: string): void {
+    const importedAt = new Date().toISOString();
+    this.runImmediateTransaction(() => {
+      this.writeSnapshotRow(snapshot, importedAt);
+      this.writeMetadata("imported_from_json_file", jsonFile);
+      this.writeMetadata("last_import_at", importedAt);
+    });
+  }
+
+  private saveSnapshot(snapshot: BrokerSnapshot): void {
+    const updatedAt = new Date().toISOString();
+    this.runImmediateTransaction(() => {
+      this.writeSnapshotRow(snapshot, updatedAt);
+      this.writeMetadata("state_version", String(CURRENT_BROKER_STATE_VERSION));
+    });
+  }
+
+  private writeSnapshotRow(snapshot: BrokerSnapshot, updatedAt: string): void {
+    const payload = serializeSnapshot(snapshot, this.maxBytes);
+    this.db
+      .prepare(
+        `INSERT INTO broker_snapshots (id, version, payload, updated_at)
+         VALUES (1, ?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET
+           version = excluded.version,
+           payload = excluded.payload,
+           updated_at = excluded.updated_at`,
+      )
+      .run(CURRENT_BROKER_STATE_VERSION, payload, updatedAt);
+  }
+
+  private runImmediateTransaction(fn: () => void): void {
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      fn();
+      this.db.exec("COMMIT");
+    } catch (error) {
+      try {
+        this.db.exec("ROLLBACK");
+      } catch {
+        // Preserve the original error; rollback failure only confirms the write did not cleanly complete.
+      }
+      throw error;
+    }
+  }
+
+  private writeMetadata(key: string, value: string): void {
+    this.db
+      .prepare(
+        `INSERT INTO broker_metadata (key, value)
+         VALUES (?, ?)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+      )
+      .run(key, value);
+  }
+
+  private readMetadata(key: string): string | undefined {
+    const row = this.db
+      .prepare("SELECT value FROM broker_metadata WHERE key = ?")
+      .get(key) as { value?: string } | undefined;
+    return typeof row?.value === "string" ? row.value : undefined;
+  }
 }
 
 export function emptySnapshot(): BrokerSnapshot {
@@ -421,4 +593,34 @@ function isMissingFileError(error: unknown): boolean {
     "code" in error &&
     error.code === "ENOENT"
   );
+}
+
+function serializeSnapshot(snapshot: BrokerSnapshot, maxBytes: number): string {
+  const payload = JSON.stringify(
+    {
+      ...snapshot,
+      version: CURRENT_BROKER_STATE_VERSION,
+    },
+    null,
+    2,
+  );
+  const bytes = Buffer.byteLength(payload, "utf8");
+  if (bytes > maxBytes) {
+    throw new Error(`broker snapshot exceeds max size (${bytes} > ${maxBytes} bytes)`);
+  }
+  return payload;
+}
+
+function parseSnapshotPayload(payload: string, source: string, maxBytes: number): BrokerSnapshot {
+  const bytes = Buffer.byteLength(payload, "utf8");
+  if (bytes > maxBytes) {
+    throw new Error(`broker snapshot exceeds max size (${bytes} > ${maxBytes} bytes): ${source}`);
+  }
+  const parsed = brokerSnapshotSchema.safeParse(JSON.parse(payload));
+  if (!parsed.success) {
+    throw new Error(
+      `invalid broker snapshot at ${source}: ${parsed.error.issues[0]?.message ?? "unknown schema error"}`,
+    );
+  }
+  return parsed.data as BrokerSnapshot;
 }

@@ -157,6 +157,8 @@ If import fails:
 
 ## Acceptance criteria for the next persistence milestone
 
+Round 32 starts with an explicit opt-in SQLite/WAL snapshot backend. See `docs/sqlite-persistence.md` for the operator-facing configuration and import behavior. This first slice preserves the current snapshot-store contract so the public broker API remains stable while later slices can normalize hot entities into tables.
+
 The next persistence milestone should count as done only when all of these are true:
 
 ### Functional
