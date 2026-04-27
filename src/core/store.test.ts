@@ -9,8 +9,10 @@ import test from "node:test";
 import {
   CURRENT_BROKER_STATE_VERSION,
   JsonFileBrokerStateStore,
+  SqliteAuditRuntimeRepository,
   SqliteBrokerStateStore,
   SqliteTaskRuntimeRepository,
+  SqliteTombstoneRuntimeRepository,
   SqliteWorkerRuntimeRepository,
   buildHotEntityHintCoverage,
   emptySnapshot,
@@ -607,6 +609,59 @@ test("SqliteWorkerRuntimeRepository writes worker state directly to broker_worke
       ["worker-runtime"],
     );
     assert.deepEqual(store.load().workers, []);
+    store.close();
+  } finally {
+    temp.cleanup();
+  }
+});
+
+test("SqliteAuditRuntimeRepository writes audit events directly to broker_audit_events", () => {
+  const temp = withTempFile("state.sqlite");
+  try {
+    const store = new SqliteBrokerStateStore(temp.filePath);
+    const repository = new SqliteAuditRuntimeRepository(store);
+
+    repository.appendAuditEvent(makeAuditEvent("audit-runtime-created", "task.created", "task-runtime"));
+    repository.appendAuditEvent({
+      ...makeAuditEvent("audit-runtime-started", "task.started", "task-runtime", "2026-04-27T00:01:00.000Z"),
+      actorId: "worker-runtime",
+      proposalId: "proposal-runtime",
+    });
+
+    assert.deepEqual(
+      repository.listAuditEvents({ targetId: "task-runtime" }).map((event) => event.id),
+      ["audit-runtime-started", "audit-runtime-created"],
+    );
+    assert.deepEqual(
+      repository.listAuditEvents({ proposalId: "proposal-runtime", actorId: "worker-runtime", action: "task.started" }).map((event) => event.id),
+      ["audit-runtime-started"],
+    );
+    assert.deepEqual(store.load().auditEvents, []);
+    store.close();
+  } finally {
+    temp.cleanup();
+  }
+});
+
+test("SqliteTombstoneRuntimeRepository writes tombstones directly to broker_tombstones", () => {
+  const temp = withTempFile("state.sqlite");
+  try {
+    const store = new SqliteBrokerStateStore(temp.filePath);
+    const repository = new SqliteTombstoneRuntimeRepository(store);
+
+    repository.upsertTombstone(makeTombstone("task-runtime-old", "failed", "2026-04-27T00:01:00.000Z"));
+    repository.upsertTombstone({
+      ...makeTombstone("task-runtime-new", "dead_lettered", "2026-04-27T00:02:00.000Z"),
+      requeueCount: 3,
+      error: { code: "exceeded_requeue_limit", message: "dead lettered" },
+    });
+
+    assert.equal(repository.getTombstone("task-runtime-new")?.requeueCount, 3);
+    assert.deepEqual(
+      repository.listTombstones({ tombstoneReason: "dead_lettered", since: "2026-04-27T00:01:30.000Z" }).map((tombstone) => tombstone.taskId),
+      ["task-runtime-new"],
+    );
+    assert.deepEqual(store.load().tombstones, []);
     store.close();
   } finally {
     temp.cleanup();

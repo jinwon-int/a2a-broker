@@ -17,7 +17,9 @@ import {
 } from "./store.js";
 import { TaskEventStream } from "./task-event-stream.js";
 import { ConferenceRoomManager } from "./conference-room.js";
+import type { AuditRuntimeRepository } from "./audit-repository.js";
 import type { TaskRuntimeRepository } from "./task-repository.js";
+import type { TombstoneRuntimeRepository } from "./tombstone-repository.js";
 import type { WorkerRuntimeRepository } from "./worker-repository.js";
 import type {
   ApplyProposalRequest,
@@ -102,6 +104,10 @@ export interface BrokerRetentionPolicy {
 export interface InMemoryA2ABrokerOptions {
   /** Optional table-native repository for high-churn task lifecycle state. */
   taskRepository?: TaskRuntimeRepository;
+  /** Optional table-native repository for append-only audit diagnostics. */
+  auditRepository?: AuditRuntimeRepository;
+  /** Optional table-native repository for terminal task tombstones. */
+  tombstoneRepository?: TombstoneRuntimeRepository;
   /** Optional table-native repository for high-churn worker runtime state. */
   workerRepository?: WorkerRuntimeRepository;
   retention?: Partial<BrokerRetentionPolicy>;
@@ -218,6 +224,8 @@ export class InMemoryA2ABroker {
   private readonly taskEventStream: TaskEventStream;
   private readonly conferenceManager: ConferenceRoomManager;
   private readonly taskRepository?: TaskRuntimeRepository;
+  private readonly auditRepository?: AuditRuntimeRepository;
+  private readonly tombstoneRepository?: TombstoneRuntimeRepository;
   private readonly workerRepository?: WorkerRuntimeRepository;
 
   constructor(
@@ -226,6 +234,8 @@ export class InMemoryA2ABroker {
     options: InMemoryA2ABrokerOptions = {},
   ) {
     this.taskRepository = options.taskRepository;
+    this.auditRepository = options.auditRepository;
+    this.tombstoneRepository = options.tombstoneRepository;
     this.workerRepository = options.workerRepository;
     this.retentionPolicy = normalizeBrokerRetentionPolicy(options.retention);
     this.maxRequeueAttempts = normalizeMaxRequeueAttempts(options.maxRequeueAttempts);
@@ -1511,8 +1521,16 @@ export class InMemoryA2ABroker {
   }
 
   listAuditEvents(filters?: AuditListFilters): AuditEvent[] {
+    const eventsById = new Map(this.auditEvents);
+    if (this.auditRepository) {
+      const events = this.auditRepository.listAuditEvents(filters);
+      for (const event of events) {
+        this.auditEvents.set(event.id, event);
+        eventsById.set(event.id, event);
+      }
+    }
     return sortedCopy(
-      [...this.auditEvents.values()].filter((event) => {
+      [...eventsById.values()].filter((event) => {
         if (filters?.proposalId && event.proposalId !== filters.proposalId) {
           return false;
         }
@@ -2182,6 +2200,7 @@ export class InMemoryA2ABroker {
     };
 
     this.auditEvents.set(event.id, event);
+    this.auditRepository?.appendAuditEvent(structuredClone(event));
     this.pendingHotAuditEvents.set(event.id, structuredClone(event));
     if (event.targetType === "task") {
       const task = this.tasks.get(event.targetId);
@@ -2487,7 +2506,7 @@ export class InMemoryA2ABroker {
   ): TaskDiagnosticReport {
     const task = this.requireTask(taskId);
     return this.getTaskDiagnosticsForRecord(task, options, {
-      tombstone: this.tombstones.get(taskId),
+      tombstone: this.getTombstone(taskId),
     });
   }
 
@@ -2508,7 +2527,7 @@ export class InMemoryA2ABroker {
 
     const tombstone = overrides && "tombstone" in overrides
       ? overrides.tombstone ?? undefined
-      : this.tombstones.get(task.id);
+      : this.getTombstone(task.id) ?? undefined;
     const diagnosticStatus = computeTaskDiagnosticStatus(task, staleAfterMs, longRunningAfterMs, nowMs);
     const assignedWorker = overrides && "assignedWorker" in overrides
       ? overrides.assignedWorker ?? undefined
@@ -2520,7 +2539,7 @@ export class InMemoryA2ABroker {
       : false;
     const lastRequeueEvent = overrides && "lastRequeueEvent" in overrides
       ? overrides.lastRequeueEvent ?? undefined
-      : findLatestTaskAuditEvent(this.auditEvents.values(), task.id, "task.requeued");
+      : findLatestTaskAuditEvent(this.listAuditEvents({ targetId: task.id, action: "task.requeued" }), task.id, "task.requeued");
     const durableSignals = projectTaskDurableSignals({
       task,
       diagnosticStatus,
@@ -2610,12 +2629,25 @@ export class InMemoryA2ABroker {
 
   /** Get a tombstone by task ID. */
   getTombstone(taskId: string): TaskTombstone | null {
+    const repositoryTombstone = this.tombstoneRepository?.getTombstone(taskId);
+    if (repositoryTombstone) {
+      this.tombstones.set(repositoryTombstone.taskId, repositoryTombstone);
+      return repositoryTombstone;
+    }
     return this.tombstones.get(taskId) ?? null;
   }
 
   /** List tombstones with optional filters. */
   listTombstones(filters?: TombstoneListFilters): TaskTombstone[] {
-    const items = [...this.tombstones.values()].filter((ts) => {
+    const tombstonesByTaskId = new Map(this.tombstones);
+    if (this.tombstoneRepository) {
+      const tombstones = this.tombstoneRepository.listTombstones(filters);
+      for (const tombstone of tombstones) {
+        this.tombstones.set(tombstone.taskId, tombstone);
+        tombstonesByTaskId.set(tombstone.taskId, tombstone);
+      }
+    }
+    const items = [...tombstonesByTaskId.values()].filter((ts) => {
       if (filters?.taskId && ts.taskId !== filters.taskId) return false;
       if (filters?.tombstoneReason && ts.tombstoneReason !== filters.tombstoneReason) return false;
       if (filters?.terminalStatus && ts.terminalStatus !== filters.terminalStatus) return false;
@@ -2649,6 +2681,7 @@ export class InMemoryA2ABroker {
     };
 
     this.tombstones.set(task.id, tombstone);
+    this.tombstoneRepository?.upsertTombstone(structuredClone(tombstone));
     this.pendingHotTombstones.set(task.id, structuredClone(tombstone));
     this.appendAuditEvent({
       actorId: context?.actorId ?? "broker",
