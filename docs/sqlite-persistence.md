@@ -225,6 +225,14 @@ This slice is still snapshot-compatible for broker runtime load, but SQLite also
 
 The SQLite store also exposes task/audit/worker hot-table retention planning helpers. These compute retained/prunable row ids from the hot tables with the same cutoff/newest-cap/protected-target shape used by broker retention. Verified plans can be applied to prune task/audit/worker hot rows directly in SQLite; canonical snapshot retention remains the source of truth until broader runtime paths move fully into dedicated repositories.
 
+## Round 36 slice 1 hot runtime projection
+
+SQLite now has a tested hot-table runtime snapshot projection primitive that can
+reconstruct a `BrokerSnapshot`-shaped view from the 9 mirrored hot tables. This
+is a proof point for a future cold-start hydration cutover: default `load()`
+remains canonical-snapshot owned in this slice, and JSON export/import behavior
+is unchanged.
+
 ## Current limitation
 
 The snapshot remains export-compatible and continues to be written and loaded for

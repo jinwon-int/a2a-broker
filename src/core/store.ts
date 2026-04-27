@@ -648,6 +648,21 @@ export class SqliteBrokerStateStore implements BrokerStateStore {
     this.saveSnapshot(snapshot, hints);
   }
 
+  readHotRuntimeSnapshot(): BrokerSnapshot {
+    return {
+      version: CURRENT_BROKER_STATE_VERSION,
+      exchanges: this.readHotExchanges(),
+      exchangeMessages: this.readHotExchangeMessages(),
+      proposals: this.readHotProposals(),
+      artifacts: this.readHotArtifacts(),
+      validations: this.readHotValidations(),
+      auditEvents: this.readHotAuditEvents(),
+      workers: this.readHotWorkers(),
+      tasks: this.readHotTasks(),
+      tombstones: this.readHotTombstones(),
+    };
+  }
+
   readHotTasks(filters: SqliteTaskHotTableFilters = {}): TaskRecord[] {
     const { sql, params } = buildHotTableSelect(
       "broker_tasks",
