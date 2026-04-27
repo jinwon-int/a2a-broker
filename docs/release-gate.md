@@ -36,7 +36,7 @@ Brings up a fresh docker-compose stack with the echo worker and verifies:
 4. `POST /tasks` is accepted (`status: queued`)
 5. Task transitions to `succeeded` with result
 6. Audit trail contains: `task.created`, `task.claimed`, `task.started`, `task.succeeded`
-7. Optional SQLite/WAL persistence mode can be exercised by setting `BROKER_PERSISTENCE_BACKEND=sqlite`.
+7. Optional SQLite/WAL persistence mode can be exercised by setting `BROKER_PERSISTENCE_BACKEND=sqlite`. In SQLite mode, the compose gate also runs the runtime-image JSON export script and verifies the exported snapshot contains the seeded task.
 8. Live-impact approval lifecycle is proved:
    - `promote_to_live` task starts as `blocked`
    - `POST /tasks/:id/approve` records an approved outcome and returns the task to `queued`

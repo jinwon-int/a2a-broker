@@ -290,6 +290,16 @@ async function gateComposeSmoke({ edgeSecret, timeoutMs }) {
     });
     report.approvalLifecycle = approvalProof;
 
+    if (persistenceBackend === 'sqlite') {
+      console.log('[compose] verifying SQLite JSON export from runtime image…');
+      report.sqliteExport = await verifySqliteExport({
+        compose,
+        composeArgs,
+        sqliteFile,
+        expectedTaskIds: [taskId],
+      });
+    }
+
     report.ok = true;
     console.log(
       `[compose] ✅ PASSED — ${auditActions.length} base audit events; approval lifecycle proved`,
@@ -309,6 +319,40 @@ async function gateComposeSmoke({ edgeSecret, timeoutMs }) {
     // clean override
     try { await run('rm', ['-rf', overrideDir]); } catch {}
   }
+}
+
+async function verifySqliteExport({ compose, composeArgs, sqliteFile, expectedTaskIds }) {
+  const { stdout } = await run(compose.cmd, [
+    ...composeArgs('exec'),
+    '-T',
+    'a2a-broker',
+    'node',
+    'scripts/export-sqlite-state.mjs',
+    '--db',
+    sqliteFile,
+  ]);
+  let snapshot;
+  try {
+    snapshot = JSON.parse(stdout);
+  } catch (error) {
+    throw new Error(`SQLite export did not produce JSON: ${error instanceof Error ? error.message : String(error)}`);
+  }
+
+  const tasks = Array.isArray(snapshot.tasks) ? snapshot.tasks : [];
+  const auditEvents = Array.isArray(snapshot.auditEvents) ? snapshot.auditEvents : [];
+  const missingTaskIds = expectedTaskIds.filter((id) => !tasks.some((task) => task?.id === id));
+  if (missingTaskIds.length) {
+    throw new Error(`SQLite export missing task ids: ${missingTaskIds.join(', ')}`);
+  }
+  if (snapshot.version !== 7) {
+    throw new Error(`SQLite export used unexpected snapshot version: ${snapshot.version}`);
+  }
+  return {
+    version: snapshot.version,
+    taskCount: tasks.length,
+    auditEventCount: auditEvents.length,
+    verifiedTaskIds: expectedTaskIds,
+  };
 }
 
 async function verifyApprovalLifecycle({ baseUrl, edgeSecret, workerId, timeoutMs }) {
