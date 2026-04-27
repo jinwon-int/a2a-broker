@@ -304,6 +304,7 @@ async function gateComposeSmoke({ edgeSecret, timeoutMs }) {
         composeArgs,
         sqliteFile,
         expectedTaskIds: [taskId],
+        expectedWorkerIds: ['echo-worker-1'],
       });
     }
 
@@ -362,12 +363,30 @@ async function verifySqliteExport({ compose, composeArgs, sqliteFile, expectedTa
   };
 }
 
-async function verifySqliteRetentionPlans({ compose, composeArgs, sqliteFile, expectedTaskIds }) {
+async function verifySqliteRetentionPlans({ compose, composeArgs, sqliteFile, expectedTaskIds, expectedWorkerIds }) {
+  const staleWorkerId = `release-gate-stale-worker-${Date.now()}`;
   const code = `
     import { SqliteBrokerStateStore } from './dist/core/store.js';
     const store = new SqliteBrokerStateStore(process.argv[1]);
     try {
       const nowMs = Date.now() + 1000;
+      const expectedWorkerIds = JSON.parse(process.argv[2]);
+      const staleWorkerId = process.argv[3];
+      store.upsertHotWorkers([{
+        nodeId: staleWorkerId,
+        role: 'analyst',
+        capabilities: {
+          canAnalyze: true,
+          canBackfill: false,
+          canPatchWorkspace: false,
+          canPromoteLive: false,
+          workspaceIds: ['release-gate'],
+          environments: ['research'],
+        },
+        createdAt: '2000-01-01T00:00:00.000Z',
+        updatedAt: '2000-01-01T00:00:00.000Z',
+        lastSeenAt: '2000-01-01T00:00:00.000Z',
+      }]);
       const taskPlan = store.planHotTaskRetention({
         nowMs,
         retentionMs: 0,
@@ -378,9 +397,15 @@ async function verifySqliteRetentionPlans({ compose, composeArgs, sqliteFile, ex
         retentionMs: 0,
         maxRecords: 1,
       });
-      const [taskApply, auditApply] = store.applyHotRetentionPlans([taskPlan, auditPlan]);
+      const workerPlan = store.planHotWorkerRetention({
+        nowMs,
+        retentionMs: 0,
+        maxInactiveWorkers: 0,
+        protectedWorkerIds: expectedWorkerIds,
+      });
+      const [taskApply, auditApply, workerApply] = store.applyHotRetentionPlans([taskPlan, auditPlan, workerPlan]);
       const afterCounts = store.readHotEntityTableCounts();
-      process.stdout.write(JSON.stringify({ taskPlan, auditPlan, taskApply, auditApply, afterCounts }));
+      process.stdout.write(JSON.stringify({ taskPlan, auditPlan, workerPlan, taskApply, auditApply, workerApply, afterCounts, staleWorkerId }));
     } finally {
       store.close();
     }
@@ -394,6 +419,8 @@ async function verifySqliteRetentionPlans({ compose, composeArgs, sqliteFile, ex
     '-e',
     code,
     sqliteFile,
+    JSON.stringify(expectedWorkerIds),
+    staleWorkerId,
   ]);
   let plans;
   try {
@@ -406,6 +433,8 @@ async function verifySqliteRetentionPlans({ compose, composeArgs, sqliteFile, ex
   const auditPlan = plans?.auditPlan;
   const taskApply = plans?.taskApply;
   const auditApply = plans?.auditApply;
+  const workerPlan = plans?.workerPlan;
+  const workerApply = plans?.workerApply;
   if (taskPlan?.table !== 'broker_tasks') {
     throw new Error(`unexpected task retention plan table: ${taskPlan?.table}`);
   }
@@ -438,6 +467,23 @@ async function verifySqliteRetentionPlans({ compose, composeArgs, sqliteFile, ex
   if (auditApply?.table !== 'broker_audit_events' || auditApply.prunedCount < 1) {
     throw new Error(`SQLite audit retention apply did not prune rows: ${JSON.stringify(auditApply)}`);
   }
+  if (workerPlan?.table !== 'broker_workers') {
+    throw new Error(`unexpected worker retention plan table: ${workerPlan?.table}`);
+  }
+  const plannedWorkerIds = new Set([
+    ...(Array.isArray(workerPlan.retainedIds) ? workerPlan.retainedIds : []),
+    ...(Array.isArray(workerPlan.pruneIds) ? workerPlan.pruneIds : []),
+  ]);
+  const missingWorkerIds = expectedWorkerIds.filter((id) => !plannedWorkerIds.has(id));
+  if (missingWorkerIds.length) {
+    throw new Error(`SQLite worker retention plan missing worker ids: ${missingWorkerIds.join(', ')}`);
+  }
+  if (!Array.isArray(workerPlan.pruneIds) || !workerPlan.pruneIds.includes(staleWorkerId)) {
+    throw new Error('SQLite worker retention plan did not include synthetic stale worker');
+  }
+  if (workerApply?.table !== 'broker_workers' || workerApply.prunedCount < 1) {
+    throw new Error(`SQLite worker retention apply did not prune rows: ${JSON.stringify(workerApply)}`);
+  }
   return {
     task: {
       retainedCount: taskPlan.retainedIds.length,
@@ -451,6 +497,13 @@ async function verifySqliteRetentionPlans({ compose, composeArgs, sqliteFile, ex
       pruneCount: auditPlan.pruneIds.length,
       prunedCount: auditApply.prunedCount,
       remainingCount: auditApply.remainingCount,
+    },
+    worker: {
+      retainedCount: workerPlan.retainedIds.length,
+      pruneCount: workerPlan.pruneIds.length,
+      prunedCount: workerApply.prunedCount,
+      remainingCount: workerApply.remainingCount,
+      verifiedWorkerIds: expectedWorkerIds,
     },
   };
 }

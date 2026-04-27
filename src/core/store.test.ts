@@ -804,6 +804,105 @@ test("SqliteBrokerStateStore save hints prune missing task and audit rows throug
   }
 });
 
+test("SqliteBrokerStateStore supports worker hot-table upserts and retention plans", () => {
+  const temp = withTempFile("state.sqlite");
+  try {
+    const oldPruned = makeWorker("worker-old-pruned");
+    const oldKeptByCap = {
+      ...makeWorker("worker-old-kept"),
+      lastSeenAt: "2026-04-27T00:01:00.000Z",
+      updatedAt: "2026-04-27T00:01:00.000Z",
+    };
+    const oldProtected = {
+      ...makeWorker("worker-old-protected"),
+      lastSeenAt: "2026-04-27T00:02:00.000Z",
+      updatedAt: "2026-04-27T00:02:00.000Z",
+    };
+    const recent = {
+      ...makeWorker("worker-recent"),
+      lastSeenAt: "2026-04-27T00:45:00.000Z",
+      updatedAt: "2026-04-27T00:45:00.000Z",
+    };
+    const store = new SqliteBrokerStateStore(temp.filePath);
+    store.save({
+      ...emptySnapshot(),
+      workers: [oldPruned, oldKeptByCap, oldProtected, recent],
+    });
+
+    const updatedRecent = {
+      ...recent,
+      displayName: "recent worker",
+      lastSeenAt: "2026-04-27T00:50:00.000Z",
+      updatedAt: "2026-04-27T00:50:00.000Z",
+    };
+    store.upsertHotWorkers([updatedRecent]);
+    assert.equal(store.readHotWorkers({ nodeId: "worker-recent" })[0]?.displayName, "recent worker");
+
+    const plan = store.planHotWorkerRetention({
+      nowMs: Date.parse("2026-04-27T01:00:00.000Z"),
+      retentionMs: 30 * 60 * 1000,
+      maxInactiveWorkers: 1,
+      protectedWorkerIds: ["worker-old-protected"],
+    });
+    assert.equal(plan.table, "broker_workers");
+    assert.deepEqual(plan.pruneIds, ["worker-old-pruned"]);
+    assert.deepEqual(plan.retainedIds, ["worker-old-kept", "worker-old-protected", "worker-recent"]);
+
+    const result = store.applyHotRetentionPlan(plan);
+    assert.deepEqual(result, {
+      table: "broker_workers",
+      retainedCount: 3,
+      requestedPruneCount: 1,
+      prunedCount: 1,
+      remainingCount: 3,
+    });
+    assert.deepEqual(store.readHotWorkers().map((worker) => worker.nodeId).sort(), [
+      "worker-old-kept",
+      "worker-old-protected",
+      "worker-recent",
+    ]);
+    store.close();
+  } finally {
+    temp.cleanup();
+  }
+});
+
+test("SqliteBrokerStateStore save hints update dirty worker rows and prune missing workers", () => {
+  const temp = withTempFile("state.sqlite");
+  try {
+    const store = new SqliteBrokerStateStore(temp.filePath);
+    const workerKeep = makeWorker("worker-keep");
+    const workerPrune = makeWorker("worker-prune");
+    store.save({
+      ...emptySnapshot(),
+      workers: [workerKeep, workerPrune],
+    });
+
+    const dirtyWorker = {
+      ...workerKeep,
+      displayName: "kept worker",
+      lastSeenAt: "2026-04-27T00:03:00.000Z",
+      updatedAt: "2026-04-27T00:03:00.000Z",
+    };
+    store.save(
+      {
+        ...emptySnapshot(),
+        workers: [dirtyWorker],
+      },
+      {
+        hotWorkers: [dirtyWorker],
+      },
+    );
+
+    assert.deepEqual(store.readHotWorkers().map((worker) => worker.nodeId), ["worker-keep"]);
+    assert.equal(store.readHotWorkers({ nodeId: "worker-keep" })[0]?.displayName, "kept worker");
+    assert.equal(store.readHotEntityMirrorStatus().ok, true);
+    store.close();
+  } finally {
+    temp.cleanup();
+  }
+});
+
 test("SqliteBrokerStateStore migrates v2 task hot table with task origin column", () => {
   const temp = withTempFile("state.sqlite");
   try {

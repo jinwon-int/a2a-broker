@@ -109,9 +109,9 @@ For restore, stop the broker, place those files back under the configured path, 
 
 ## Runtime hot rows and retention planning
 
-This slice is still snapshot-first for broker runtime load, but SQLite also maintains normalized hot-entity inspection tables for public read paths in the same transaction as the snapshot write. Runtime task and audit mutations now pass dirty hot-entity hints into state saves, and the SQLite store uses those hints to upsert changed task/audit rows while preserving retained rows and pruning rows absent from the canonical snapshot.
+This slice is still snapshot-first for broker runtime load, but SQLite also maintains normalized hot-entity inspection tables for public read paths in the same transaction as the snapshot write. Runtime task, audit, and worker mutations now pass dirty hot-entity hints into state saves, and the SQLite store uses those hints to upsert changed hot rows while preserving retained rows and pruning rows absent from the canonical snapshot.
 
-The SQLite store also exposes task/audit hot-table retention planning helpers. These compute retained/prunable row ids from the hot tables with the same cutoff/newest-cap/protected-target shape used by broker retention. Verified plans can be applied to prune task/audit hot rows directly in SQLite; canonical snapshot retention remains the source of truth until broader runtime paths move fully into dedicated repositories.
+The SQLite store also exposes task/audit/worker hot-table retention planning helpers. These compute retained/prunable row ids from the hot tables with the same cutoff/newest-cap/protected-target shape used by broker retention. Verified plans can be applied to prune task/audit/worker hot rows directly in SQLite; canonical snapshot retention remains the source of truth until broader runtime paths move fully into dedicated repositories.
 
 ## Current limitation
 
