@@ -277,6 +277,14 @@ test("SqliteBrokerStateStore reads hot entities from mirrored tables with filter
       ["worker-a", "worker-b"],
     );
     assert.deepEqual(
+      store.readHotWorkers({ nodeId: "worker-b" }).map((worker) => worker.nodeId),
+      ["worker-b"],
+    );
+    assert.deepEqual(
+      store.readHotWorkers({ role: "analyst" }).map((worker) => worker.nodeId),
+      ["worker-a", "worker-b"],
+    );
+    assert.deepEqual(
       store.readHotAuditEvents({ targetId: "task-running" }).map((event) => event.id),
       ["audit-2"],
     );

@@ -76,6 +76,11 @@ export interface SqliteAuditHotTableFilters {
   targetId?: string;
 }
 
+export interface SqliteWorkerHotTableFilters {
+  nodeId?: string;
+  role?: WorkerRecord["role"];
+}
+
 const SQLITE_SCHEMA_VERSION = 3;
 const SQLITE_HOT_ENTITY_TABLES = ["broker_tasks", "broker_workers", "broker_audit_events"];
 
@@ -507,10 +512,18 @@ export class SqliteBrokerStateStore implements BrokerStateStore {
       .map((row) => parseHotEntityPayload(row, taskSchema, "broker_tasks")) as TaskRecord[];
   }
 
-  readHotWorkers(): WorkerRecord[] {
+  readHotWorkers(filters: SqliteWorkerHotTableFilters = {}): WorkerRecord[] {
+    const { sql, params } = buildHotTableSelect(
+      "broker_workers",
+      [
+        ["node_id", filters.nodeId],
+        ["role", filters.role],
+      ],
+      "last_seen_at DESC, node_id ASC",
+    );
     return this.db
-      .prepare("SELECT payload FROM broker_workers ORDER BY node_id ASC")
-      .all()
+      .prepare(sql)
+      .all(...params)
       .map((row) => parseHotEntityPayload(row, workerSchema, "broker_workers")) as WorkerRecord[];
   }
 
@@ -807,7 +820,7 @@ function parseSnapshotPayload(payload: string, source: string, maxBytes: number)
 }
 
 function buildHotTableSelect(
-  tableName: "broker_tasks" | "broker_audit_events",
+  tableName: "broker_tasks" | "broker_workers" | "broker_audit_events",
   filters: Array<[string, string | undefined]>,
   orderBy: string,
 ): { sql: string; params: string[] } {
