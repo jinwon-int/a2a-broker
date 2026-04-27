@@ -57,9 +57,19 @@ export interface BrokerPersistenceInfo {
   dbFile?: string;
   journalMode?: string;
   hotEntityTables?: string[];
+  hotEntityHintTables?: string[];
+  hotEntityHintCoverage?: BrokerHotEntityHintCoverage;
   hotEntityMirror?: BrokerHotEntityMirrorStatus;
   importedFromJsonFile?: string;
   lastImportAt?: string;
+}
+
+export interface BrokerHotEntityHintCoverage {
+  ok: boolean;
+  supportedTables: string[];
+  missingTables: string[];
+  supportedCount: number;
+  totalCount: number;
 }
 
 export interface BrokerHotEntityMirrorStatus {
@@ -188,6 +198,7 @@ const SQLITE_HOT_ENTITY_TABLES = [
   "broker_workers",
   "broker_audit_events",
 ] as const;
+const SQLITE_HOT_ENTITY_HINT_TABLES = [...SQLITE_HOT_ENTITY_TABLES] as const;
 type SqliteHotEntityTable = typeof SQLITE_HOT_ENTITY_TABLES[number];
 type BrokerSnapshotArrayKey = Exclude<{
   [K in keyof BrokerSnapshot]: BrokerSnapshot[K] extends unknown[] | undefined ? K : never;
@@ -738,9 +749,24 @@ export class SqliteBrokerStateStore implements BrokerStateStore {
       schemaVersion: SQLITE_SCHEMA_VERSION,
       journalMode: this.journalMode,
       hotEntityTables: [...SQLITE_HOT_ENTITY_TABLES],
+      hotEntityHintTables: [...SQLITE_HOT_ENTITY_HINT_TABLES],
+      hotEntityHintCoverage: this.readHotEntityHintCoverage(),
       hotEntityMirror: this.readHotEntityMirrorStatus(),
       importedFromJsonFile: this.readMetadata("imported_from_json_file"),
       lastImportAt: this.readMetadata("last_import_at"),
+    };
+  }
+
+  readHotEntityHintCoverage(): BrokerHotEntityHintCoverage {
+    const supportedTables = [...SQLITE_HOT_ENTITY_HINT_TABLES];
+    const supported = new Set(supportedTables);
+    const missingTables = SQLITE_HOT_ENTITY_TABLES.filter((table) => !supported.has(table));
+    return {
+      ok: missingTables.length === 0,
+      supportedTables,
+      missingTables,
+      supportedCount: supportedTables.length,
+      totalCount: SQLITE_HOT_ENTITY_TABLES.length,
     };
   }
 
