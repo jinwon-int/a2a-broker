@@ -17,6 +17,7 @@ import {
 } from "./store.js";
 import { TaskEventStream } from "./task-event-stream.js";
 import { ConferenceRoomManager } from "./conference-room.js";
+import type { TaskRuntimeRepository } from "./task-repository.js";
 import type { WorkerRuntimeRepository } from "./worker-repository.js";
 import type {
   ApplyProposalRequest,
@@ -99,6 +100,8 @@ export interface BrokerRetentionPolicy {
 }
 
 export interface InMemoryA2ABrokerOptions {
+  /** Optional table-native repository for high-churn task lifecycle state. */
+  taskRepository?: TaskRuntimeRepository;
   /** Optional table-native repository for high-churn worker runtime state. */
   workerRepository?: WorkerRuntimeRepository;
   retention?: Partial<BrokerRetentionPolicy>;
@@ -214,6 +217,7 @@ export class InMemoryA2ABroker {
   private readonly maxBufferedEventsPerTask: number;
   private readonly taskEventStream: TaskEventStream;
   private readonly conferenceManager: ConferenceRoomManager;
+  private readonly taskRepository?: TaskRuntimeRepository;
   private readonly workerRepository?: WorkerRuntimeRepository;
 
   constructor(
@@ -221,6 +225,7 @@ export class InMemoryA2ABroker {
     snapshot?: BrokerSnapshot,
     options: InMemoryA2ABrokerOptions = {},
   ) {
+    this.taskRepository = options.taskRepository;
     this.workerRepository = options.workerRepository;
     this.retentionPolicy = normalizeBrokerRetentionPolicy(options.retention);
     this.maxRequeueAttempts = normalizeMaxRequeueAttempts(options.maxRequeueAttempts);
@@ -861,7 +866,7 @@ export class InMemoryA2ABroker {
 
     // Idempotent create: if a task with the requested id already exists, return it as-is.
     if (request.id) {
-      const existing = this.tasks.get(request.id);
+      const existing = this.getTask(request.id);
       if (existing) {
         return existing;
       }
@@ -1023,38 +1028,25 @@ export class InMemoryA2ABroker {
   }
 
   getTask(id: string): TaskRecord | null {
+    const repositoryTask = this.taskRepository?.getTask(id);
+    if (repositoryTask) {
+      const task = normalizeTaskRecord(repositoryTask);
+      this.tasks.set(task.id, task);
+      return task;
+    }
     return this.tasks.get(id) ?? null;
   }
 
   listTasks(filters?: TaskListFilters): TaskRecord[] {
+    const tasksById = new Map(this.tasks);
+    if (this.taskRepository) {
+      for (const repositoryTask of this.taskRepository.listTasks(filters).map(normalizeTaskRecord)) {
+        this.tasks.set(repositoryTask.id, repositoryTask);
+        tasksById.set(repositoryTask.id, repositoryTask);
+      }
+    }
     return sortedCopy(
-      [...this.tasks.values()].filter((task) => {
-        if (filters?.exchangeId && task.exchangeId !== filters.exchangeId) {
-          return false;
-        }
-        if (filters?.status && task.status !== filters.status) {
-          return false;
-        }
-        if (filters?.targetNodeId && task.targetNodeId !== filters.targetNodeId) {
-          return false;
-        }
-        if (filters?.proposalId && task.proposalId !== filters.proposalId) {
-          return false;
-        }
-        if (filters?.intent && task.intent !== filters.intent) {
-          return false;
-        }
-        if (filters?.claimedBy && task.claimedBy !== filters.claimedBy) {
-          return false;
-        }
-        if (filters?.assignedWorkerId && task.assignedWorkerId !== filters.assignedWorkerId) {
-          return false;
-        }
-        if (filters?.taskOrigin && (task.taskOrigin ?? "unknown") !== filters.taskOrigin) {
-          return false;
-        }
-        return true;
-      }),
+      [...tasksById.values()].filter((task) => taskMatchesFilters(task, filters)),
       sortNewestFirst,
     );
   }
@@ -2065,6 +2057,7 @@ export class InMemoryA2ABroker {
   }
 
   private setTaskRecord(task: TaskRecord): void {
+    this.taskRepository?.upsertTask(structuredClone(task));
     this.tasks.set(task.id, task);
     this.pendingHotTasks.set(task.id, structuredClone(task));
   }
@@ -2224,7 +2217,7 @@ export class InMemoryA2ABroker {
   }
 
   private requireTask(id: string): TaskRecord {
-    const task = this.tasks.get(id);
+    const task = this.getTask(id);
     if (!task) {
       throw new BrokerError("not_found", "task not found");
     }
@@ -2959,6 +2952,34 @@ function computeWorkerStatus(
   offlineAfterMs: number,
 ): WorkerView["status"] {
   return Date.now() - Date.parse(lastSeenAt) <= offlineAfterMs ? "online" : "stale";
+}
+
+function taskMatchesFilters(task: TaskRecord, filters?: TaskListFilters): boolean {
+  if (filters?.exchangeId && task.exchangeId !== filters.exchangeId) {
+    return false;
+  }
+  if (filters?.status && task.status !== filters.status) {
+    return false;
+  }
+  if (filters?.targetNodeId && task.targetNodeId !== filters.targetNodeId) {
+    return false;
+  }
+  if (filters?.proposalId && task.proposalId !== filters.proposalId) {
+    return false;
+  }
+  if (filters?.intent && task.intent !== filters.intent) {
+    return false;
+  }
+  if (filters?.claimedBy && task.claimedBy !== filters.claimedBy) {
+    return false;
+  }
+  if (filters?.assignedWorkerId && task.assignedWorkerId !== filters.assignedWorkerId) {
+    return false;
+  }
+  if (filters?.taskOrigin && (task.taskOrigin ?? "unknown") !== filters.taskOrigin) {
+    return false;
+  }
+  return true;
 }
 
 function workerMatchesFilters(worker: WorkerRecord, filters?: WorkerListFilters): boolean {

@@ -8,6 +8,7 @@ import { InMemoryA2ABroker, type TaskUpdate, type BufferedTaskEvent } from "./br
 import {
   CURRENT_BROKER_STATE_VERSION,
   SqliteBrokerStateStore,
+  SqliteTaskRuntimeRepository,
   SqliteWorkerRuntimeRepository,
   emptySnapshot,
   type BrokerSnapshot,
@@ -120,6 +121,115 @@ test("broker passes dirty task, audit, and worker hints to state store saves", (
   const claimHints = saveHints.at(-1);
   assert.deepEqual(claimHints?.hotTasks?.map((item) => [item.id, item.status]), [[task.id, "claimed"]]);
   assert.deepEqual(claimHints?.hotAuditEvents?.map((item) => item.action), ["task.claimed"]);
+});
+
+test("broker task lifecycle mutations can use the SQLite runtime repository without JSON hot hints", () => {
+  const dir = mkdtempSync(join(tmpdir(), "a2a-broker-task-repo-"));
+  const sqliteStore = new SqliteBrokerStateStore(join(dir, "state.sqlite"));
+  const snapshots: BrokerSnapshot[] = [];
+  const noopStore: BrokerStateStore = {
+    load: () => emptySnapshot(),
+    save: (snapshot) => snapshots.push(snapshot),
+  };
+
+  try {
+    const broker = new InMemoryA2ABroker(noopStore, noopStore.load(), {
+      taskRepository: new SqliteTaskRuntimeRepository(sqliteStore),
+    });
+    registerWorker(broker, "worker-sqlite");
+
+    const completed = broker.createTask({
+      id: "task-sqlite-complete",
+      intent: "chat",
+      requester: { id: "hub-a", kind: "node", role: "hub" },
+      target: { id: "worker-sqlite", kind: "node", role: "analyst" },
+      assignedWorkerId: "worker-sqlite",
+      message: "complete through runtime repo",
+      taskOrigin: "api",
+    });
+    assert.equal(sqliteStore.readHotTasks({ id: completed.id })[0]?.status, "queued");
+    assert.deepEqual(sqliteStore.load().tasks, []);
+
+    broker.claimTask(completed.id, "worker-sqlite");
+    assert.equal(sqliteStore.readHotTasks({ id: completed.id })[0]?.status, "claimed");
+    assert.equal(sqliteStore.readHotTasks({ id: completed.id })[0]?.claimedBy, "worker-sqlite");
+    broker.startTask(completed.id, "worker-sqlite");
+    assert.equal(sqliteStore.readHotTasks({ id: completed.id })[0]?.status, "running");
+    broker.completeTask(completed.id, "worker-sqlite", { summary: "done" });
+    const completedRow = sqliteStore.readHotTasks({ id: completed.id })[0]!;
+    assert.equal(completedRow.status, "succeeded");
+    assert.equal(completedRow.result?.summary, "done");
+    assert.equal(broker.getTask(completed.id)?.status, completedRow.status);
+    assert.equal(broker.getTask(completed.id)?.result?.summary, completedRow.result?.summary);
+
+    const failed = broker.createTask({
+      id: "task-sqlite-fail",
+      intent: "chat",
+      requester: { id: "hub-a", kind: "node", role: "hub" },
+      target: { id: "worker-sqlite", kind: "node", role: "analyst" },
+      assignedWorkerId: "worker-sqlite",
+      message: "fail through runtime repo",
+    });
+    broker.claimTask(failed.id, "worker-sqlite");
+    broker.failTask(failed.id, "worker-sqlite", { code: "boom", message: "failed" });
+    assert.equal(sqliteStore.readHotTasks({ id: failed.id })[0]?.status, "failed");
+    assert.equal(sqliteStore.readHotTasks({ id: failed.id })[0]?.error?.code, "boom");
+
+    const requeued = broker.createTask({
+      id: "task-sqlite-requeue",
+      intent: "chat",
+      requester: { id: "hub-a", kind: "node", role: "hub" },
+      target: { id: "worker-sqlite", kind: "node", role: "analyst" },
+      assignedWorkerId: "worker-sqlite",
+      message: "requeue through runtime repo",
+    });
+    broker.claimTask(requeued.id, "worker-sqlite");
+    const requeueResult = broker.requeueStaleTasksDetailed(0, { nowMs: Date.now() + 1_000 });
+    assert.deepEqual(requeueResult.requeued.map((task) => task.id), [requeued.id]);
+    const requeuedRow = sqliteStore.readHotTasks({ id: requeued.id })[0]!;
+    assert.equal(requeuedRow.status, "queued");
+    assert.equal(requeuedRow.requeueCount, 1);
+    assert.equal(requeuedRow.claimedBy, undefined);
+
+    assert.deepEqual(
+      broker.listTasks({ assignedWorkerId: "worker-sqlite" }).map((task) => task.id).sort(),
+      [completed.id, failed.id, requeued.id].sort(),
+    );
+    assert.equal(snapshots.at(-1)?.tasks.find((task) => task.id === requeued.id)?.status, "queued");
+  } finally {
+    sqliteStore.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("broker task lifecycle keeps the JSON/default state path without a runtime repository", () => {
+  const saveHints: Array<BrokerStateSaveHints | undefined> = [];
+  const snapshots: BrokerSnapshot[] = [];
+  const store: BrokerStateStore = {
+    load: () => emptySnapshot(),
+    save: (snapshot, hints) => {
+      snapshots.push(snapshot);
+      saveHints.push(hints);
+    },
+  };
+  const broker = new InMemoryA2ABroker(store, store.load());
+  registerWorker(broker, "worker-json");
+
+  const task = broker.createTask({
+    id: "task-json-default",
+    intent: "chat",
+    requester: { id: "hub-a", kind: "node", role: "hub" },
+    target: { id: "worker-json", kind: "node", role: "analyst" },
+    assignedWorkerId: "worker-json",
+    message: "json default path",
+  });
+  broker.claimTask(task.id, "worker-json");
+  broker.completeTask(task.id, "worker-json", { summary: "json done" });
+
+  assert.equal(broker.getTask(task.id)?.status, "succeeded");
+  assert.equal(broker.listTasks({ status: "succeeded" })[0]?.id, task.id);
+  assert.equal(snapshots.at(-1)?.tasks.find((item) => item.id === task.id)?.status, "succeeded");
+  assert.deepEqual(saveHints.at(-1)?.hotTasks?.map((item) => [item.id, item.status]), [[task.id, "succeeded"]]);
 });
 
 test("broker worker mutations can use the SQLite runtime repository without JSON hot hints", () => {

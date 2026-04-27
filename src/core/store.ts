@@ -10,12 +10,14 @@ import type {
   A2AExchangeMessageRecord,
   A2AExchangeState,
   ChangeProposal,
+  TaskListFilters,
   TaskRecord,
   TaskTombstone,
   ValidationResult,
   WorkerListFilters,
   WorkerRecord,
 } from "./types.js";
+import type { TaskRuntimeRepository } from "./task-repository.js";
 import type { WorkerRuntimeRepository } from "./worker-repository.js";
 
 export const CURRENT_BROKER_STATE_VERSION = 7;
@@ -1517,6 +1519,58 @@ export class SqliteBrokerStateStore implements BrokerStateStore {
     }
     this.db.exec(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${columnDefinition}`);
   }
+}
+
+export class SqliteTaskRuntimeRepository implements TaskRuntimeRepository {
+  constructor(private readonly store: SqliteBrokerStateStore) {}
+
+  getTask(id: string): TaskRecord | null {
+    return this.store.readHotTasks({ id })[0] ?? null;
+  }
+
+  listTasks(filters: TaskListFilters = {}): TaskRecord[] {
+    return this.store
+      .readHotTasks({
+        status: filters.status,
+        targetNodeId: filters.targetNodeId,
+        intent: filters.intent,
+        assignedWorkerId: filters.assignedWorkerId,
+        taskOrigin: filters.taskOrigin,
+      })
+      .filter((task) => taskMatchesRuntimeFilters(task, filters));
+  }
+
+  upsertTask(task: TaskRecord): void {
+    this.store.upsertHotTasks([task]);
+  }
+}
+
+function taskMatchesRuntimeFilters(task: TaskRecord, filters: TaskListFilters): boolean {
+  if (filters.exchangeId && task.exchangeId !== filters.exchangeId) {
+    return false;
+  }
+  if (filters.status && task.status !== filters.status) {
+    return false;
+  }
+  if (filters.targetNodeId && task.targetNodeId !== filters.targetNodeId) {
+    return false;
+  }
+  if (filters.proposalId && task.proposalId !== filters.proposalId) {
+    return false;
+  }
+  if (filters.intent && task.intent !== filters.intent) {
+    return false;
+  }
+  if (filters.claimedBy && task.claimedBy !== filters.claimedBy) {
+    return false;
+  }
+  if (filters.assignedWorkerId && task.assignedWorkerId !== filters.assignedWorkerId) {
+    return false;
+  }
+  if (filters.taskOrigin && (task.taskOrigin ?? "unknown") !== filters.taskOrigin) {
+    return false;
+  }
+  return true;
 }
 
 export class SqliteWorkerRuntimeRepository implements WorkerRuntimeRepository {
