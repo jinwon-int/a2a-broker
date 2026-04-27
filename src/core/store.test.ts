@@ -563,6 +563,98 @@ test("SqliteBrokerStateStore reads hot entities from mirrored tables with filter
   }
 });
 
+test("SqliteBrokerStateStore projects empty hot tables as an empty runtime snapshot", () => {
+  const temp = withTempFile("state.sqlite");
+  try {
+    const store = new SqliteBrokerStateStore(temp.filePath);
+
+    assert.deepEqual(store.readHotRuntimeSnapshot(), emptySnapshot());
+    store.close();
+  } finally {
+    temp.cleanup();
+  }
+});
+
+test("SqliteBrokerStateStore projects a runtime snapshot from hot tables without a canonical snapshot", () => {
+  const temp = withTempFile("state.sqlite");
+  try {
+    const exchange = makeExchange("exchange-hot", "worker-hot");
+    const exchangeMessage = makeExchangeMessage("message-hot", "exchange-hot", "root");
+    const proposal = makeProposal("proposal-hot", "submitted", "worker-hot");
+    const artifact = makeArtifact("artifact-hot", "proposal-hot");
+    const validation = makeValidation("validation-hot", "proposal-hot");
+    const auditEvent = makeAuditEvent("audit-hot", "task.created", "task-hot");
+    const worker = makeWorker("worker-hot");
+    const task = makeTask("task-hot", "queued", "worker-hot");
+    const tombstone = makeTombstone("task-hot-terminal", "failed");
+    const expected: BrokerSnapshot = {
+      ...emptySnapshot(),
+      exchanges: [exchange],
+      exchangeMessages: [exchangeMessage],
+      proposals: [proposal],
+      artifacts: [artifact],
+      validations: [validation],
+      auditEvents: [auditEvent],
+      workers: [worker],
+      tasks: [task],
+      tombstones: [tombstone],
+    };
+
+    const store = new SqliteBrokerStateStore(temp.filePath);
+    store.upsertHotExchanges([exchange]);
+    store.upsertHotExchangeMessages([exchangeMessage]);
+    store.upsertHotProposals([proposal]);
+    store.upsertHotArtifacts([artifact]);
+    store.upsertHotValidations([validation]);
+    store.upsertHotAuditEvents([auditEvent]);
+    store.upsertHotWorkers([worker]);
+    store.upsertHotTasks([task]);
+    store.upsertHotTombstones([tombstone]);
+
+    assert.deepEqual(store.load(), emptySnapshot());
+    assert.deepEqual(store.readHotRuntimeSnapshot(), expected);
+    store.close();
+
+    const db = new DatabaseSync(temp.filePath, { readOnly: true });
+    try {
+      assert.equal(readSqliteCount(db, "broker_snapshots"), 0);
+    } finally {
+      db.close();
+    }
+  } finally {
+    temp.cleanup();
+  }
+});
+
+test("SqliteBrokerStateStore hot runtime projection can diverge from stale canonical load", () => {
+  const temp = withTempFile("state.sqlite");
+  try {
+    const staleTask = makeTask("task-stale", "queued", "worker-a");
+    const hotTask = {
+      ...staleTask,
+      status: "claimed" as const,
+      claimedBy: "worker-a",
+      claimedAt: "2026-04-27T00:02:00.000Z",
+      updatedAt: "2026-04-27T00:02:00.000Z",
+    };
+    const staleSnapshot: BrokerSnapshot = {
+      ...emptySnapshot(),
+      tasks: [staleTask],
+    };
+
+    const store = new SqliteBrokerStateStore(temp.filePath);
+    store.save(staleSnapshot);
+    store.upsertHotTasks([hotTask]);
+
+    assert.deepEqual(store.load(), staleSnapshot);
+    assert.deepEqual(store.readHotRuntimeSnapshot().tasks, [hotTask]);
+    assert.notDeepEqual(store.readHotRuntimeSnapshot(), store.load());
+    store.close();
+  } finally {
+    temp.cleanup();
+  }
+});
+
 test("SqliteTaskRuntimeRepository writes task state directly to broker_tasks", () => {
   const temp = withTempFile("state.sqlite");
   try {

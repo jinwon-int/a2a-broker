@@ -63,6 +63,11 @@ cutover:
 - Cold-start runtime hydration still comes from the loaded snapshot before the
   broker resumes normal runtime operation.
 
+Round 36 slice 1 adds a narrow SQLite hot-table runtime snapshot projection
+helper/proof. It can build a `BrokerSnapshot`-shaped runtime view from the 9
+mirrored hot tables independently of the canonical `broker_snapshots` row, but
+default `load()` remains snapshot-owned until a later cutover.
+
 The next persistence step is reducing this snapshot ownership for retention,
 export/import, and cold-start hydration while preserving the same public HTTP and
 JSON-RPC behavior.
