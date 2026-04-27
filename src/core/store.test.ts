@@ -185,6 +185,32 @@ test("SqliteBrokerStateStore saves and reloads snapshots with WAL metadata", () 
         "broker_workers",
         "broker_audit_events",
       ],
+      hotEntityHintTables: [
+        "broker_exchanges",
+        "broker_exchange_messages",
+        "broker_proposals",
+        "broker_artifacts",
+        "broker_validations",
+        "broker_tasks",
+        "broker_workers",
+        "broker_audit_events",
+      ],
+      hotEntityHintCoverage: {
+        ok: true,
+        supportedTables: [
+          "broker_exchanges",
+          "broker_exchange_messages",
+          "broker_proposals",
+          "broker_artifacts",
+          "broker_validations",
+          "broker_tasks",
+          "broker_workers",
+          "broker_audit_events",
+        ],
+        missingTables: [],
+        supportedCount: 8,
+        totalCount: 8,
+      },
       hotEntityMirror: {
         ok: true,
         tableCounts: {

@@ -347,6 +347,14 @@ test("server reports SQLite persistence metadata when SQLite backend is enabled"
       "broker_workers",
       "broker_audit_events",
     ]);
+    assert.deepEqual(health.persistence.hotEntityHintTables, health.persistence.hotEntityTables);
+    assert.deepEqual(health.persistence.hotEntityHintCoverage, {
+      ok: true,
+      supportedTables: health.persistence.hotEntityTables,
+      missingTables: [],
+      supportedCount: 8,
+      totalCount: 8,
+    });
   } finally {
     runtime.stopStaleReaper();
     await new Promise<void>((resolve) => runtime.server.close(() => resolve()));

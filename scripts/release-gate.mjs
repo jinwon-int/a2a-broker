@@ -369,6 +369,11 @@ async function gateComposeSmoke({ edgeSecret, timeoutMs }) {
     };
 
     if (persistenceBackend === 'sqlite') {
+      const coverage = health?.persistence?.hotEntityHintCoverage;
+      if (!coverage?.ok || coverage.supportedCount !== coverage.totalCount || coverage.totalCount !== 8) {
+        throw new Error(`SQLite hot entity hint coverage is incomplete: ${JSON.stringify(coverage)}`);
+      }
+      report.sqliteHotEntityHintCoverage = coverage;
       console.log('[compose] verifying SQLite JSON export from runtime image…');
       report.sqliteExport = await verifySqliteExport({
         compose,
