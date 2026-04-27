@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -10,6 +11,8 @@ import {
   JsonFileBrokerStateStore,
   SqliteBrokerStateStore,
   emptySnapshot,
+  serializeBrokerSnapshot,
+  writeBrokerSnapshotFile,
   type BrokerSnapshot,
 } from "./store.js";
 
@@ -79,6 +82,27 @@ test("JsonFileBrokerStateStore rejects malformed snapshot entries", () => {
 
     const store = new JsonFileBrokerStateStore(temp.filePath);
     assert.throws(() => store.load(), /invalid broker snapshot/);
+  } finally {
+    temp.cleanup();
+  }
+});
+
+test("broker snapshot export helpers write canonical versioned JSON atomically", () => {
+  const temp = withTempFile("export/state.json");
+  try {
+    const snapshot: BrokerSnapshot = {
+      ...emptySnapshot(),
+      version: 1,
+      tasks: [makeTask("task-export", "queued", "worker-a")],
+    };
+
+    const serialized = serializeBrokerSnapshot(snapshot);
+    assert.equal(JSON.parse(serialized).version, CURRENT_BROKER_STATE_VERSION);
+
+    writeBrokerSnapshotFile(temp.filePath, snapshot);
+    const exported = JSON.parse(readFileSync(temp.filePath, "utf8"));
+    assert.equal(exported.version, CURRENT_BROKER_STATE_VERSION);
+    assert.deepEqual(exported.tasks.map((task: BrokerSnapshot["tasks"][number]) => task.id), ["task-export"]);
   } finally {
     temp.cleanup();
   }
@@ -237,6 +261,40 @@ test("SqliteBrokerStateStore saves and reloads snapshots with WAL metadata", () 
     } finally {
       db.close();
     }
+  } finally {
+    temp.cleanup();
+  }
+});
+
+test("SQLite export script writes canonical JSON snapshots", () => {
+  const temp = withTempFile("state.sqlite");
+  try {
+    const exportFile = join(temp.dir, "exported-state.json");
+    const snapshot: BrokerSnapshot = {
+      ...emptySnapshot(),
+      tasks: [makeTask("task-sqlite-export", "succeeded", "worker-a")],
+      auditEvents: [makeAuditEvent("audit-export", "task.succeeded", "task-sqlite-export")],
+    };
+
+    const store = new SqliteBrokerStateStore(temp.filePath);
+    store.save(snapshot);
+    store.close();
+
+    execFileSync("node", [
+      "scripts/export-sqlite-state.mjs",
+      "--db",
+      temp.filePath,
+      "--out",
+      exportFile,
+    ], {
+      cwd: join(import.meta.dirname, "..", ".."),
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+
+    const exported = JSON.parse(readFileSync(exportFile, "utf8"));
+    assert.equal(exported.version, CURRENT_BROKER_STATE_VERSION);
+    assert.deepEqual(exported.tasks, snapshot.tasks);
+    assert.deepEqual(exported.auditEvents, snapshot.auditEvents);
   } finally {
     temp.cleanup();
   }

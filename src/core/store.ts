@@ -461,18 +461,7 @@ export class JsonFileBrokerStateStore implements BrokerStateStore {
   }
 
   save(snapshot: BrokerSnapshot): void {
-    mkdirSync(dirname(this.filePath), { recursive: true });
-    const tempPath = `${this.filePath}.tmp`;
-    const payload = JSON.stringify(
-      {
-        ...snapshot,
-        version: CURRENT_BROKER_STATE_VERSION,
-      },
-      null,
-      2,
-    );
-    writeFileSync(tempPath, payload, "utf8");
-    renameSync(tempPath, this.filePath);
+    writeBrokerSnapshotFile(this.filePath, snapshot, this.maxBytes);
   }
 
   getPersistenceInfo(): BrokerPersistenceInfo {
@@ -817,7 +806,7 @@ export class SqliteBrokerStateStore implements BrokerStateStore {
   }
 
   private writeSnapshotRow(snapshot: BrokerSnapshot, updatedAt: string): void {
-    const payload = serializeSnapshot(snapshot, this.maxBytes);
+    const payload = serializeBrokerSnapshot(snapshot, this.maxBytes);
     this.db
       .prepare(
         `INSERT INTO broker_snapshots (id, version, payload, updated_at)
@@ -1043,7 +1032,10 @@ function isMissingFileError(error: unknown): boolean {
   );
 }
 
-function serializeSnapshot(snapshot: BrokerSnapshot, maxBytes: number): string {
+export function serializeBrokerSnapshot(
+  snapshot: BrokerSnapshot,
+  maxBytes: number = DEFAULT_BROKER_STATE_MAX_BYTES,
+): string {
   const payload = JSON.stringify(
     {
       ...snapshot,
@@ -1057,6 +1049,18 @@ function serializeSnapshot(snapshot: BrokerSnapshot, maxBytes: number): string {
     throw new Error(`broker snapshot exceeds max size (${bytes} > ${maxBytes} bytes)`);
   }
   return payload;
+}
+
+export function writeBrokerSnapshotFile(
+  filePath: string,
+  snapshot: BrokerSnapshot,
+  maxBytes: number = DEFAULT_BROKER_STATE_MAX_BYTES,
+): void {
+  mkdirSync(dirname(filePath), { recursive: true });
+  const tempPath = `${filePath}.tmp`;
+  const payload = serializeBrokerSnapshot(snapshot, maxBytes);
+  writeFileSync(tempPath, payload, "utf8");
+  renameSync(tempPath, filePath);
 }
 
 function parseSnapshotPayload(payload: string, source: string, maxBytes: number): BrokerSnapshot {

@@ -69,6 +69,22 @@ JSON mode continues to report:
 }
 ```
 
+## JSON export
+
+SQLite mode can export the canonical broker snapshot JSON for inspection, archive, or rollback planning:
+
+```bash
+npm run build
+npm run export:sqlite -- --db /var/lib/a2a-broker/state.sqlite --out /tmp/a2a-broker-state.json
+```
+
+If `--out` is omitted, the command writes the JSON snapshot to stdout. The export validates and serializes through the same broker snapshot schema/version used by the runtime store.
+
+Environment fallbacks:
+
+- `BROKER_SQLITE_FILE` or `SQLITE_STATE_FILE` can provide `--db`.
+- `STATE_FILE_MAX_BYTES` can provide `--max-bytes`.
+
 ## Backup / restore
 
 SQLite mode uses WAL. For an online backup, copy the DB using SQLite's backup tooling or stop the broker and copy the DB, WAL, and SHM files together:
@@ -81,4 +97,4 @@ For restore, stop the broker, place those files back under the configured path, 
 
 ## Current limitation
 
-This slice is still snapshot-first for broker runtime load, but SQLite also maintains normalized hot-entity inspection tables for tasks, workers, and audit events in the same transaction as the snapshot write. The next slices should move runtime reads/writes for tasks, workers, audit events, exchanges, proposals, and tombstones into dedicated repositories while keeping the public HTTP and JSON-RPC contract stable.
+This slice is still snapshot-first for broker runtime load, but SQLite also maintains normalized hot-entity inspection tables for public read paths in the same transaction as the snapshot write. The next slices should move runtime reads/writes for tasks, workers, audit events, exchanges, proposals, and tombstones into dedicated repositories while keeping the public HTTP and JSON-RPC contract stable.
