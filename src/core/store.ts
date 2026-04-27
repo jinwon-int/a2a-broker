@@ -62,7 +62,10 @@ export interface SqliteBrokerStateStoreOptions {
 export interface SqliteTaskHotTableFilters {
   id?: string;
   status?: TaskRecord["status"];
+  targetNodeId?: string;
+  intent?: TaskRecord["intent"];
   assignedWorkerId?: string;
+  taskOrigin?: TaskRecord["taskOrigin"];
 }
 
 export interface SqliteAuditHotTableFilters {
@@ -73,7 +76,7 @@ export interface SqliteAuditHotTableFilters {
   targetId?: string;
 }
 
-const SQLITE_SCHEMA_VERSION = 2;
+const SQLITE_SCHEMA_VERSION = 3;
 const SQLITE_HOT_ENTITY_TABLES = ["broker_tasks", "broker_workers", "broker_audit_events"];
 
 const partyRefSchema = z
@@ -491,7 +494,10 @@ export class SqliteBrokerStateStore implements BrokerStateStore {
       [
         ["id", filters.id],
         ["status", filters.status],
+        ["target_node_id", filters.targetNodeId],
+        ["intent", filters.intent],
         ["assigned_worker_id", filters.assignedWorkerId],
+        ["task_origin", filters.taskOrigin],
       ],
       "updated_at DESC, id ASC",
     );
@@ -572,6 +578,7 @@ export class SqliteBrokerStateStore implements BrokerStateStore {
         intent TEXT NOT NULL,
         target_node_id TEXT NOT NULL,
         assigned_worker_id TEXT,
+        task_origin TEXT NOT NULL DEFAULT 'unknown',
         updated_at TEXT NOT NULL,
         payload TEXT NOT NULL
       );
@@ -579,6 +586,10 @@ export class SqliteBrokerStateStore implements BrokerStateStore {
         ON broker_tasks(status, updated_at);
       CREATE INDEX IF NOT EXISTS broker_tasks_worker_status_idx
         ON broker_tasks(assigned_worker_id, status);
+      CREATE INDEX IF NOT EXISTS broker_tasks_target_status_idx
+        ON broker_tasks(target_node_id, status);
+      CREATE INDEX IF NOT EXISTS broker_tasks_intent_status_idx
+        ON broker_tasks(intent, status);
       CREATE TABLE IF NOT EXISTS broker_workers (
         node_id TEXT PRIMARY KEY,
         role TEXT NOT NULL,
@@ -600,6 +611,11 @@ export class SqliteBrokerStateStore implements BrokerStateStore {
         ON broker_audit_events(target_type, target_id, created_at);
       CREATE INDEX IF NOT EXISTS broker_audit_events_action_idx
         ON broker_audit_events(action, created_at);
+    `);
+    this.ensureColumn("broker_tasks", "task_origin", "TEXT NOT NULL DEFAULT 'unknown'");
+    this.db.exec(`
+      CREATE INDEX IF NOT EXISTS broker_tasks_origin_status_idx
+        ON broker_tasks(task_origin, status);
     `);
     this.writeMetadata("schema_version", String(SQLITE_SCHEMA_VERSION));
     this.writeMetadata("state_version", String(CURRENT_BROKER_STATE_VERSION));
@@ -647,8 +663,8 @@ export class SqliteBrokerStateStore implements BrokerStateStore {
 
     const insertTask = this.db.prepare(
       `INSERT INTO broker_tasks
-        (id, status, intent, target_node_id, assigned_worker_id, updated_at, payload)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        (id, status, intent, target_node_id, assigned_worker_id, task_origin, updated_at, payload)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
     );
     for (const task of snapshot.tasks) {
       insertTask.run(
@@ -657,6 +673,7 @@ export class SqliteBrokerStateStore implements BrokerStateStore {
         task.intent,
         task.targetNodeId,
         task.assignedWorkerId ?? null,
+        task.taskOrigin ?? "unknown",
         task.updatedAt,
         JSON.stringify(task),
       );
@@ -724,6 +741,14 @@ export class SqliteBrokerStateStore implements BrokerStateStore {
       .prepare("SELECT value FROM broker_metadata WHERE key = ?")
       .get(key) as { value?: string } | undefined;
     return typeof row?.value === "string" ? row.value : undefined;
+  }
+
+  private ensureColumn(tableName: string, columnName: string, columnDefinition: string): void {
+    const rows = this.db.prepare(`PRAGMA table_info(${tableName})`).all() as Array<{ name?: string }>;
+    if (rows.some((row) => row.name === columnName)) {
+      return;
+    }
+    this.db.exec(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${columnDefinition}`);
   }
 }
 
