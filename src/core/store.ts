@@ -26,6 +26,7 @@ import type { ExchangeMessageRuntimeRepository, ExchangeRuntimeRepository } from
 import type { ProposalRuntimeRepository } from "./proposal-repository.js";
 import type { TaskRuntimeRepository } from "./task-repository.js";
 import type { TombstoneRuntimeRepository } from "./tombstone-repository.js";
+import type { ValidationRuntimeRepository } from "./validation-repository.js";
 import type { WorkerRuntimeRepository } from "./worker-repository.js";
 
 export const CURRENT_BROKER_STATE_VERSION = 7;
@@ -140,6 +141,7 @@ export interface SqliteArtifactHotTableFilters {
 }
 
 export interface SqliteValidationHotTableFilters {
+  id?: string;
   proposalId?: string;
 }
 
@@ -728,7 +730,10 @@ export class SqliteBrokerStateStore implements BrokerStateStore {
   readHotValidations(filters: SqliteValidationHotTableFilters = {}): ValidationResult[] {
     const { sql, params } = buildHotTableSelect(
       "broker_validations",
-      [["proposal_id", filters.proposalId]],
+      [
+        ["id", filters.id],
+        ["proposal_id", filters.proposalId],
+      ],
       "created_at DESC, id ASC",
     );
     return this.db
@@ -1622,6 +1627,22 @@ export class SqliteArtifactRuntimeRepository implements ArtifactRuntimeRepositor
 
   upsertArtifact(artifact: ArtifactRecord): void {
     this.store.upsertHotArtifacts([artifact]);
+  }
+}
+
+export class SqliteValidationRuntimeRepository implements ValidationRuntimeRepository {
+  constructor(private readonly store: SqliteBrokerStateStore) {}
+
+  getValidation(id: string): ValidationResult | null {
+    return this.store.readHotValidations({ id })[0] ?? null;
+  }
+
+  listValidationsForProposal(proposalId: string): ValidationResult[] {
+    return this.store.readHotValidations({ proposalId });
+  }
+
+  upsertValidation(validation: ValidationResult): void {
+    this.store.upsertHotValidations([validation]);
   }
 }
 

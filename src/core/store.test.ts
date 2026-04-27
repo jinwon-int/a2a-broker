@@ -17,6 +17,7 @@ import {
   SqliteProposalRuntimeRepository,
   SqliteTaskRuntimeRepository,
   SqliteTombstoneRuntimeRepository,
+  SqliteValidationRuntimeRepository,
   SqliteWorkerRuntimeRepository,
   buildHotEntityHintCoverage,
   emptySnapshot,
@@ -696,6 +697,42 @@ test("SqliteArtifactRuntimeRepository writes artifact metadata directly to broke
       [["artifact-runtime", "report"], ["artifact-runtime-other", "bundle"]],
     );
     assert.deepEqual(store.load().artifacts, []);
+    store.close();
+  } finally {
+    temp.cleanup();
+  }
+});
+
+test("SqliteValidationRuntimeRepository writes validation results directly to broker_validations", () => {
+  const temp = withTempFile("state.sqlite");
+  try {
+    const store = new SqliteBrokerStateStore(temp.filePath);
+    const repository = new SqliteValidationRuntimeRepository(store);
+
+    repository.upsertValidation(makeValidation("validation-runtime", "proposal-runtime"));
+    repository.upsertValidation({
+      ...makeValidation("validation-runtime", "proposal-runtime"),
+      verdict: "fail",
+      note: "runtime validation updated",
+      metrics: { confidence: "low" },
+      createdAt: "2026-04-27T00:02:00.000Z",
+    });
+    repository.upsertValidation({
+      ...makeValidation("validation-runtime-other", "proposal-runtime", "2026-04-27T00:01:00.000Z"),
+      kind: "paper",
+      nodeId: "worker-b",
+    });
+    repository.upsertValidation(makeValidation("validation-runtime-foreign", "proposal-foreign", "2026-04-27T00:03:00.000Z"));
+
+    const validation = repository.getValidation("validation-runtime");
+    assert.equal(validation?.verdict, "fail");
+    assert.equal(validation?.note, "runtime validation updated");
+    assert.deepEqual(validation?.metrics, { confidence: "low" });
+    assert.deepEqual(
+      repository.listValidationsForProposal("proposal-runtime").map((item) => [item.id, item.kind]),
+      [["validation-runtime", "smoke"], ["validation-runtime-other", "paper"]],
+    );
+    assert.deepEqual(store.load().validations, []);
     store.close();
   } finally {
     temp.cleanup();

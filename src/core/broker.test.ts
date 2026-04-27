@@ -15,13 +15,14 @@ import {
   SqliteProposalRuntimeRepository,
   SqliteTaskRuntimeRepository,
   SqliteTombstoneRuntimeRepository,
+  SqliteValidationRuntimeRepository,
   SqliteWorkerRuntimeRepository,
   emptySnapshot,
   type BrokerSnapshot,
   type BrokerStateSaveHints,
   type BrokerStateStore,
 } from "./store.js";
-import type { ArtifactRecord, AuditEvent, ChangeProposal, TaskTombstone, WorkerRecord } from "./types.js";
+import type { ArtifactRecord, AuditEvent, ChangeProposal, TaskTombstone, ValidationResult, WorkerRecord } from "./types.js";
 
 function registerWorker(broker: InMemoryA2ABroker, nodeId: string): void {
   broker.registerWorker({
@@ -364,6 +365,69 @@ test("broker proposal artifacts can use the SQLite runtime repository without JS
       [attached.id, "artifact-external-hot"],
     );
     assert.equal(snapshots.at(-1)?.artifacts.find((artifact) => artifact.id === attached.id)?.summary, "attached through runtime repo");
+  } finally {
+    sqliteStore.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("broker proposal validations can use the SQLite runtime repository without JSON hot hints", () => {
+  const dir = mkdtempSync(join(tmpdir(), "a2a-broker-validation-repo-"));
+  const sqliteStore = new SqliteBrokerStateStore(join(dir, "state.sqlite"));
+  const snapshots: BrokerSnapshot[] = [];
+  const noopStore: BrokerStateStore = {
+    load: () => emptySnapshot(),
+    save: (snapshot) => snapshots.push(snapshot),
+  };
+
+  try {
+    const broker = new InMemoryA2ABroker(noopStore, noopStore.load(), {
+      proposalRepository: new SqliteProposalRuntimeRepository(sqliteStore),
+      validationRepository: new SqliteValidationRuntimeRepository(sqliteStore),
+    });
+
+    const proposal = broker.createProposal({
+      source: { id: "research-a", kind: "node", role: "researcher" },
+      target: { id: "live-a", kind: "node", role: "live-trader" },
+      kind: "patch",
+      summary: "validation through runtime repo",
+      workspace: { nodeId: "live-a", workspaceId: "repo" },
+      patchText: "diff --git a/file b/file",
+    });
+
+    const submitted = broker.submitValidationResult(proposal.id, {
+      nodeId: "live-a",
+      kind: "smoke",
+      verdict: "pass",
+      metrics: { checked: true },
+      note: "submitted through runtime repo",
+    });
+
+    assert.equal(sqliteStore.readHotValidations({ id: submitted.id })[0]?.note, "submitted through runtime repo");
+    assert.deepEqual(sqliteStore.load().validations, []);
+    assert.deepEqual(
+      broker.getProposalDetails(proposal.id)?.validations.map((validation) => validation.id),
+      [submitted.id],
+    );
+
+    const externalValidation: ValidationResult = {
+      id: "validation-external-hot",
+      proposalId: proposal.id,
+      nodeId: "live-a",
+      kind: "paper",
+      verdict: "pass",
+      metrics: { confidence: "high" },
+      artifactIds: [],
+      note: "external validation from runtime repo",
+      createdAt: "2026-04-27T00:00:00.000Z",
+    };
+    sqliteStore.upsertHotValidations([externalValidation]);
+
+    assert.deepEqual(
+      broker.listValidationsForProposal(proposal.id).map((validation) => validation.id),
+      [submitted.id, "validation-external-hot"],
+    );
+    assert.equal(snapshots.at(-1)?.validations.find((validation) => validation.id === submitted.id)?.note, "submitted through runtime repo");
   } finally {
     sqliteStore.close();
     rmSync(dir, { recursive: true, force: true });

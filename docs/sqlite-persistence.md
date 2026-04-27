@@ -167,6 +167,8 @@ The current repository seams cover:
   `broker_exchange_messages`
 - proposal lifecycle `getProposal` / `listProposals` reads and proposal
   mutation writes backed by `broker_proposals`
+- proposal artifact metadata reads and writes backed by `broker_artifacts`
+- proposal validation reads and writes backed by `broker_validations`
 - audit-event diagnostics reads and append writes backed by `broker_audit_events`
 - terminal task tombstone diagnostics reads and writes backed by
   `broker_tombstones`
@@ -216,10 +218,10 @@ For restore, stop the broker, place those files back under the configured path, 
 
 ## Runtime hot rows and retention planning
 
-This slice is still snapshot-compatible for broker runtime load, but SQLite also maintains normalized hot-entity inspection tables for public read paths in the same transaction as the snapshot write. Runtime exchange, exchange-message, proposal, artifact, validation, task, tombstone, audit, and worker mutations now pass dirty hot-entity hints into state saves, and the SQLite store uses those hints to upsert changed hot rows while preserving retained rows and pruning rows absent from the canonical snapshot. Worker, task, audit, tombstone, exchange, exchange-message, proposal, and proposal artifact metadata state additionally have the Round 35 runtime repository seams described above. SQLite `/health` exposes `hotEntityHintCoverage` so operators can verify hinted-write support covers every mirrored hot table.
+This slice is still snapshot-compatible for broker runtime load, but SQLite also maintains normalized hot-entity inspection tables for public read paths in the same transaction as the snapshot write. Runtime exchange, exchange-message, proposal, artifact, validation, task, tombstone, audit, and worker mutations now pass dirty hot-entity hints into state saves, and the SQLite store uses those hints to upsert changed hot rows while preserving retained rows and pruning rows absent from the canonical snapshot. Worker, task, audit, tombstone, exchange, exchange-message, proposal, proposal artifact metadata, and proposal validation state additionally have the Round 35 runtime repository seams described above. SQLite `/health` exposes `hotEntityHintCoverage` so operators can verify hinted-write support covers every mirrored hot table.
 
 The SQLite store also exposes task/audit/worker hot-table retention planning helpers. These compute retained/prunable row ids from the hot tables with the same cutoff/newest-cap/protected-target shape used by broker retention. Verified plans can be applied to prune task/audit/worker hot rows directly in SQLite; canonical snapshot retention remains the source of truth until broader runtime paths move fully into dedicated repositories.
 
 ## Current limitation
 
-The snapshot remains export-compatible and continues to be written after runtime mutations. Exchange, exchange-message, proposal, and proposal artifact metadata runtime state now have SQLite repository seams; the next slice should move validation runtime paths into a dedicated repository while keeping the public HTTP and JSON-RPC contract stable.
+The snapshot remains export-compatible and continues to be written after runtime mutations. Exchange, exchange-message, proposal, proposal artifact metadata, and proposal validation runtime state now have SQLite repository seams. The next dependency is reducing snapshot-only ownership of cross-entity retention/export/import and cold-start hydration while keeping the public HTTP and JSON-RPC contract stable.
