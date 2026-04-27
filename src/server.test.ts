@@ -335,10 +335,11 @@ test("server reports SQLite persistence metadata when SQLite backend is enabled"
     assert.equal(health.persistence.kind, "sqlite");
     assert.equal(health.persistence.dbFile, join(dir, "state.sqlite"));
     assert.equal(health.persistence.stateVersion, 7);
-    assert.equal(health.persistence.schemaVersion, 4);
+    assert.equal(health.persistence.schemaVersion, 5);
     assert.equal(health.persistence.journalMode, "wal");
     assert.deepEqual(health.persistence.hotEntityTables, [
       "broker_exchanges",
+      "broker_exchange_messages",
       "broker_tasks",
       "broker_workers",
       "broker_audit_events",
@@ -900,6 +901,192 @@ test("server returns 404 for missing /exchanges/:id from SQLite hot tables", asy
     }
 
     const res = await fetch(`http://127.0.0.1:${address.port}/exchanges/missing-exchange`);
+    assert.equal(res.status, 404);
+  } finally {
+    runtime.stopStaleReaper();
+    await new Promise<void>((resolve) => runtime.server.close(() => resolve()));
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("server reads /exchanges/:id/messages from SQLite hot tables with thread filters", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "a2a-broker-sqlite-exchange-messages-"));
+  const store = new SqliteBrokerStateStore(join(dir, "state.sqlite"));
+  const snapshot: BrokerSnapshot = {
+    ...emptySnapshot(),
+    exchanges: [
+      {
+        id: "exchange-messages-from-sqlite",
+        requester: { id: "requester", kind: "session", role: "hub" },
+        target: { id: "worker-a", kind: "node", role: "analyst" },
+        targetNodeId: "worker-a",
+        message: "root",
+        maxTurns: 4,
+        intent: "chat",
+        status: "running",
+        rootMessageId: "message-root",
+        latestMessageId: "message-grandchild",
+        messageCount: 4,
+        lastMessageAt: "2026-04-27T00:03:00.000Z",
+        createdAt: "2026-04-27T00:00:00.000Z",
+        updatedAt: "2026-04-27T00:03:00.000Z",
+      },
+    ],
+    exchangeMessages: [
+      {
+        id: "message-root",
+        exchangeId: "exchange-messages-from-sqlite",
+        kind: "root",
+        message: "root",
+        requester: { id: "requester", kind: "session", role: "hub" },
+        targetNodeId: "worker-a",
+        createdAt: "2026-04-27T00:00:00.000Z",
+        updatedAt: "2026-04-27T00:00:00.000Z",
+      },
+      {
+        id: "message-child",
+        exchangeId: "exchange-messages-from-sqlite",
+        kind: "thread",
+        message: "child",
+        actor: { id: "worker-a", kind: "node", role: "analyst" },
+        parentMessageId: "message-root",
+        createdAt: "2026-04-27T00:01:00.000Z",
+        updatedAt: "2026-04-27T00:01:00.000Z",
+      },
+      {
+        id: "message-sibling",
+        exchangeId: "exchange-messages-from-sqlite",
+        kind: "thread",
+        message: "sibling",
+        actor: { id: "requester", kind: "session", role: "hub" },
+        parentMessageId: "message-root",
+        createdAt: "2026-04-27T00:02:00.000Z",
+        updatedAt: "2026-04-27T00:02:00.000Z",
+      },
+      {
+        id: "message-grandchild",
+        exchangeId: "exchange-messages-from-sqlite",
+        kind: "thread",
+        message: "grandchild",
+        actor: { id: "worker-a", kind: "node", role: "analyst" },
+        parentMessageId: "message-child",
+        createdAt: "2026-04-27T00:03:00.000Z",
+        updatedAt: "2026-04-27T00:03:00.000Z",
+      },
+    ],
+  };
+  store.save(snapshot);
+  const runtime = createBrokerServer({
+    host: "127.0.0.1",
+    port: 0,
+    publicBaseUrl: "https://broker.test/",
+    stateStore: store,
+    enforceRequesterIdentity: false,
+    staleReaperEnabled: false,
+  });
+  try {
+    runtime.broker.listExchangeMessages = (() => {
+      throw new Error("/exchanges/:id/messages should use SQLite hot read path");
+    }) as typeof runtime.broker.listExchangeMessages;
+    runtime.server.listen(0, "127.0.0.1");
+    await once(runtime.server, "listening");
+    const address = runtime.server.address();
+    if (!address || typeof address === "string") {
+      throw new Error("failed to bind test server");
+    }
+
+    const baseUrl = `http://127.0.0.1:${address.port}/exchanges/exchange-messages-from-sqlite/messages`;
+    const allRes = await fetch(baseUrl);
+    assert.equal(allRes.status, 200);
+    const allBody = await allRes.json();
+    assert.deepEqual(allBody.items.map((message: { id: string }) => message.id), [
+      "message-root",
+      "message-child",
+      "message-sibling",
+      "message-grandchild",
+    ]);
+    assert.deepEqual(allBody.threads[0].replies.map((message: { id: string }) => message.id), [
+      "message-child",
+      "message-sibling",
+    ]);
+    assert.deepEqual(allBody.threads[0].replies[0].replies.map((message: { id: string }) => message.id), [
+      "message-grandchild",
+    ]);
+
+    const childRes = await fetch(`${baseUrl}?parentMessageId=message-root`);
+    assert.equal(childRes.status, 200);
+    const childBody = await childRes.json();
+    assert.deepEqual(childBody.items.map((message: { id: string }) => message.id), [
+      "message-child",
+      "message-sibling",
+    ]);
+    assert.equal(childBody.parentMessageId, "message-root");
+
+    const descendantRes = await fetch(`${baseUrl}?parentMessageId=message-child&includeDescendants=true`);
+    assert.equal(descendantRes.status, 200);
+    const descendantBody = await descendantRes.json();
+    assert.deepEqual(descendantBody.items.map((message: { id: string }) => message.id), [
+      "message-child",
+      "message-grandchild",
+    ]);
+    assert.deepEqual(descendantBody.threads[0].replies.map((message: { id: string }) => message.id), [
+      "message-grandchild",
+    ]);
+  } finally {
+    runtime.stopStaleReaper();
+    await new Promise<void>((resolve) => runtime.server.close(() => resolve()));
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("server preserves missing exchange message 404s on SQLite hot read path", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "a2a-broker-sqlite-exchange-messages-missing-"));
+  const store = new SqliteBrokerStateStore(join(dir, "state.sqlite"));
+  store.save({
+    ...emptySnapshot(),
+    exchanges: [
+      {
+        id: "exchange-without-parent",
+        requester: { id: "requester", kind: "session", role: "hub" },
+        target: { id: "worker-a", kind: "node", role: "analyst" },
+        targetNodeId: "worker-a",
+        message: "root",
+        maxTurns: 4,
+        intent: "chat",
+        status: "running",
+        rootMessageId: "message-root",
+        latestMessageId: "message-root",
+        messageCount: 0,
+        lastMessageAt: "2026-04-27T00:00:00.000Z",
+        createdAt: "2026-04-27T00:00:00.000Z",
+        updatedAt: "2026-04-27T00:00:00.000Z",
+      },
+    ],
+  });
+  const runtime = createBrokerServer({
+    host: "127.0.0.1",
+    port: 0,
+    publicBaseUrl: "https://broker.test/",
+    stateStore: store,
+    enforceRequesterIdentity: false,
+    staleReaperEnabled: false,
+  });
+  try {
+    runtime.broker.listExchangeMessages = (() => {
+      throw new Error("missing parent lookup should use SQLite hot read path");
+    }) as typeof runtime.broker.listExchangeMessages;
+    runtime.server.listen(0, "127.0.0.1");
+    await once(runtime.server, "listening");
+    const address = runtime.server.address();
+    if (!address || typeof address === "string") {
+      throw new Error("failed to bind test server");
+    }
+
+    const res = await fetch(
+      `http://127.0.0.1:${address.port}/exchanges/exchange-without-parent/messages?parentMessageId=missing-message`,
+    );
     assert.equal(res.status, 404);
   } finally {
     runtime.stopStaleReaper();
