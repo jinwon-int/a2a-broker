@@ -36,6 +36,7 @@ import type {
   A2AExchangeMessageRecord,
   A2AExchangeMessageRequest,
   A2AExchangeRequest,
+  A2AExchangeState,
   AuditAction,
   AuditListFilters,
   BrokerDashboard,
@@ -701,7 +702,7 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
       }
 
       if (req.method === "GET" && path === "/exchanges") {
-        return sendJson(res, 200, { items: broker.listExchanges() });
+        return sendJson(res, 200, { items: listExchangesForReadPath(stateStore, broker) });
       }
 
       if (req.method === "POST" && path === "/exchanges") {
@@ -750,7 +751,7 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
       }
 
       if (req.method === "GET" && segments[0] === "exchanges" && segments[1] && segments.length === 2) {
-        const exchange = broker.getExchange(segments[1]);
+        const exchange = getExchangeForReadPath(stateStore, broker, segments[1]);
         if (!exchange) {
           throw new BrokerError("not_found", "exchange not found");
         }
@@ -1554,6 +1555,27 @@ function getTaskForReadPath(
     return stateStore.readHotTasks({ id: taskId })[0] ?? null;
   }
   return broker.getTask(taskId);
+}
+
+function listExchangesForReadPath(
+  stateStore: BrokerStateStore,
+  broker: InMemoryA2ABroker,
+): A2AExchangeState[] {
+  if (stateStore instanceof SqliteBrokerStateStore) {
+    return stateStore.readHotExchanges();
+  }
+  return broker.listExchanges();
+}
+
+function getExchangeForReadPath(
+  stateStore: BrokerStateStore,
+  broker: InMemoryA2ABroker,
+  exchangeId: string,
+): A2AExchangeState | null {
+  if (stateStore instanceof SqliteBrokerStateStore) {
+    return stateStore.readHotExchanges({ id: exchangeId })[0] ?? null;
+  }
+  return broker.getExchange(exchangeId);
 }
 
 function listWorkerViewsForReadPath(
