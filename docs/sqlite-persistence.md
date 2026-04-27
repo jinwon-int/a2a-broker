@@ -107,6 +107,12 @@ SQLite mode uses WAL. For an online backup, copy the DB using SQLite's backup to
 
 For restore, stop the broker, place those files back under the configured path, then restart with the same `BROKER_PERSISTENCE_BACKEND=sqlite` and `BROKER_SQLITE_FILE` values.
 
+## Runtime hot rows and retention planning
+
+This slice is still snapshot-first for broker runtime load, but SQLite also maintains normalized hot-entity inspection tables for public read paths in the same transaction as the snapshot write. Runtime task and audit mutations now pass dirty hot-entity hints into state saves, and the SQLite store uses those hints to upsert changed task/audit rows while preserving retained rows and pruning rows absent from the canonical snapshot.
+
+The SQLite store also exposes task/audit hot-table retention planning helpers. These compute retained/prunable row ids from the hot tables with the same cutoff/newest-cap/protected-target shape used by broker retention. They are planning/verification seams for the next DB-backed retention slice; the canonical snapshot remains the source of truth until broader runtime paths move fully into dedicated repositories.
+
 ## Current limitation
 
-This slice is still snapshot-first for broker runtime load, but SQLite also maintains normalized hot-entity inspection tables for public read paths in the same transaction as the snapshot write. Runtime task and audit mutations now pass dirty hot-entity hints into state saves, and the SQLite store uses those hints to upsert changed task/audit rows while preserving retained rows and pruning rows absent from the canonical snapshot. The snapshot remains canonical until broader runtime paths move fully into dedicated repositories. The next slices should move runtime reads/writes for workers, exchanges, proposals, and tombstones into dedicated repositories while keeping the public HTTP and JSON-RPC contract stable.
+The snapshot remains canonical until broader runtime paths move fully into dedicated repositories. The next slices should move runtime reads/writes for workers, exchanges, proposals, and tombstones into dedicated repositories while keeping the public HTTP and JSON-RPC contract stable.
