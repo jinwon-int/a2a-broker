@@ -290,6 +290,36 @@ async function gateComposeSmoke({ edgeSecret, timeoutMs }) {
     });
     report.approvalLifecycle = approvalProof;
 
+    console.log('[compose] seeding exchange hot-write proof…');
+    const exchange = await requestJson(baseUrl, 'POST', '/exchanges', {
+      requester,
+      edgeSecret,
+      body: {
+        requester,
+        target: { id: 'echo-worker-1', kind: 'node', role: 'analyst' },
+        message: 'release-gate exchange hot-write proof',
+        intent: 'chat',
+      },
+    });
+    if (!exchange?.id) {
+      throw new Error(`exchange proof did not create an exchange: ${JSON.stringify(exchange)}`);
+    }
+    const threadMessage = await requestJson(baseUrl, 'POST', `/exchanges/${exchange.id}/messages`, {
+      requester,
+      edgeSecret,
+      body: {
+        actor: requester,
+        message: 'release-gate exchange message hot-write proof',
+      },
+    });
+    if (threadMessage?.exchangeId !== exchange.id || threadMessage?.kind !== 'thread') {
+      throw new Error(`exchange proof did not create a thread message: ${JSON.stringify(threadMessage)}`);
+    }
+    report.exchangeProof = {
+      exchangeId: exchange.id,
+      threadMessageId: threadMessage.id,
+    };
+
     if (persistenceBackend === 'sqlite') {
       console.log('[compose] verifying SQLite JSON export from runtime image…');
       report.sqliteExport = await verifySqliteExport({
@@ -297,6 +327,8 @@ async function gateComposeSmoke({ edgeSecret, timeoutMs }) {
         composeArgs,
         sqliteFile,
         expectedTaskIds: [taskId],
+        expectedExchangeIds: [exchange.id],
+        expectedExchangeMessageIds: [threadMessage.id],
       });
       console.log('[compose] verifying SQLite retention plans from runtime image…');
       report.sqliteRetentionPlans = await verifySqliteRetentionPlans({
@@ -329,7 +361,7 @@ async function gateComposeSmoke({ edgeSecret, timeoutMs }) {
   }
 }
 
-async function verifySqliteExport({ compose, composeArgs, sqliteFile, expectedTaskIds }) {
+async function verifySqliteExport({ compose, composeArgs, sqliteFile, expectedTaskIds, expectedExchangeIds = [], expectedExchangeMessageIds = [] }) {
   const { stdout } = await run(compose.cmd, [
     ...composeArgs('exec'),
     '-T',
@@ -348,9 +380,19 @@ async function verifySqliteExport({ compose, composeArgs, sqliteFile, expectedTa
 
   const tasks = Array.isArray(snapshot.tasks) ? snapshot.tasks : [];
   const auditEvents = Array.isArray(snapshot.auditEvents) ? snapshot.auditEvents : [];
+  const exchanges = Array.isArray(snapshot.exchanges) ? snapshot.exchanges : [];
+  const exchangeMessages = Array.isArray(snapshot.exchangeMessages) ? snapshot.exchangeMessages : [];
   const missingTaskIds = expectedTaskIds.filter((id) => !tasks.some((task) => task?.id === id));
   if (missingTaskIds.length) {
     throw new Error(`SQLite export missing task ids: ${missingTaskIds.join(', ')}`);
+  }
+  const missingExchangeIds = expectedExchangeIds.filter((id) => !exchanges.some((exchange) => exchange?.id === id));
+  if (missingExchangeIds.length) {
+    throw new Error(`SQLite export missing exchange ids: ${missingExchangeIds.join(', ')}`);
+  }
+  const missingMessageIds = expectedExchangeMessageIds.filter((id) => !exchangeMessages.some((message) => message?.id === id));
+  if (missingMessageIds.length) {
+    throw new Error(`SQLite export missing exchange message ids: ${missingMessageIds.join(', ')}`);
   }
   if (snapshot.version !== 7) {
     throw new Error(`SQLite export used unexpected snapshot version: ${snapshot.version}`);
@@ -359,7 +401,11 @@ async function verifySqliteExport({ compose, composeArgs, sqliteFile, expectedTa
     version: snapshot.version,
     taskCount: tasks.length,
     auditEventCount: auditEvents.length,
+    exchangeCount: exchanges.length,
+    exchangeMessageCount: exchangeMessages.length,
     verifiedTaskIds: expectedTaskIds,
+    verifiedExchangeIds: expectedExchangeIds,
+    verifiedExchangeMessageIds: expectedExchangeMessageIds,
   };
 }
 

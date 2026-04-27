@@ -191,6 +191,8 @@ export class InMemoryA2ABroker {
   private readonly pendingHotTasks = new Map<string, TaskRecord>();
   private readonly pendingHotAuditEvents = new Map<string, AuditEvent>();
   private readonly pendingHotWorkers = new Map<string, WorkerRecord>();
+  private readonly pendingHotExchanges = new Map<string, A2AExchangeState>();
+  private readonly pendingHotExchangeMessages = new Map<string, A2AExchangeMessageRecord>();
   private readonly stateListeners = new Set<BrokerStateListener>();
   private readonly maxBufferedEventsPerTask: number;
   private readonly taskEventStream: TaskEventStream;
@@ -395,8 +397,8 @@ export class InMemoryA2ABroker {
       updatedAt: now,
     };
 
-    this.exchangeMessages.set(rootMessage.id, rootMessage);
-    this.exchanges.set(exchange.id, exchange);
+    this.setExchangeMessageRecord(rootMessage);
+    this.setExchangeRecord(exchange);
     this.persistState();
     return exchange;
   }
@@ -472,13 +474,13 @@ export class InMemoryA2ABroker {
       updatedAt: now,
     };
 
-    this.exchangeMessages.set(message.id, message);
+    this.setExchangeMessageRecord(message);
     exchange.messageCount += 1;
     exchange.lastMessageAt = now;
     exchange.latestMessageId = message.id;
     exchange.updatedAt = now;
     this.applyExchangeMessageDecision(exchange, message);
-    this.exchanges.set(exchange.id, exchange);
+    this.setExchangeRecord(exchange);
     this.appendAuditEvent({
       actorId: request.actor.id,
       action: "exchange.message.added",
@@ -2049,25 +2051,49 @@ export class InMemoryA2ABroker {
     this.pendingHotTasks.set(task.id, structuredClone(task));
   }
 
+  private setExchangeRecord(exchange: A2AExchangeState): void {
+    this.exchanges.set(exchange.id, exchange);
+    this.pendingHotExchanges.set(exchange.id, structuredClone(exchange));
+  }
+
+  private setExchangeMessageRecord(message: A2AExchangeMessageRecord): void {
+    this.exchangeMessages.set(message.id, message);
+    this.pendingHotExchangeMessages.set(message.id, structuredClone(message));
+  }
+
   private setWorkerRecord(worker: WorkerRecord): void {
     this.workers.set(worker.nodeId, worker);
     this.pendingHotWorkers.set(worker.nodeId, structuredClone(worker));
   }
 
   private consumeStateSaveHints(snapshot: BrokerSnapshot): BrokerStateSaveHints | undefined {
-    if (this.pendingHotTasks.size === 0 && this.pendingHotAuditEvents.size === 0 && this.pendingHotWorkers.size === 0) {
+    if (
+      this.pendingHotExchanges.size === 0 &&
+      this.pendingHotExchangeMessages.size === 0 &&
+      this.pendingHotTasks.size === 0 &&
+      this.pendingHotAuditEvents.size === 0 &&
+      this.pendingHotWorkers.size === 0
+    ) {
       return undefined;
     }
+    const retainedExchangeIds = new Set(snapshot.exchanges.map((exchange) => exchange.id));
+    const retainedExchangeMessageIds = new Set(snapshot.exchangeMessages.map((message) => message.id));
     const retainedTaskIds = new Set(snapshot.tasks.map((task) => task.id));
     const retainedAuditEventIds = new Set(snapshot.auditEvents.map((event) => event.id));
     const retainedWorkerIds = new Set(snapshot.workers.map((worker) => worker.nodeId));
+    const hotExchanges = [...this.pendingHotExchanges.values()].filter((exchange) => retainedExchangeIds.has(exchange.id));
+    const hotExchangeMessages = [...this.pendingHotExchangeMessages.values()].filter((message) => retainedExchangeMessageIds.has(message.id));
     const hotTasks = [...this.pendingHotTasks.values()].filter((task) => retainedTaskIds.has(task.id));
     const hotAuditEvents = [...this.pendingHotAuditEvents.values()].filter((event) => retainedAuditEventIds.has(event.id));
     const hotWorkers = [...this.pendingHotWorkers.values()].filter((worker) => retainedWorkerIds.has(worker.nodeId));
+    this.pendingHotExchanges.clear();
+    this.pendingHotExchangeMessages.clear();
     this.pendingHotTasks.clear();
     this.pendingHotAuditEvents.clear();
     this.pendingHotWorkers.clear();
     return {
+      ...(hotExchanges.length ? { hotExchanges } : {}),
+      ...(hotExchangeMessages.length ? { hotExchangeMessages } : {}),
       ...(hotTasks.length ? { hotTasks } : {}),
       ...(hotAuditEvents.length ? { hotAuditEvents } : {}),
       ...(hotWorkers.length ? { hotWorkers } : {}),
@@ -2583,7 +2609,7 @@ export class InMemoryA2ABroker {
     exchange.assignedWorkerId = task.assignedWorkerId ?? task.targetNodeId;
     exchange.target = task.target;
     exchange.updatedAt = isoNow();
-    this.exchanges.set(exchange.id, exchange);
+    this.setExchangeRecord(exchange);
   }
 
   private syncExchangeStateFromTask(
@@ -2603,7 +2629,7 @@ export class InMemoryA2ABroker {
     exchange.target = task.target;
     exchange.status = nextStatus;
     exchange.updatedAt = isoNow();
-    this.exchanges.set(exchange.id, exchange);
+    this.setExchangeRecord(exchange);
   }
 
   private assertWorkerRegistrationPayload(request: RegisterWorkerRequest): void {
