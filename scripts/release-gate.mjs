@@ -298,6 +298,13 @@ async function gateComposeSmoke({ edgeSecret, timeoutMs }) {
         sqliteFile,
         expectedTaskIds: [taskId],
       });
+      console.log('[compose] verifying SQLite retention plans from runtime image…');
+      report.sqliteRetentionPlans = await verifySqliteRetentionPlans({
+        compose,
+        composeArgs,
+        sqliteFile,
+        expectedTaskIds: [taskId],
+      });
     }
 
     report.ok = true;
@@ -352,6 +359,85 @@ async function verifySqliteExport({ compose, composeArgs, sqliteFile, expectedTa
     taskCount: tasks.length,
     auditEventCount: auditEvents.length,
     verifiedTaskIds: expectedTaskIds,
+  };
+}
+
+async function verifySqliteRetentionPlans({ compose, composeArgs, sqliteFile, expectedTaskIds }) {
+  const code = `
+    import { SqliteBrokerStateStore } from './dist/core/store.js';
+    const store = new SqliteBrokerStateStore(process.argv[1]);
+    try {
+      const nowMs = Date.now() + 1000;
+      const taskPlan = store.planHotTaskRetention({
+        nowMs,
+        retentionMs: 0,
+        maxTerminalRecords: 1,
+      });
+      const auditPlan = store.planHotAuditRetention({
+        nowMs,
+        retentionMs: 0,
+        maxRecords: 1,
+      });
+      process.stdout.write(JSON.stringify({ taskPlan, auditPlan }));
+    } finally {
+      store.close();
+    }
+  `;
+  const { stdout } = await run(compose.cmd, [
+    ...composeArgs('exec'),
+    '-T',
+    'a2a-broker',
+    'node',
+    '--input-type=module',
+    '-e',
+    code,
+    sqliteFile,
+  ]);
+  let plans;
+  try {
+    plans = JSON.parse(stdout);
+  } catch (error) {
+    throw new Error(`SQLite retention plans did not produce JSON: ${error instanceof Error ? error.message : String(error)}`);
+  }
+
+  const taskPlan = plans?.taskPlan;
+  const auditPlan = plans?.auditPlan;
+  if (taskPlan?.table !== 'broker_tasks') {
+    throw new Error(`unexpected task retention plan table: ${taskPlan?.table}`);
+  }
+  if (auditPlan?.table !== 'broker_audit_events') {
+    throw new Error(`unexpected audit retention plan table: ${auditPlan?.table}`);
+  }
+  const plannedTaskIds = new Set([
+    ...(Array.isArray(taskPlan.retainedIds) ? taskPlan.retainedIds : []),
+    ...(Array.isArray(taskPlan.pruneIds) ? taskPlan.pruneIds : []),
+  ]);
+  const missingTaskIds = expectedTaskIds.filter((id) => !plannedTaskIds.has(id));
+  if (missingTaskIds.length) {
+    throw new Error(`SQLite task retention plan missing task ids: ${missingTaskIds.join(', ')}`);
+  }
+  if (!Array.isArray(taskPlan.retainedIds) || taskPlan.retainedIds.length < 1) {
+    throw new Error('SQLite task retention plan retained no rows under newest-cap proof');
+  }
+  if (!Array.isArray(taskPlan.pruneIds) || taskPlan.pruneIds.length < 1) {
+    throw new Error('SQLite task retention plan produced no prunable rows under forced cutoff proof');
+  }
+  if (!Array.isArray(auditPlan.retainedIds) || auditPlan.retainedIds.length < 1) {
+    throw new Error('SQLite audit retention plan retained no rows under newest-cap proof');
+  }
+  if (!Array.isArray(auditPlan.pruneIds) || auditPlan.pruneIds.length < 1) {
+    throw new Error('SQLite audit retention plan produced no prunable rows under forced cutoff proof');
+  }
+  return {
+    task: {
+      retainedCount: taskPlan.retainedIds.length,
+      pruneCount: taskPlan.pruneIds.length,
+      verifiedTaskIds: expectedTaskIds,
+    },
+    audit: {
+      retainedCount: auditPlan.retainedIds.length,
+      pruneCount: auditPlan.pruneIds.length,
+    },
   };
 }
 
