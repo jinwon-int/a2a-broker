@@ -89,6 +89,7 @@ test("SqliteBrokerStateStore saves and reloads snapshots with WAL metadata", () 
   try {
     const snapshot: BrokerSnapshot = {
       ...emptySnapshot(),
+      exchanges: [makeExchange("exchange-1", "worker-a")],
       workers: [
         {
           nodeId: "worker-a",
@@ -144,9 +145,9 @@ test("SqliteBrokerStateStore saves and reloads snapshots with WAL metadata", () 
       kind: "sqlite",
       dbFile: temp.filePath,
       stateVersion: CURRENT_BROKER_STATE_VERSION,
-      schemaVersion: 3,
+      schemaVersion: 4,
       journalMode: "wal",
-      hotEntityTables: ["broker_tasks", "broker_workers", "broker_audit_events"],
+      hotEntityTables: ["broker_exchanges", "broker_tasks", "broker_workers", "broker_audit_events"],
       importedFromJsonFile: undefined,
       lastImportAt: undefined,
     });
@@ -154,6 +155,7 @@ test("SqliteBrokerStateStore saves and reloads snapshots with WAL metadata", () 
 
     const db = new DatabaseSync(temp.filePath, { readOnly: true });
     try {
+      assert.equal(readSqliteCount(db, "broker_exchanges"), 1);
       assert.equal(readSqliteCount(db, "broker_tasks"), 1);
       assert.equal(readSqliteCount(db, "broker_workers"), 1);
       assert.equal(readSqliteCount(db, "broker_audit_events"), 1);
@@ -169,6 +171,16 @@ test("SqliteBrokerStateStore saves and reloads snapshots with WAL metadata", () 
       assert.equal(taskRow.intent, "chat");
       assert.equal(taskRow.assigned_worker_id, "worker-a");
       assert.equal(taskRow.task_origin, "api");
+      const exchangeRow = db.prepare("SELECT id, status, intent, target_node_id FROM broker_exchanges").get() as {
+        id: string;
+        status: string;
+        intent: string;
+        target_node_id: string;
+      };
+      assert.equal(exchangeRow.id, "exchange-1");
+      assert.equal(exchangeRow.status, "running");
+      assert.equal(exchangeRow.intent, "chat");
+      assert.equal(exchangeRow.target_node_id, "worker-a");
     } finally {
       db.close();
     }
@@ -241,6 +253,10 @@ test("SqliteBrokerStateStore reads hot entities from mirrored tables with filter
         makeWorker("worker-a"),
         makeWorker("worker-b"),
       ],
+      exchanges: [
+        makeExchange("exchange-a", "worker-a", "2026-04-27T00:01:00.000Z"),
+        makeExchange("exchange-b", "worker-b", "2026-04-27T00:02:00.000Z"),
+      ],
       tasks: [
         makeTask("task-queued", "queued", "worker-a"),
         makeTask("task-running", "running", "worker-a"),
@@ -271,6 +287,14 @@ test("SqliteBrokerStateStore reads hot entities from mirrored tables with filter
     assert.deepEqual(
       store.readHotTasks({ targetNodeId: "worker-a", intent: "chat", taskOrigin: "api" }).map((task) => task.id),
       ["task-running", "task-queued"],
+    );
+    assert.deepEqual(
+      store.readHotExchanges().map((exchange) => exchange.id),
+      ["exchange-b", "exchange-a"],
+    );
+    assert.deepEqual(
+      store.readHotExchanges({ id: "exchange-a" }).map((exchange) => exchange.targetNodeId),
+      ["worker-a"],
     );
     assert.deepEqual(
       store.readHotWorkers().map((worker) => worker.nodeId),
@@ -325,7 +349,7 @@ test("SqliteBrokerStateStore migrates v2 task hot table with task origin column"
       store.readHotTasks({ taskOrigin: "api", targetNodeId: "worker-a" }).map((task) => task.id),
       ["task-migrated"],
     );
-    assert.equal(store.getPersistenceInfo().schemaVersion, 3);
+    assert.equal(store.getPersistenceInfo().schemaVersion, 4);
     store.close();
   } finally {
     temp.cleanup();
@@ -352,6 +376,31 @@ function makeWorker(nodeId: string): BrokerSnapshot["workers"][number] {
     createdAt: "2026-04-27T00:00:00.000Z",
     updatedAt: "2026-04-27T00:00:00.000Z",
     lastSeenAt: "2026-04-27T00:00:00.000Z",
+  };
+}
+
+function makeExchange(
+  id: string,
+  targetNodeId: string,
+  createdAt = "2026-04-27T00:00:00.000Z",
+): BrokerSnapshot["exchanges"][number] {
+  return {
+    id,
+    requester: { id: "requester", kind: "session", role: "hub" },
+    target: { id: targetNodeId, kind: "node", role: "analyst" },
+    targetNodeId,
+    assignedWorkerId: targetNodeId,
+    message: id,
+    maxTurns: 4,
+    intent: "chat",
+    status: "running",
+    rootMessageId: `${id}-root`,
+    latestMessageId: `${id}-root`,
+    messageCount: 1,
+    lastMessageAt: createdAt,
+    activeTaskId: `${id}-task`,
+    createdAt,
+    updatedAt: createdAt,
   };
 }
 

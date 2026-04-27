@@ -335,9 +335,10 @@ test("server reports SQLite persistence metadata when SQLite backend is enabled"
     assert.equal(health.persistence.kind, "sqlite");
     assert.equal(health.persistence.dbFile, join(dir, "state.sqlite"));
     assert.equal(health.persistence.stateVersion, 7);
-    assert.equal(health.persistence.schemaVersion, 3);
+    assert.equal(health.persistence.schemaVersion, 4);
     assert.equal(health.persistence.journalMode, "wal");
     assert.deepEqual(health.persistence.hotEntityTables, [
+      "broker_exchanges",
       "broker_tasks",
       "broker_workers",
       "broker_audit_events",
@@ -735,6 +736,170 @@ test("server returns 404 for missing /workers/:id from SQLite hot tables", async
     }
 
     const res = await fetch(`http://127.0.0.1:${address.port}/workers/missing-worker`);
+    assert.equal(res.status, 404);
+  } finally {
+    runtime.stopStaleReaper();
+    await new Promise<void>((resolve) => runtime.server.close(() => resolve()));
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("server reads /exchanges from SQLite hot tables when SQLite store is active", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "a2a-broker-sqlite-exchanges-"));
+  const store = new SqliteBrokerStateStore(join(dir, "state.sqlite"));
+  const snapshot: BrokerSnapshot = {
+    ...emptySnapshot(),
+    exchanges: [
+      {
+        id: "exchange-old",
+        requester: { id: "requester", kind: "session", role: "hub" },
+        target: { id: "worker-a", kind: "node", role: "analyst" },
+        targetNodeId: "worker-a",
+        message: "old exchange",
+        maxTurns: 4,
+        intent: "chat",
+        status: "running",
+        rootMessageId: "message-old-root",
+        latestMessageId: "message-old-root",
+        messageCount: 1,
+        lastMessageAt: "2026-04-27T00:00:00.000Z",
+        createdAt: "2026-04-27T00:00:00.000Z",
+        updatedAt: "2026-04-27T00:00:00.000Z",
+      },
+      {
+        id: "exchange-new",
+        requester: { id: "requester", kind: "session", role: "hub" },
+        target: { id: "worker-b", kind: "node", role: "analyst" },
+        targetNodeId: "worker-b",
+        assignedWorkerId: "worker-b",
+        message: "new exchange",
+        maxTurns: 4,
+        intent: "analyze",
+        status: "queued",
+        rootMessageId: "message-new-root",
+        latestMessageId: "message-new-root",
+        messageCount: 1,
+        lastMessageAt: "2026-04-27T00:01:00.000Z",
+        createdAt: "2026-04-27T00:01:00.000Z",
+        updatedAt: "2026-04-27T00:01:00.000Z",
+      },
+    ],
+  };
+  store.save(snapshot);
+  const runtime = createBrokerServer({
+    host: "127.0.0.1",
+    port: 0,
+    publicBaseUrl: "https://broker.test/",
+    stateStore: store,
+    enforceRequesterIdentity: false,
+    staleReaperEnabled: false,
+  });
+  try {
+    runtime.broker.listExchanges = (() => {
+      throw new Error("/exchanges should use SQLite hot read path");
+    }) as typeof runtime.broker.listExchanges;
+    runtime.server.listen(0, "127.0.0.1");
+    await once(runtime.server, "listening");
+    const address = runtime.server.address();
+    if (!address || typeof address === "string") {
+      throw new Error("failed to bind test server");
+    }
+
+    const res = await fetch(`http://127.0.0.1:${address.port}/exchanges`);
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.deepEqual(body.items, [snapshot.exchanges[1], snapshot.exchanges[0]]);
+  } finally {
+    runtime.stopStaleReaper();
+    await new Promise<void>((resolve) => runtime.server.close(() => resolve()));
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("server reads /exchanges/:id from SQLite hot tables when SQLite store is active", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "a2a-broker-sqlite-exchange-detail-"));
+  const store = new SqliteBrokerStateStore(join(dir, "state.sqlite"));
+  const snapshot: BrokerSnapshot = {
+    ...emptySnapshot(),
+    exchanges: [
+      {
+        id: "exchange-detail-from-sqlite",
+        requester: { id: "requester", kind: "session", role: "hub" },
+        target: { id: "worker-a", kind: "node", role: "analyst" },
+        targetNodeId: "worker-a",
+        assignedWorkerId: "worker-a",
+        message: "detail exchange",
+        maxTurns: 4,
+        intent: "chat",
+        status: "running",
+        rootMessageId: "message-root",
+        latestMessageId: "message-root",
+        messageCount: 1,
+        lastMessageAt: "2026-04-27T00:00:00.000Z",
+        activeTaskId: "task-a",
+        createdAt: "2026-04-27T00:00:00.000Z",
+        updatedAt: "2026-04-27T00:00:00.000Z",
+      },
+    ],
+  };
+  store.save(snapshot);
+  const runtime = createBrokerServer({
+    host: "127.0.0.1",
+    port: 0,
+    publicBaseUrl: "https://broker.test/",
+    stateStore: store,
+    enforceRequesterIdentity: false,
+    staleReaperEnabled: false,
+  });
+  try {
+    runtime.broker.getExchange = (() => {
+      throw new Error("/exchanges/:id should use SQLite hot read path");
+    }) as typeof runtime.broker.getExchange;
+    runtime.server.listen(0, "127.0.0.1");
+    await once(runtime.server, "listening");
+    const address = runtime.server.address();
+    if (!address || typeof address === "string") {
+      throw new Error("failed to bind test server");
+    }
+
+    const res = await fetch(`http://127.0.0.1:${address.port}/exchanges/exchange-detail-from-sqlite`);
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.deepEqual(body, snapshot.exchanges[0]);
+  } finally {
+    runtime.stopStaleReaper();
+    await new Promise<void>((resolve) => runtime.server.close(() => resolve()));
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("server returns 404 for missing /exchanges/:id from SQLite hot tables", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "a2a-broker-sqlite-exchange-detail-missing-"));
+  const store = new SqliteBrokerStateStore(join(dir, "state.sqlite"));
+  store.save(emptySnapshot());
+  const runtime = createBrokerServer({
+    host: "127.0.0.1",
+    port: 0,
+    publicBaseUrl: "https://broker.test/",
+    stateStore: store,
+    enforceRequesterIdentity: false,
+    staleReaperEnabled: false,
+  });
+  try {
+    runtime.broker.getExchange = (() => {
+      throw new Error("missing /exchanges/:id should use SQLite hot read path");
+    }) as typeof runtime.broker.getExchange;
+    runtime.server.listen(0, "127.0.0.1");
+    await once(runtime.server, "listening");
+    const address = runtime.server.address();
+    if (!address || typeof address === "string") {
+      throw new Error("failed to bind test server");
+    }
+
+    const res = await fetch(`http://127.0.0.1:${address.port}/exchanges/missing-exchange`);
     assert.equal(res.status, 404);
   } finally {
     runtime.stopStaleReaper();
