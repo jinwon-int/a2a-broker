@@ -6,7 +6,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { createBrokerServer, type BrokerServerOptions } from "./server.js";
-import { emptySnapshot, type BrokerStateStore } from "./core/store.js";
+import {
+  emptySnapshot,
+  SqliteBrokerStateStore,
+  type BrokerSnapshot,
+  type BrokerStateStore,
+} from "./core/store.js";
 import {
   TRADING_DIALECTIC_KIND,
   TRADING_DIALECTIC_VERSION,
@@ -340,6 +345,57 @@ test("server reports SQLite persistence metadata when SQLite backend is enabled"
   } finally {
     runtime.stopStaleReaper();
     await new Promise<void>((resolve) => runtime.server.close(() => resolve()));
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("server reads /audit from SQLite hot tables when SQLite store is active", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "a2a-broker-sqlite-audit-"));
+  const store = new SqliteBrokerStateStore(join(dir, "state.sqlite"));
+  const snapshot: BrokerSnapshot = {
+    ...emptySnapshot(),
+    auditEvents: [
+      {
+        id: "audit-from-sqlite",
+        actorId: "operator-a",
+        action: "task.started",
+        targetType: "task",
+        targetId: "task-a",
+        proposalId: "proposal-a",
+        createdAt: "2026-04-27T00:00:00.000Z",
+      },
+    ],
+  };
+  store.save(snapshot);
+  const runtime = createBrokerServer({
+    host: "127.0.0.1",
+    port: 0,
+    publicBaseUrl: "https://broker.test/",
+    stateStore: store,
+    enforceRequesterIdentity: false,
+    staleReaperEnabled: false,
+  });
+  try {
+    runtime.broker.listAuditEvents = (() => {
+      throw new Error("/audit should use SQLite hot read path");
+    }) as typeof runtime.broker.listAuditEvents;
+    runtime.server.listen(0, "127.0.0.1");
+    await once(runtime.server, "listening");
+    const address = runtime.server.address();
+    if (!address || typeof address === "string") {
+      throw new Error("failed to bind test server");
+    }
+
+    const res = await fetch(
+      `http://127.0.0.1:${address.port}/audit?action=task.started&targetId=task-a&proposalId=proposal-a&actorId=operator-a`,
+    );
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.deepEqual(body.items, snapshot.auditEvents);
+  } finally {
+    runtime.stopStaleReaper();
+    await new Promise<void>((resolve) => runtime.server.close(() => resolve()));
+    store.close();
     rmSync(dir, { recursive: true, force: true });
   }
 });

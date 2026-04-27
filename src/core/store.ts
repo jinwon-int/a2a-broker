@@ -66,6 +66,8 @@ export interface SqliteTaskHotTableFilters {
 }
 
 export interface SqliteAuditHotTableFilters {
+  proposalId?: string;
+  actorId?: string;
   action?: AuditEvent["action"];
   targetType?: AuditEvent["targetType"];
   targetId?: string;
@@ -516,10 +518,19 @@ export class SqliteBrokerStateStore implements BrokerStateStore {
       ],
       "created_at DESC, id ASC",
     );
-    return this.db
+    const events = this.db
       .prepare(sql)
       .all(...params)
       .map((row) => parseHotEntityPayload(row, auditEventSchema, "broker_audit_events")) as AuditEvent[];
+    return events.filter((event) => {
+      if (filters.proposalId && event.proposalId !== filters.proposalId) {
+        return false;
+      }
+      if (filters.actorId && event.actorId !== filters.actorId) {
+        return false;
+      }
+      return true;
+    });
   }
 
   close(): void {
