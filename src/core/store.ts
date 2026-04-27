@@ -45,6 +45,7 @@ export interface BrokerPersistenceInfo {
   stateFile?: string;
   dbFile?: string;
   journalMode?: string;
+  hotEntityTables?: string[];
   importedFromJsonFile?: string;
   lastImportAt?: string;
 }
@@ -58,7 +59,8 @@ export interface SqliteBrokerStateStoreOptions {
   importJsonFile?: string;
 }
 
-const SQLITE_SCHEMA_VERSION = 1;
+const SQLITE_SCHEMA_VERSION = 2;
+const SQLITE_HOT_ENTITY_TABLES = ["broker_tasks", "broker_workers", "broker_audit_events"];
 
 const partyRefSchema = z
   .object({
@@ -480,6 +482,7 @@ export class SqliteBrokerStateStore implements BrokerStateStore {
       stateVersion: CURRENT_BROKER_STATE_VERSION,
       schemaVersion: SQLITE_SCHEMA_VERSION,
       journalMode: this.journalMode,
+      hotEntityTables: SQLITE_HOT_ENTITY_TABLES,
       importedFromJsonFile: this.readMetadata("imported_from_json_file"),
       lastImportAt: this.readMetadata("last_import_at"),
     };
@@ -501,6 +504,40 @@ export class SqliteBrokerStateStore implements BrokerStateStore {
         payload TEXT NOT NULL,
         updated_at TEXT NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS broker_tasks (
+        id TEXT PRIMARY KEY,
+        status TEXT NOT NULL,
+        intent TEXT NOT NULL,
+        target_node_id TEXT NOT NULL,
+        assigned_worker_id TEXT,
+        updated_at TEXT NOT NULL,
+        payload TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS broker_tasks_status_updated_idx
+        ON broker_tasks(status, updated_at);
+      CREATE INDEX IF NOT EXISTS broker_tasks_worker_status_idx
+        ON broker_tasks(assigned_worker_id, status);
+      CREATE TABLE IF NOT EXISTS broker_workers (
+        node_id TEXT PRIMARY KEY,
+        role TEXT NOT NULL,
+        last_seen_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        payload TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS broker_workers_last_seen_idx
+        ON broker_workers(last_seen_at);
+      CREATE TABLE IF NOT EXISTS broker_audit_events (
+        id TEXT PRIMARY KEY,
+        action TEXT NOT NULL,
+        target_type TEXT NOT NULL,
+        target_id TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        payload TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS broker_audit_events_target_idx
+        ON broker_audit_events(target_type, target_id, created_at);
+      CREATE INDEX IF NOT EXISTS broker_audit_events_action_idx
+        ON broker_audit_events(action, created_at);
     `);
     this.writeMetadata("schema_version", String(SQLITE_SCHEMA_VERSION));
     this.writeMetadata("state_version", String(CURRENT_BROKER_STATE_VERSION));
@@ -536,6 +573,63 @@ export class SqliteBrokerStateStore implements BrokerStateStore {
            updated_at = excluded.updated_at`,
       )
       .run(CURRENT_BROKER_STATE_VERSION, payload, updatedAt);
+    this.writeHotEntityTables(snapshot);
+  }
+
+  private writeHotEntityTables(snapshot: BrokerSnapshot): void {
+    this.db.exec(`
+      DELETE FROM broker_tasks;
+      DELETE FROM broker_workers;
+      DELETE FROM broker_audit_events;
+    `);
+
+    const insertTask = this.db.prepare(
+      `INSERT INTO broker_tasks
+        (id, status, intent, target_node_id, assigned_worker_id, updated_at, payload)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    );
+    for (const task of snapshot.tasks) {
+      insertTask.run(
+        task.id,
+        task.status,
+        task.intent,
+        task.targetNodeId,
+        task.assignedWorkerId ?? null,
+        task.updatedAt,
+        JSON.stringify(task),
+      );
+    }
+
+    const insertWorker = this.db.prepare(
+      `INSERT INTO broker_workers
+        (node_id, role, last_seen_at, updated_at, payload)
+       VALUES (?, ?, ?, ?, ?)`,
+    );
+    for (const worker of snapshot.workers) {
+      insertWorker.run(
+        worker.nodeId,
+        worker.role,
+        worker.lastSeenAt,
+        worker.updatedAt,
+        JSON.stringify(worker),
+      );
+    }
+
+    const insertAudit = this.db.prepare(
+      `INSERT INTO broker_audit_events
+        (id, action, target_type, target_id, created_at, payload)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    );
+    for (const audit of snapshot.auditEvents) {
+      insertAudit.run(
+        audit.id,
+        audit.action,
+        audit.targetType,
+        audit.targetId,
+        audit.createdAt,
+        JSON.stringify(audit),
+      );
+    }
   }
 
   private runImmediateTransaction(fn: () => void): void {

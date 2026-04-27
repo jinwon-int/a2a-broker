@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 
 import {
@@ -115,6 +116,22 @@ test("SqliteBrokerStateStore saves and reloads snapshots with WAL metadata", () 
           createdAt: "2026-04-27T00:00:00.000Z",
         },
       ],
+      tasks: [
+        {
+          id: "task-1",
+          intent: "chat",
+          requester: { id: "requester", kind: "session", role: "hub" },
+          target: { id: "worker-a", kind: "node", role: "analyst" },
+          message: "inspect me",
+          targetNodeId: "worker-a",
+          assignedWorkerId: "worker-a",
+          payload: { correlationId: "corr-1" },
+          status: "queued",
+          createdAt: "2026-04-27T00:00:00.000Z",
+          updatedAt: "2026-04-27T00:00:00.000Z",
+          taskOrigin: "api",
+        },
+      ],
     };
 
     const store = new SqliteBrokerStateStore(temp.filePath);
@@ -127,12 +144,32 @@ test("SqliteBrokerStateStore saves and reloads snapshots with WAL metadata", () 
       kind: "sqlite",
       dbFile: temp.filePath,
       stateVersion: CURRENT_BROKER_STATE_VERSION,
-      schemaVersion: 1,
+      schemaVersion: 2,
       journalMode: "wal",
+      hotEntityTables: ["broker_tasks", "broker_workers", "broker_audit_events"],
       importedFromJsonFile: undefined,
       lastImportAt: undefined,
     });
     reloaded.close();
+
+    const db = new DatabaseSync(temp.filePath, { readOnly: true });
+    try {
+      assert.equal(readSqliteCount(db, "broker_tasks"), 1);
+      assert.equal(readSqliteCount(db, "broker_workers"), 1);
+      assert.equal(readSqliteCount(db, "broker_audit_events"), 1);
+      const taskRow = db.prepare("SELECT id, status, intent, assigned_worker_id FROM broker_tasks").get() as {
+        id: string;
+        status: string;
+        intent: string;
+        assigned_worker_id: string;
+      };
+      assert.equal(taskRow.id, "task-1");
+      assert.equal(taskRow.status, "queued");
+      assert.equal(taskRow.intent, "chat");
+      assert.equal(taskRow.assigned_worker_id, "worker-a");
+    } finally {
+      db.close();
+    }
   } finally {
     temp.cleanup();
   }
@@ -173,7 +210,27 @@ test("SqliteBrokerStateStore imports an existing JSON snapshot atomically on fir
     const reloaded = new SqliteBrokerStateStore(temp.filePath);
     assert.deepEqual(reloaded.load(), snapshot);
     reloaded.close();
+
+    const db = new DatabaseSync(temp.filePath, { readOnly: true });
+    try {
+      assert.equal(readSqliteCount(db, "broker_tasks"), 1);
+      const importedTaskRow = db.prepare("SELECT id, status, target_node_id FROM broker_tasks").get() as {
+        id: string;
+        status: string;
+        target_node_id: string;
+      };
+      assert.equal(importedTaskRow.id, "task-imported");
+      assert.equal(importedTaskRow.status, "queued");
+      assert.equal(importedTaskRow.target_node_id, "worker-a");
+    } finally {
+      db.close();
+    }
   } finally {
     temp.cleanup();
   }
 });
+
+function readSqliteCount(db: DatabaseSync, tableName: string): number {
+  const row = db.prepare(`SELECT count(*) AS count FROM ${tableName}`).get() as { count: number };
+  return row.count;
+}
