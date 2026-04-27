@@ -51,6 +51,32 @@ Malformed JSON import fails startup/load with the same bounded validation errors
       "broker_workers",
       "broker_audit_events"
     ],
+    "hotEntityHintTables": [
+      "broker_exchanges",
+      "broker_exchange_messages",
+      "broker_proposals",
+      "broker_artifacts",
+      "broker_validations",
+      "broker_tasks",
+      "broker_workers",
+      "broker_audit_events"
+    ],
+    "hotEntityHintCoverage": {
+      "ok": true,
+      "supportedTables": [
+        "broker_exchanges",
+        "broker_exchange_messages",
+        "broker_proposals",
+        "broker_artifacts",
+        "broker_validations",
+        "broker_tasks",
+        "broker_workers",
+        "broker_audit_events"
+      ],
+      "missingTables": [],
+      "supportedCount": 8,
+      "totalCount": 8
+    },
     "hotEntityMirror": {
       "ok": true,
       "tableCounts": {
@@ -68,6 +94,15 @@ Malformed JSON import fails startup/load with the same bounded validation errors
   }
 }
 ```
+
+Operator check:
+
+- `persistence.hotEntityHintCoverage.ok` should be `true`.
+- `persistence.hotEntityHintCoverage.missingTables` should be empty.
+- `persistence.hotEntityHintCoverage.supportedCount` should equal `persistence.hotEntityHintCoverage.totalCount`.
+- `persistence.hotEntityHintTables` should match the mirrored `persistence.hotEntityTables` set.
+
+If `ok=false`, at least one mirrored SQLite hot table is missing dirty hinted-write support. Treat that as a schema/write-path drift signal before relying on hot-table read performance for that deployment.
 
 JSON mode continues to report:
 
