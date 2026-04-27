@@ -37,6 +37,7 @@ import type {
   A2AExchangeMessageRequest,
   A2AExchangeRequest,
   AuditAction,
+  AuditListFilters,
   BrokerDashboard,
   ApplyProposalRequest,
   AttachArtifactRequest,
@@ -1153,7 +1154,7 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
 
       if (req.method === "GET" && path === "/audit") {
         const filters = auditFiltersFromUrl(url);
-        return sendJson(res, 200, { items: broker.listAuditEvents(filters) });
+        return sendJson(res, 200, { items: listAuditEventsForReadPath(stateStore, broker, filters) });
       }
 
       throw new BrokerError("not_found", "not found");
@@ -1508,6 +1509,17 @@ function auditFiltersFromUrl(url: URL): {
       "worker.heartbeat",
     ]),
   };
+}
+
+function listAuditEventsForReadPath(
+  stateStore: BrokerStateStore,
+  broker: InMemoryA2ABroker,
+  filters: AuditListFilters,
+) {
+  if (stateStore instanceof SqliteBrokerStateStore) {
+    return stateStore.readHotAuditEvents(filters);
+  }
+  return broker.listAuditEvents(filters);
 }
 
 function optionalString(value: string | null): string | undefined {
