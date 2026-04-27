@@ -330,8 +330,13 @@ test("server reports SQLite persistence metadata when SQLite backend is enabled"
     assert.equal(health.persistence.kind, "sqlite");
     assert.equal(health.persistence.dbFile, join(dir, "state.sqlite"));
     assert.equal(health.persistence.stateVersion, 7);
-    assert.equal(health.persistence.schemaVersion, 1);
+    assert.equal(health.persistence.schemaVersion, 2);
     assert.equal(health.persistence.journalMode, "wal");
+    assert.deepEqual(health.persistence.hotEntityTables, [
+      "broker_tasks",
+      "broker_workers",
+      "broker_audit_events",
+    ]);
   } finally {
     runtime.stopStaleReaper();
     await new Promise<void>((resolve) => runtime.server.close(() => resolve()));

@@ -39,8 +39,13 @@ Malformed JSON import fails startup/load with the same bounded validation errors
     "kind": "sqlite",
     "dbFile": "/var/lib/a2a-broker/state.sqlite",
     "stateVersion": 7,
-    "schemaVersion": 1,
+    "schemaVersion": 2,
     "journalMode": "wal",
+    "hotEntityTables": [
+      "broker_tasks",
+      "broker_workers",
+      "broker_audit_events"
+    ],
     "importedFromJsonFile": "/var/lib/a2a-broker/state.json",
     "lastImportAt": "2026-04-27T00:00:00.000Z"
   }
@@ -71,4 +76,4 @@ For restore, stop the broker, place those files back under the configured path, 
 
 ## Current limitation
 
-This slice is a WAL-backed snapshot store, not yet a fully normalized table-backed repository. The next slices should move hot entities such as tasks, workers, audit events, exchanges, proposals, and tombstones into dedicated tables while keeping the public HTTP and JSON-RPC contract stable.
+This slice is still snapshot-first for broker runtime load, but SQLite also maintains normalized hot-entity inspection tables for tasks, workers, and audit events in the same transaction as the snapshot write. The next slices should move runtime reads/writes for tasks, workers, audit events, exchanges, proposals, and tombstones into dedicated repositories while keeping the public HTTP and JSON-RPC contract stable.
