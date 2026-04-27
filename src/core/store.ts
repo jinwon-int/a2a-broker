@@ -198,7 +198,16 @@ const SQLITE_HOT_ENTITY_TABLES = [
   "broker_workers",
   "broker_audit_events",
 ] as const;
-const SQLITE_HOT_ENTITY_HINT_TABLES = [...SQLITE_HOT_ENTITY_TABLES] as const;
+const SQLITE_HOT_ENTITY_HINT_TABLES = [
+  "broker_exchanges",
+  "broker_exchange_messages",
+  "broker_proposals",
+  "broker_artifacts",
+  "broker_validations",
+  "broker_tasks",
+  "broker_workers",
+  "broker_audit_events",
+] as const;
 type SqliteHotEntityTable = typeof SQLITE_HOT_ENTITY_TABLES[number];
 type BrokerSnapshotArrayKey = Exclude<{
   [K in keyof BrokerSnapshot]: BrokerSnapshot[K] extends unknown[] | undefined ? K : never;
@@ -758,16 +767,7 @@ export class SqliteBrokerStateStore implements BrokerStateStore {
   }
 
   readHotEntityHintCoverage(): BrokerHotEntityHintCoverage {
-    const supportedTables = [...SQLITE_HOT_ENTITY_HINT_TABLES];
-    const supported = new Set(supportedTables);
-    const missingTables = SQLITE_HOT_ENTITY_TABLES.filter((table) => !supported.has(table));
-    return {
-      ok: missingTables.length === 0,
-      supportedTables,
-      missingTables,
-      supportedCount: supportedTables.length,
-      totalCount: SQLITE_HOT_ENTITY_TABLES.length,
-    };
+    return buildHotEntityHintCoverage(SQLITE_HOT_ENTITY_TABLES, SQLITE_HOT_ENTITY_HINT_TABLES);
   }
 
   readHotEntityMirrorStatus(): BrokerHotEntityMirrorStatus {
@@ -1616,6 +1616,22 @@ function planWorkerRetentionFromRecords(
     .forEach((entry) => retainedIds.add(entry.id));
 
   return buildRetentionPlan("broker_workers", cutoffMs, records.map((record) => record.nodeId), retainedIds);
+}
+
+export function buildHotEntityHintCoverage(
+  hotEntityTables: readonly string[],
+  hintedWriteTables: readonly string[],
+): BrokerHotEntityHintCoverage {
+  const supportedTables = [...hintedWriteTables];
+  const supported = new Set(supportedTables);
+  const missingTables = hotEntityTables.filter((table) => !supported.has(table));
+  return {
+    ok: missingTables.length === 0,
+    supportedTables,
+    missingTables,
+    supportedCount: supportedTables.length,
+    totalCount: hotEntityTables.length,
+  };
 }
 
 function buildRetentionPlan(

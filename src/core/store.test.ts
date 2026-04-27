@@ -10,6 +10,7 @@ import {
   CURRENT_BROKER_STATE_VERSION,
   JsonFileBrokerStateStore,
   SqliteBrokerStateStore,
+  buildHotEntityHintCoverage,
   emptySnapshot,
   serializeBrokerSnapshot,
   writeBrokerSnapshotFile,
@@ -314,6 +315,22 @@ test("SqliteBrokerStateStore saves and reloads snapshots with WAL metadata", () 
   } finally {
     temp.cleanup();
   }
+});
+
+test("buildHotEntityHintCoverage reports missing hinted-write support for mirrored table drift", () => {
+  assert.deepEqual(
+    buildHotEntityHintCoverage(
+      ["broker_tasks", "broker_workers", "broker_future_hot_table"],
+      ["broker_tasks", "broker_workers"],
+    ),
+    {
+      ok: false,
+      supportedTables: ["broker_tasks", "broker_workers"],
+      missingTables: ["broker_future_hot_table"],
+      supportedCount: 2,
+      totalCount: 3,
+    },
+  );
 });
 
 test("SQLite export script writes canonical JSON snapshots", () => {
