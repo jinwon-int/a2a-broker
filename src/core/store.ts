@@ -728,6 +728,18 @@ export class SqliteBrokerStateStore implements BrokerStateStore {
     );
   }
 
+  upsertHotTasks(tasks: TaskRecord[]): void {
+    this.runImmediateTransaction(() => {
+      this.upsertHotTasksUnsafe(tasks);
+    });
+  }
+
+  upsertHotAuditEvents(events: AuditEvent[]): void {
+    this.runImmediateTransaction(() => {
+      this.upsertHotAuditEventsUnsafe(events);
+    });
+  }
+
   private initializeDatabase(): string {
     const journal = this.db.prepare("PRAGMA journal_mode = WAL").get() as
       | { journal_mode?: string }
@@ -1008,23 +1020,7 @@ export class SqliteBrokerStateStore implements BrokerStateStore {
       );
     }
 
-    const insertTask = this.db.prepare(
-      `INSERT INTO broker_tasks
-        (id, status, intent, target_node_id, assigned_worker_id, task_origin, updated_at, payload)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-    );
-    for (const task of snapshot.tasks) {
-      insertTask.run(
-        task.id,
-        task.status,
-        task.intent,
-        task.targetNodeId,
-        task.assignedWorkerId ?? null,
-        task.taskOrigin ?? "unknown",
-        task.updatedAt,
-        JSON.stringify(task),
-      );
-    }
+    this.upsertHotTasksUnsafe(snapshot.tasks);
 
     const insertWorker = this.db.prepare(
       `INSERT INTO broker_workers
@@ -1041,13 +1037,51 @@ export class SqliteBrokerStateStore implements BrokerStateStore {
       );
     }
 
-    const insertAudit = this.db.prepare(
+    this.upsertHotAuditEventsUnsafe(snapshot.auditEvents);
+  }
+
+  private upsertHotTasksUnsafe(tasks: TaskRecord[]): void {
+    const upsertTask = this.db.prepare(
+      `INSERT INTO broker_tasks
+        (id, status, intent, target_node_id, assigned_worker_id, task_origin, updated_at, payload)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET
+         status = excluded.status,
+         intent = excluded.intent,
+         target_node_id = excluded.target_node_id,
+         assigned_worker_id = excluded.assigned_worker_id,
+         task_origin = excluded.task_origin,
+         updated_at = excluded.updated_at,
+         payload = excluded.payload`,
+    );
+    for (const task of tasks) {
+      upsertTask.run(
+        task.id,
+        task.status,
+        task.intent,
+        task.targetNodeId,
+        task.assignedWorkerId ?? null,
+        task.taskOrigin ?? "unknown",
+        task.updatedAt,
+        JSON.stringify(task),
+      );
+    }
+  }
+
+  private upsertHotAuditEventsUnsafe(events: AuditEvent[]): void {
+    const upsertAudit = this.db.prepare(
       `INSERT INTO broker_audit_events
         (id, action, target_type, target_id, created_at, payload)
-       VALUES (?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET
+         action = excluded.action,
+         target_type = excluded.target_type,
+         target_id = excluded.target_id,
+         created_at = excluded.created_at,
+         payload = excluded.payload`,
     );
-    for (const audit of snapshot.auditEvents) {
-      insertAudit.run(
+    for (const audit of events) {
+      upsertAudit.run(
         audit.id,
         audit.action,
         audit.targetType,

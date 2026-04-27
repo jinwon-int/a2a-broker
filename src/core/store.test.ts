@@ -533,6 +533,43 @@ test("SqliteBrokerStateStore reports hot table mirror count drift", () => {
   }
 });
 
+test("SqliteBrokerStateStore supports granular task and audit hot-table upserts", () => {
+  const temp = withTempFile("state.sqlite");
+  try {
+    const store = new SqliteBrokerStateStore(temp.filePath);
+    store.save({
+      ...emptySnapshot(),
+      tasks: [makeTask("task-upsert", "queued", "worker-a")],
+      auditEvents: [makeAuditEvent("audit-upsert", "task.created", "task-upsert")],
+    });
+
+    const updatedTask = {
+      ...makeTask("task-upsert", "succeeded", "worker-b"),
+      completedAt: "2026-04-27T00:03:00.000Z",
+      updatedAt: "2026-04-27T00:03:00.000Z",
+    };
+    const updatedAudit = makeAuditEvent("audit-upsert", "task.succeeded", "task-upsert", "2026-04-27T00:03:00.000Z");
+    const appendedAudit = makeAuditEvent("audit-appended", "task.claimed", "task-upsert", "2026-04-27T00:02:00.000Z");
+
+    store.upsertHotTasks([updatedTask]);
+    store.upsertHotAuditEvents([updatedAudit, appendedAudit]);
+
+    assert.deepEqual(
+      store.readHotTasks({ id: "task-upsert" }),
+      [updatedTask],
+    );
+    assert.deepEqual(
+      store.readHotAuditEvents({ targetId: "task-upsert" }).map((event) => event.id),
+      ["audit-upsert", "audit-appended"],
+    );
+    assert.deepEqual(store.readHotEntityTableCounts().broker_tasks, 1);
+    assert.deepEqual(store.readHotEntityTableCounts().broker_audit_events, 2);
+    store.close();
+  } finally {
+    temp.cleanup();
+  }
+});
+
 test("SqliteBrokerStateStore migrates v2 task hot table with task origin column", () => {
   const temp = withTempFile("state.sqlite");
   try {
@@ -715,6 +752,7 @@ function makeAuditEvent(
   id: string,
   action: BrokerSnapshot["auditEvents"][number]["action"],
   targetId: string,
+  createdAt = "2026-04-27T00:00:00.000Z",
 ): BrokerSnapshot["auditEvents"][number] {
   return {
     id,
@@ -722,6 +760,6 @@ function makeAuditEvent(
     action,
     targetType: "task",
     targetId,
-    createdAt: "2026-04-27T00:00:00.000Z",
+    createdAt,
   };
 }
