@@ -402,6 +402,15 @@ async function gateComposeSmoke({ edgeSecret, timeoutMs }) {
         expectedTaskIds: [taskId],
         expectedWorkerIds: ['echo-worker-1'],
       });
+      console.log('[compose] verifying SQLite diagnostics read path over HTTP…');
+      report.sqliteDiagnosticsReadPath = await verifySqliteDiagnosticsReadPath({
+        compose,
+        composeArgs,
+        sqliteFile,
+        baseUrl,
+        edgeSecret,
+        expectedTaskId: approvalProof.rejectTaskId,
+      });
     }
 
     report.ok = true;
@@ -543,6 +552,135 @@ async function verifySqliteTombstoneHotRead({ compose, composeArgs, sqliteFile, 
     terminalStatus: tombstone.terminalStatus,
     tombstoneReason: tombstone.tombstoneReason,
   };
+}
+
+async function verifySqliteDiagnosticsReadPath({ compose, composeArgs, sqliteFile, baseUrl, edgeSecret, expectedTaskId }) {
+  const diagnosticsWorkerId = `release-gate-diagnostics-worker-${Date.now()}`;
+  const staleLastSeenAt = '2000-01-01T00:00:00.000Z';
+  const latestRequeueAt = '2026-04-27T00:02:00.000Z';
+  const latestRequeueReason = 'release-gate sqlite diagnostics hot audit proof';
+  const code = `
+    import { SqliteBrokerStateStore } from './dist/core/store.js';
+    const store = new SqliteBrokerStateStore(process.argv[1]);
+    try {
+      const taskId = process.argv[2];
+      const diagnosticsWorkerId = process.argv[3];
+      const staleLastSeenAt = process.argv[4];
+      const latestRequeueAt = process.argv[5];
+      const latestRequeueReason = process.argv[6];
+      const task = store.readHotTasks({ id: taskId })[0];
+      if (!task) throw new Error('missing hot task ' + taskId);
+      store.upsertHotTasks([{
+        ...task,
+        assignedWorkerId: diagnosticsWorkerId,
+        targetNodeId: diagnosticsWorkerId,
+        target: { ...(task.target ?? {}), id: diagnosticsWorkerId, kind: 'node', role: 'analyst' },
+        updatedAt: new Date().toISOString(),
+      }]);
+      store.upsertHotWorkers([{
+        nodeId: diagnosticsWorkerId,
+        role: 'analyst',
+        capabilities: {
+          canAnalyze: true,
+          canBackfill: false,
+          canPatchWorkspace: false,
+          canPromoteLive: false,
+          workspaceIds: ['release-gate'],
+          environments: ['research'],
+        },
+        createdAt: staleLastSeenAt,
+        updatedAt: staleLastSeenAt,
+        lastSeenAt: staleLastSeenAt,
+      }]);
+      store.upsertHotAuditEvents([{
+        id: 'release-gate-diagnostics-requeue-' + taskId,
+        actorId: 'broker',
+        action: 'task.requeued',
+        targetType: 'task',
+        targetId: taskId,
+        note: latestRequeueReason,
+        createdAt: latestRequeueAt,
+      }]);
+      process.stdout.write(JSON.stringify({ ok: true, taskId, diagnosticsWorkerId }));
+    } finally {
+      store.close();
+    }
+  `;
+  await run(compose.cmd, [
+    ...composeArgs('exec'),
+    '-T',
+    'a2a-broker',
+    'node',
+    '--input-type=module',
+    '-e',
+    code,
+    sqliteFile,
+    expectedTaskId,
+    diagnosticsWorkerId,
+    staleLastSeenAt,
+    latestRequeueAt,
+    latestRequeueReason,
+  ]);
+
+  const requester = makeRequester('operator', 'sqlite-diagnostics');
+  const detail = await requestJson(baseUrl, 'GET', `/tasks/${expectedTaskId}/diagnostics`, {
+    requester,
+    edgeSecret,
+  });
+  assertSqliteDiagnosticsReport(detail, {
+    expectedTaskId,
+    diagnosticsWorkerId,
+    staleLastSeenAt,
+    latestRequeueAt,
+    latestRequeueReason,
+  });
+
+  const list = await requestJson(baseUrl, 'GET', '/tasks/diagnostics', {
+    requester,
+    edgeSecret,
+  });
+  const listReport = Array.isArray(list?.items)
+    ? list.items.find((item) => item?.taskId === expectedTaskId)
+    : undefined;
+  assertSqliteDiagnosticsReport(listReport, {
+    expectedTaskId,
+    diagnosticsWorkerId,
+    staleLastSeenAt,
+    latestRequeueAt,
+    latestRequeueReason,
+  });
+
+  return {
+    verifiedTaskId: expectedTaskId,
+    coveredTables: ['broker_tasks', 'broker_tombstones', 'broker_workers', 'broker_audit_events'],
+    detailEndpoint: true,
+    listEndpoint: true,
+    tombstoneReason: detail.tombstone.tombstoneReason,
+    workerLastSeenAt: detail.brokerHints.workerLastSeenAt,
+    lastRequeueAt: detail.brokerHints.lastRequeueAt,
+    lastRequeueReason: detail.brokerHints.lastRequeueReason,
+  };
+}
+
+function assertSqliteDiagnosticsReport(report, expected) {
+  if (!report || report.taskId !== expected.expectedTaskId) {
+    throw new Error(`SQLite diagnostics read path missed expected task: ${JSON.stringify(report)}`);
+  }
+  if (report.task?.assignedWorkerId !== expected.diagnosticsWorkerId) {
+    throw new Error(`SQLite diagnostics did not use hot task row: ${JSON.stringify(report.task)}`);
+  }
+  if (report.tombstone?.taskId !== expected.expectedTaskId || report.tombstone?.tombstoneReason !== 'canceled') {
+    throw new Error(`SQLite diagnostics did not use hot tombstone row: ${JSON.stringify(report.tombstone)}`);
+  }
+  if (report.brokerHints?.workerLastSeenAt !== expected.staleLastSeenAt || report.brokerHints?.staleWorker !== true) {
+    throw new Error(`SQLite diagnostics did not use hot worker row: ${JSON.stringify(report.brokerHints)}`);
+  }
+  if (
+    report.brokerHints?.lastRequeueAt !== expected.latestRequeueAt ||
+    report.brokerHints?.lastRequeueReason !== expected.latestRequeueReason
+  ) {
+    throw new Error(`SQLite diagnostics did not use hot audit row: ${JSON.stringify(report.brokerHints)}`);
+  }
 }
 
 async function verifySqliteRetentionPlans({ compose, composeArgs, sqliteFile, expectedTaskIds, expectedWorkerIds }) {
@@ -1115,6 +1253,11 @@ async function main() {
       const status = coverage.ok ? 'covered' : `missing ${coverage.missingTables.join(', ') || 'unknown tables'}`;
       console.log(
         `     sqlite hinted writes: ${coverage.supportedCount}/${coverage.totalCount} tables ${status}`,
+      );
+    }
+    if (r.sqliteDiagnosticsReadPath) {
+      console.log(
+        `     sqlite diagnostics: hot task/tombstone/worker/audit covered (${r.sqliteDiagnosticsReadPath.coveredTables.length}/4 tables)`,
       );
     }
   }
