@@ -91,6 +91,7 @@ test("SqliteBrokerStateStore saves and reloads snapshots with WAL metadata", () 
       ...emptySnapshot(),
       exchanges: [makeExchange("exchange-1", "worker-a")],
       exchangeMessages: [makeExchangeMessage("message-1", "exchange-1", "root")],
+      proposals: [makeProposal("proposal-1", "submitted", "worker-a")],
       workers: [
         {
           nodeId: "worker-a",
@@ -146,11 +147,12 @@ test("SqliteBrokerStateStore saves and reloads snapshots with WAL metadata", () 
       kind: "sqlite",
       dbFile: temp.filePath,
       stateVersion: CURRENT_BROKER_STATE_VERSION,
-      schemaVersion: 5,
+      schemaVersion: 6,
       journalMode: "wal",
       hotEntityTables: [
         "broker_exchanges",
         "broker_exchange_messages",
+        "broker_proposals",
         "broker_tasks",
         "broker_workers",
         "broker_audit_events",
@@ -164,6 +166,7 @@ test("SqliteBrokerStateStore saves and reloads snapshots with WAL metadata", () 
     try {
       assert.equal(readSqliteCount(db, "broker_exchanges"), 1);
       assert.equal(readSqliteCount(db, "broker_exchange_messages"), 1);
+      assert.equal(readSqliteCount(db, "broker_proposals"), 1);
       assert.equal(readSqliteCount(db, "broker_tasks"), 1);
       assert.equal(readSqliteCount(db, "broker_workers"), 1);
       assert.equal(readSqliteCount(db, "broker_audit_events"), 1);
@@ -197,6 +200,16 @@ test("SqliteBrokerStateStore saves and reloads snapshots with WAL metadata", () 
       assert.equal(exchangeMessageRow.id, "message-1");
       assert.equal(exchangeMessageRow.exchange_id, "exchange-1");
       assert.equal(exchangeMessageRow.kind, "root");
+      const proposalRow = db.prepare("SELECT id, status, kind, target_node_id FROM broker_proposals").get() as {
+        id: string;
+        status: string;
+        kind: string;
+        target_node_id: string;
+      };
+      assert.equal(proposalRow.id, "proposal-1");
+      assert.equal(proposalRow.status, "submitted");
+      assert.equal(proposalRow.kind, "patch");
+      assert.equal(proposalRow.target_node_id, "worker-a");
     } finally {
       db.close();
     }
@@ -278,6 +291,10 @@ test("SqliteBrokerStateStore reads hot entities from mirrored tables with filter
         makeExchangeMessage("message-child", "exchange-a", "thread", "message-root", "2026-04-27T00:01:00.000Z"),
         makeExchangeMessage("message-other", "exchange-b", "root", undefined, "2026-04-27T00:02:00.000Z"),
       ],
+      proposals: [
+        makeProposal("proposal-submitted", "submitted", "worker-a", "2026-04-27T00:01:00.000Z"),
+        makeProposal("proposal-approved", "approved", "worker-b", "2026-04-27T00:02:00.000Z"),
+      ],
       tasks: [
         makeTask("task-queued", "queued", "worker-a"),
         makeTask("task-running", "running", "worker-a"),
@@ -320,6 +337,14 @@ test("SqliteBrokerStateStore reads hot entities from mirrored tables with filter
     assert.deepEqual(
       store.readHotExchangeMessages({ exchangeId: "exchange-a" }).map((message) => message.id),
       ["message-root", "message-child"],
+    );
+    assert.deepEqual(
+      store.readHotProposals().map((proposal) => proposal.id),
+      ["proposal-approved", "proposal-submitted"],
+    );
+    assert.deepEqual(
+      store.readHotProposals({ status: "submitted", targetNodeId: "worker-a", kind: "patch" }).map((proposal) => proposal.id),
+      ["proposal-submitted"],
     );
     assert.deepEqual(
       store.readHotWorkers().map((worker) => worker.nodeId),
@@ -374,7 +399,7 @@ test("SqliteBrokerStateStore migrates v2 task hot table with task origin column"
       store.readHotTasks({ taskOrigin: "api", targetNodeId: "worker-a" }).map((task) => task.id),
       ["task-migrated"],
     );
-    assert.equal(store.getPersistenceInfo().schemaVersion, 5);
+    assert.equal(store.getPersistenceInfo().schemaVersion, 6);
     store.close();
   } finally {
     temp.cleanup();
@@ -449,6 +474,28 @@ function makeExchangeMessage(
     message.parentMessageId = parentMessageId;
   }
   return message;
+}
+
+function makeProposal(
+  id: string,
+  status: BrokerSnapshot["proposals"][number]["status"],
+  targetNodeId: string,
+  createdAt = "2026-04-27T00:00:00.000Z",
+): BrokerSnapshot["proposals"][number] {
+  return {
+    id,
+    source: { id: "source-a", kind: "node", role: "analyst" },
+    target: { id: targetNodeId, kind: "node", role: "operator" },
+    sourceNodeId: "source-a",
+    targetNodeId,
+    kind: "patch",
+    summary: id,
+    workspace: { nodeId: targetNodeId, workspaceId: "test" },
+    artifactIds: [],
+    status,
+    createdAt,
+    updatedAt: createdAt,
+  };
 }
 
 function makeTask(

@@ -335,11 +335,12 @@ test("server reports SQLite persistence metadata when SQLite backend is enabled"
     assert.equal(health.persistence.kind, "sqlite");
     assert.equal(health.persistence.dbFile, join(dir, "state.sqlite"));
     assert.equal(health.persistence.stateVersion, 7);
-    assert.equal(health.persistence.schemaVersion, 5);
+    assert.equal(health.persistence.schemaVersion, 6);
     assert.equal(health.persistence.journalMode, "wal");
     assert.deepEqual(health.persistence.hotEntityTables, [
       "broker_exchanges",
       "broker_exchange_messages",
+      "broker_proposals",
       "broker_tasks",
       "broker_workers",
       "broker_audit_events",
@@ -1087,6 +1088,209 @@ test("server preserves missing exchange message 404s on SQLite hot read path", a
     const res = await fetch(
       `http://127.0.0.1:${address.port}/exchanges/exchange-without-parent/messages?parentMessageId=missing-message`,
     );
+    assert.equal(res.status, 404);
+  } finally {
+    runtime.stopStaleReaper();
+    await new Promise<void>((resolve) => runtime.server.close(() => resolve()));
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("server reads /proposals from SQLite hot tables when SQLite store is active", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "a2a-broker-sqlite-proposals-"));
+  const store = new SqliteBrokerStateStore(join(dir, "state.sqlite"));
+  const snapshot: BrokerSnapshot = {
+    ...emptySnapshot(),
+    proposals: [
+      {
+        id: "proposal-old-filtered-out",
+        source: { id: "source-a", kind: "node", role: "analyst" },
+        target: { id: "worker-a", kind: "node", role: "operator" },
+        sourceNodeId: "source-a",
+        targetNodeId: "worker-a",
+        kind: "patch",
+        summary: "old",
+        workspace: { nodeId: "worker-a", workspaceId: "test" },
+        artifactIds: [],
+        status: "rejected",
+        createdAt: "2026-04-27T00:00:00.000Z",
+        updatedAt: "2026-04-27T00:00:00.000Z",
+      },
+      {
+        id: "proposal-from-sqlite",
+        source: { id: "source-a", kind: "node", role: "analyst" },
+        target: { id: "worker-b", kind: "node", role: "operator" },
+        sourceNodeId: "source-a",
+        targetNodeId: "worker-b",
+        kind: "patch",
+        summary: "sqlite proposal",
+        workspace: { nodeId: "worker-b", workspaceId: "test" },
+        artifactIds: [],
+        status: "submitted",
+        createdAt: "2026-04-27T00:01:00.000Z",
+        updatedAt: "2026-04-27T00:01:00.000Z",
+      },
+    ],
+  };
+  store.save(snapshot);
+  const runtime = createBrokerServer({
+    host: "127.0.0.1",
+    port: 0,
+    publicBaseUrl: "https://broker.test/",
+    stateStore: store,
+    enforceRequesterIdentity: false,
+    staleReaperEnabled: false,
+  });
+  try {
+    runtime.broker.listProposals = (() => {
+      throw new Error("/proposals should use SQLite hot read path");
+    }) as typeof runtime.broker.listProposals;
+    runtime.server.listen(0, "127.0.0.1");
+    await once(runtime.server, "listening");
+    const address = runtime.server.address();
+    if (!address || typeof address === "string") {
+      throw new Error("failed to bind test server");
+    }
+
+    const res = await fetch(
+      `http://127.0.0.1:${address.port}/proposals?status=submitted&sourceNodeId=source-a&targetNodeId=worker-b&kind=patch`,
+    );
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.deepEqual(body.items, [
+      {
+        id: "proposal-from-sqlite",
+        sourceNodeId: "source-a",
+        targetNodeId: "worker-b",
+        kind: "patch",
+        summary: "sqlite proposal",
+        status: "submitted",
+        updatedAt: "2026-04-27T00:01:00.000Z",
+      },
+    ]);
+  } finally {
+    runtime.stopStaleReaper();
+    await new Promise<void>((resolve) => runtime.server.close(() => resolve()));
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("server reads /proposals/:id proposal and audit from SQLite hot tables", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "a2a-broker-sqlite-proposal-detail-"));
+  const store = new SqliteBrokerStateStore(join(dir, "state.sqlite"));
+  const snapshot: BrokerSnapshot = {
+    ...emptySnapshot(),
+    proposals: [
+      {
+        id: "proposal-detail-from-sqlite",
+        source: { id: "source-a", kind: "node", role: "analyst" },
+        target: { id: "worker-a", kind: "node", role: "operator" },
+        sourceNodeId: "source-a",
+        targetNodeId: "worker-a",
+        kind: "params",
+        summary: "detail proposal",
+        workspace: { nodeId: "worker-a", workspaceId: "test" },
+        parameterPayload: { leverage: 1 },
+        artifactIds: ["artifact-a"],
+        status: "validated",
+        createdAt: "2026-04-27T00:00:00.000Z",
+        updatedAt: "2026-04-27T00:01:00.000Z",
+      },
+    ],
+    artifacts: [
+      {
+        id: "artifact-a",
+        proposalId: "proposal-detail-from-sqlite",
+        kind: "report",
+        uri: "memory://artifact-a",
+        createdAt: "2026-04-27T00:02:00.000Z",
+      },
+    ],
+    validations: [
+      {
+        id: "validation-a",
+        proposalId: "proposal-detail-from-sqlite",
+        nodeId: "validator-a",
+        kind: "smoke",
+        verdict: "pass",
+        metrics: {},
+        artifactIds: [],
+        createdAt: "2026-04-27T00:03:00.000Z",
+      },
+    ],
+    auditEvents: [
+      {
+        id: "audit-a",
+        actorId: "source-a",
+        action: "proposal.created",
+        targetType: "proposal",
+        targetId: "proposal-detail-from-sqlite",
+        proposalId: "proposal-detail-from-sqlite",
+        createdAt: "2026-04-27T00:04:00.000Z",
+      },
+    ],
+  };
+  store.save(snapshot);
+  const runtime = createBrokerServer({
+    host: "127.0.0.1",
+    port: 0,
+    publicBaseUrl: "https://broker.test/",
+    stateStore: store,
+    enforceRequesterIdentity: false,
+    staleReaperEnabled: false,
+  });
+  try {
+    runtime.broker.getProposalDetails = (() => {
+      throw new Error("/proposals/:id should use SQLite hot read path for proposal details");
+    }) as typeof runtime.broker.getProposalDetails;
+    runtime.server.listen(0, "127.0.0.1");
+    await once(runtime.server, "listening");
+    const address = runtime.server.address();
+    if (!address || typeof address === "string") {
+      throw new Error("failed to bind test server");
+    }
+
+    const res = await fetch(`http://127.0.0.1:${address.port}/proposals/proposal-detail-from-sqlite`);
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.deepEqual(body.proposal, snapshot.proposals[0]);
+    assert.deepEqual(body.artifacts, snapshot.artifacts);
+    assert.deepEqual(body.validations, snapshot.validations);
+    assert.deepEqual(body.audit, snapshot.auditEvents);
+  } finally {
+    runtime.stopStaleReaper();
+    await new Promise<void>((resolve) => runtime.server.close(() => resolve()));
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("server returns 404 for missing /proposals/:id from SQLite hot tables", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "a2a-broker-sqlite-proposal-detail-missing-"));
+  const store = new SqliteBrokerStateStore(join(dir, "state.sqlite"));
+  store.save(emptySnapshot());
+  const runtime = createBrokerServer({
+    host: "127.0.0.1",
+    port: 0,
+    publicBaseUrl: "https://broker.test/",
+    stateStore: store,
+    enforceRequesterIdentity: false,
+    staleReaperEnabled: false,
+  });
+  try {
+    runtime.broker.getProposalDetails = (() => {
+      throw new Error("missing /proposals/:id should use SQLite hot read path");
+    }) as typeof runtime.broker.getProposalDetails;
+    runtime.server.listen(0, "127.0.0.1");
+    await once(runtime.server, "listening");
+    const address = runtime.server.address();
+    if (!address || typeof address === "string") {
+      throw new Error("failed to bind test server");
+    }
+
+    const res = await fetch(`http://127.0.0.1:${address.port}/proposals/missing-proposal`);
     assert.equal(res.status, 404);
   } finally {
     runtime.stopStaleReaper();
