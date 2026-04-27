@@ -19,10 +19,11 @@ import type {
   WorkerListFilters,
   WorkerRecord,
 } from "./types.js";
-import type { TaskRuntimeRepository } from "./task-repository.js";
-import type { WorkerRuntimeRepository } from "./worker-repository.js";
 import type { AuditRuntimeRepository } from "./audit-repository.js";
+import type { ExchangeMessageRuntimeRepository, ExchangeRuntimeRepository } from "./exchange-repository.js";
+import type { TaskRuntimeRepository } from "./task-repository.js";
 import type { TombstoneRuntimeRepository } from "./tombstone-repository.js";
+import type { WorkerRuntimeRepository } from "./worker-repository.js";
 
 export const CURRENT_BROKER_STATE_VERSION = 7;
 export const DEFAULT_BROKER_STATE_MAX_BYTES = 50 * 1024 * 1024;
@@ -118,6 +119,7 @@ export interface SqliteExchangeHotTableFilters {
 }
 
 export interface SqliteExchangeMessageHotTableFilters {
+  id?: string;
   exchangeId?: string;
 }
 
@@ -674,7 +676,10 @@ export class SqliteBrokerStateStore implements BrokerStateStore {
   readHotExchangeMessages(filters: SqliteExchangeMessageHotTableFilters = {}): A2AExchangeMessageRecord[] {
     const { sql, params } = buildHotTableSelect(
       "broker_exchange_messages",
-      [["exchange_id", filters.exchangeId]],
+      [
+        ["id", filters.id],
+        ["exchange_id", filters.exchangeId],
+      ],
       "created_at ASC, CASE WHEN kind = 'root' THEN 0 ELSE 1 END ASC, id ASC",
     );
     return this.db
@@ -1546,6 +1551,38 @@ export class SqliteTaskRuntimeRepository implements TaskRuntimeRepository {
 
   upsertTask(task: TaskRecord): void {
     this.store.upsertHotTasks([task]);
+  }
+}
+
+export class SqliteExchangeRuntimeRepository implements ExchangeRuntimeRepository {
+  constructor(private readonly store: SqliteBrokerStateStore) {}
+
+  getExchange(id: string): A2AExchangeState | null {
+    return this.store.readHotExchanges({ id })[0] ?? null;
+  }
+
+  listExchanges(): A2AExchangeState[] {
+    return this.store.readHotExchanges();
+  }
+
+  upsertExchange(exchange: A2AExchangeState): void {
+    this.store.upsertHotExchanges([exchange]);
+  }
+}
+
+export class SqliteExchangeMessageRuntimeRepository implements ExchangeMessageRuntimeRepository {
+  constructor(private readonly store: SqliteBrokerStateStore) {}
+
+  getExchangeMessage(id: string): A2AExchangeMessageRecord | null {
+    return this.store.readHotExchangeMessages({ id })[0] ?? null;
+  }
+
+  listExchangeMessages(exchangeId: string): A2AExchangeMessageRecord[] {
+    return this.store.readHotExchangeMessages({ exchangeId });
+  }
+
+  upsertExchangeMessage(message: A2AExchangeMessageRecord): void {
+    this.store.upsertHotExchangeMessages([message]);
   }
 }
 

@@ -9,6 +9,8 @@ import {
   CURRENT_BROKER_STATE_VERSION,
   SqliteAuditRuntimeRepository,
   SqliteBrokerStateStore,
+  SqliteExchangeMessageRuntimeRepository,
+  SqliteExchangeRuntimeRepository,
   SqliteTaskRuntimeRepository,
   SqliteTombstoneRuntimeRepository,
   SqliteWorkerRuntimeRepository,
@@ -351,6 +353,95 @@ test("broker audit and tombstone diagnostics can use SQLite runtime repositories
     sqliteStore.close();
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test("broker exchange threads can use SQLite runtime repositories without JSON hot hints", () => {
+  const dir = mkdtempSync(join(tmpdir(), "a2a-broker-exchange-repo-"));
+  const sqliteStore = new SqliteBrokerStateStore(join(dir, "state.sqlite"));
+  const snapshots: BrokerSnapshot[] = [];
+  const noopStore: BrokerStateStore = {
+    load: () => emptySnapshot(),
+    save: (snapshot) => snapshots.push(snapshot),
+  };
+
+  try {
+    const broker = new InMemoryA2ABroker(noopStore, noopStore.load(), {
+      exchangeRepository: new SqliteExchangeRuntimeRepository(sqliteStore),
+      exchangeMessageRepository: new SqliteExchangeMessageRuntimeRepository(sqliteStore),
+    });
+    registerWorker(broker, "worker-sqlite");
+
+    const exchange = broker.startExchange({
+      requester: { id: "hub-a", kind: "node", role: "hub" },
+      target: { id: "worker-sqlite", kind: "node", role: "analyst" },
+      message: "exchange through runtime repo",
+      intent: "chat",
+    });
+
+    assert.equal(sqliteStore.readHotExchanges({ id: exchange.id })[0]?.id, exchange.id);
+    assert.equal(sqliteStore.readHotExchangeMessages({ exchangeId: exchange.id })[0]?.id, exchange.rootMessageId);
+    assert.deepEqual(sqliteStore.load().exchanges, []);
+    assert.deepEqual(sqliteStore.load().exchangeMessages, []);
+
+    const message = broker.addExchangeMessage(exchange.id, {
+      actor: { id: "hub-a", kind: "node", role: "hub" },
+      message: "need more context",
+      parentMessageId: exchange.rootMessageId,
+    });
+
+    const row = sqliteStore.readHotExchanges({ id: exchange.id })[0]!;
+    assert.equal(row.messageCount, 2);
+    assert.equal(row.latestMessageId, message.id);
+    assert.equal(broker.getExchange(exchange.id)?.latestMessageId, message.id);
+    assert.deepEqual(
+      broker.listExchanges().map((item) => item.id),
+      [exchange.id],
+    );
+    assert.deepEqual(
+      broker.listExchangeMessages(exchange.id).map((item) => item.id),
+      [exchange.rootMessageId, message.id],
+    );
+    assert.deepEqual(
+      broker.listExchangeMessages(exchange.id, { parentMessageId: exchange.rootMessageId }).map((item) => item.id),
+      [message.id],
+    );
+    assert.equal(snapshots.at(-1)?.exchanges.find((item) => item.id === exchange.id)?.latestMessageId, message.id);
+    assert.equal(snapshots.at(-1)?.exchangeMessages.find((item) => item.id === message.id)?.message, "need more context");
+  } finally {
+    sqliteStore.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("broker exchange threads keep the JSON/default state path without runtime repositories", () => {
+  const saveHints: Array<BrokerStateSaveHints | undefined> = [];
+  const snapshots: BrokerSnapshot[] = [];
+  const store: BrokerStateStore = {
+    load: () => emptySnapshot(),
+    save: (snapshot, hints) => {
+      snapshots.push(snapshot);
+      saveHints.push(hints);
+    },
+  };
+  const broker = new InMemoryA2ABroker(store, store.load());
+  registerWorker(broker, "worker-json");
+
+  const exchange = broker.startExchange({
+    requester: { id: "hub-a", kind: "node", role: "hub" },
+    target: { id: "worker-json", kind: "node", role: "analyst" },
+    message: "json exchange path",
+    intent: "chat",
+  });
+  const message = broker.addExchangeMessage(exchange.id, {
+    actor: { id: "hub-a", kind: "node", role: "hub" },
+    message: "json thread reply",
+  });
+
+  assert.equal(broker.getExchange(exchange.id)?.latestMessageId, message.id);
+  assert.deepEqual(broker.listExchangeMessages(exchange.id).map((item) => item.id), [exchange.rootMessageId, message.id]);
+  assert.equal(snapshots.at(-1)?.exchanges.find((item) => item.id === exchange.id)?.latestMessageId, message.id);
+  assert.ok(saveHints.some((hints) => hints?.hotExchanges?.some((item) => item.id === exchange.id)));
+  assert.ok(saveHints.some((hints) => hints?.hotExchangeMessages?.some((item) => item.id === message.id)));
 });
 
 test("accepted exchange thread creates and links an exchange task", () => {

@@ -18,6 +18,7 @@ import {
 import { TaskEventStream } from "./task-event-stream.js";
 import { ConferenceRoomManager } from "./conference-room.js";
 import type { AuditRuntimeRepository } from "./audit-repository.js";
+import type { ExchangeMessageRuntimeRepository, ExchangeRuntimeRepository } from "./exchange-repository.js";
 import type { TaskRuntimeRepository } from "./task-repository.js";
 import type { TombstoneRuntimeRepository } from "./tombstone-repository.js";
 import type { WorkerRuntimeRepository } from "./worker-repository.js";
@@ -110,6 +111,10 @@ export interface InMemoryA2ABrokerOptions {
   tombstoneRepository?: TombstoneRuntimeRepository;
   /** Optional table-native repository for high-churn worker runtime state. */
   workerRepository?: WorkerRuntimeRepository;
+  /** Optional table-native repository for A2A exchange runtime state. */
+  exchangeRepository?: ExchangeRuntimeRepository;
+  /** Optional table-native repository for A2A exchange message runtime state. */
+  exchangeMessageRepository?: ExchangeMessageRuntimeRepository;
   retention?: Partial<BrokerRetentionPolicy>;
   /**
    * Maximum number of times the stale-task reaper (or manual requeue) is allowed to recycle a
@@ -227,6 +232,8 @@ export class InMemoryA2ABroker {
   private readonly auditRepository?: AuditRuntimeRepository;
   private readonly tombstoneRepository?: TombstoneRuntimeRepository;
   private readonly workerRepository?: WorkerRuntimeRepository;
+  private readonly exchangeRepository?: ExchangeRuntimeRepository;
+  private readonly exchangeMessageRepository?: ExchangeMessageRuntimeRepository;
 
   constructor(
     private readonly stateStore?: BrokerStateStore,
@@ -237,6 +244,8 @@ export class InMemoryA2ABroker {
     this.auditRepository = options.auditRepository;
     this.tombstoneRepository = options.tombstoneRepository;
     this.workerRepository = options.workerRepository;
+    this.exchangeRepository = options.exchangeRepository;
+    this.exchangeMessageRepository = options.exchangeMessageRepository;
     this.retentionPolicy = normalizeBrokerRetentionPolicy(options.retention);
     this.maxRequeueAttempts = normalizeMaxRequeueAttempts(options.maxRequeueAttempts);
     this.maxBufferedEventsPerTask = options.maxBufferedEventsPerTask ?? 100;
@@ -438,11 +447,24 @@ export class InMemoryA2ABroker {
   }
 
   getExchange(id: string): A2AExchangeState | null {
+    const repositoryExchange = this.exchangeRepository?.getExchange(id);
+    if (repositoryExchange) {
+      const exchange = normalizeExchangeState(repositoryExchange);
+      this.exchanges.set(exchange.id, exchange);
+      return exchange;
+    }
     return this.exchanges.get(id) ?? null;
   }
 
   listExchanges(): A2AExchangeState[] {
-    return sortedCopy(this.exchanges.values(), sortNewestFirst);
+    const exchangesById = new Map(this.exchanges);
+    if (this.exchangeRepository) {
+      for (const repositoryExchange of this.exchangeRepository.listExchanges().map(normalizeExchangeState)) {
+        this.exchanges.set(repositoryExchange.id, repositoryExchange);
+        exchangesById.set(repositoryExchange.id, repositoryExchange);
+      }
+    }
+    return sortedCopy(exchangesById.values(), sortNewestFirst);
   }
 
   listExchangeMessages(
@@ -453,10 +475,18 @@ export class InMemoryA2ABroker {
     },
   ): A2AExchangeMessageRecord[] {
     const exchange = this.requireExchange(exchangeId);
-    const items = sortedCopy(
-      [...this.exchangeMessages.values()].filter((message) => message.exchangeId === exchangeId),
-      sortExchangeMessages,
+    const messagesById = new Map(
+      [...this.exchangeMessages.entries()].filter(([, message]) => message.exchangeId === exchangeId),
     );
+    if (this.exchangeMessageRepository) {
+      for (const repositoryMessage of this.exchangeMessageRepository
+        .listExchangeMessages(exchangeId)
+        .map(normalizeExchangeMessageRecord)) {
+        this.exchangeMessages.set(repositoryMessage.id, repositoryMessage);
+        messagesById.set(repositoryMessage.id, repositoryMessage);
+      }
+    }
+    const items = sortedCopy(messagesById.values(), sortExchangeMessages);
 
     if (!filters?.parentMessageId) {
       return items;
@@ -2081,13 +2111,17 @@ export class InMemoryA2ABroker {
   }
 
   private setExchangeRecord(exchange: A2AExchangeState): void {
-    this.exchanges.set(exchange.id, exchange);
-    this.pendingHotExchanges.set(exchange.id, structuredClone(exchange));
+    const normalizedExchange = normalizeExchangeState(exchange);
+    this.exchangeRepository?.upsertExchange(structuredClone(normalizedExchange));
+    this.exchanges.set(normalizedExchange.id, normalizedExchange);
+    this.pendingHotExchanges.set(normalizedExchange.id, structuredClone(normalizedExchange));
   }
 
   private setExchangeMessageRecord(message: A2AExchangeMessageRecord): void {
-    this.exchangeMessages.set(message.id, message);
-    this.pendingHotExchangeMessages.set(message.id, structuredClone(message));
+    const normalizedMessage = normalizeExchangeMessageRecord(message);
+    this.exchangeMessageRepository?.upsertExchangeMessage(structuredClone(normalizedMessage));
+    this.exchangeMessages.set(normalizedMessage.id, normalizedMessage);
+    this.pendingHotExchangeMessages.set(normalizedMessage.id, structuredClone(normalizedMessage));
   }
 
   private setProposalRecord(proposal: ChangeProposal): void {
@@ -2220,7 +2254,7 @@ export class InMemoryA2ABroker {
   }
 
   private requireExchange(id: string): A2AExchangeState {
-    const exchange = this.exchanges.get(id);
+    const exchange = this.getExchange(id);
     if (!exchange) {
       throw new BrokerError("not_found", "exchange not found");
     }
@@ -2244,6 +2278,14 @@ export class InMemoryA2ABroker {
   }
 
   private requireExchangeMessage(exchangeId: string, messageId: string): A2AExchangeMessageRecord {
+    const repositoryMessage = this.exchangeMessageRepository?.getExchangeMessage(messageId);
+    if (repositoryMessage) {
+      const message = normalizeExchangeMessageRecord(repositoryMessage);
+      this.exchangeMessages.set(message.id, message);
+      if (message.exchangeId === exchangeId) {
+        return message;
+      }
+    }
     const message = this.exchangeMessages.get(messageId);
     if (!message || message.exchangeId !== exchangeId) {
       throw new BrokerError("not_found", "exchange message not found");
@@ -2697,7 +2739,7 @@ export class InMemoryA2ABroker {
     if (!task.exchangeId) {
       return;
     }
-    const exchange = this.exchanges.get(task.exchangeId);
+    const exchange = this.getExchange(task.exchangeId);
     if (!exchange) {
       return;
     }
@@ -2716,7 +2758,7 @@ export class InMemoryA2ABroker {
     if (!task.exchangeId) {
       return;
     }
-    const exchange = this.exchanges.get(task.exchangeId);
+    const exchange = this.getExchange(task.exchangeId);
     if (!exchange) {
       return;
     }

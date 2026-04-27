@@ -11,6 +11,8 @@ import {
   JsonFileBrokerStateStore,
   SqliteAuditRuntimeRepository,
   SqliteBrokerStateStore,
+  SqliteExchangeMessageRuntimeRepository,
+  SqliteExchangeRuntimeRepository,
   SqliteTaskRuntimeRepository,
   SqliteTombstoneRuntimeRepository,
   SqliteWorkerRuntimeRepository,
@@ -580,6 +582,47 @@ test("SqliteTaskRuntimeRepository writes task state directly to broker_tasks", (
       ["task-runtime"],
     );
     assert.deepEqual(store.load().tasks, []);
+    store.close();
+  } finally {
+    temp.cleanup();
+  }
+});
+
+test("Sqlite exchange runtime repositories write directly to exchange hot tables", () => {
+  const temp = withTempFile("state.sqlite");
+  try {
+    const store = new SqliteBrokerStateStore(temp.filePath);
+    const exchangeRepository = new SqliteExchangeRuntimeRepository(store);
+    const messageRepository = new SqliteExchangeMessageRuntimeRepository(store);
+
+    exchangeRepository.upsertExchange(makeExchange("exchange-runtime", "worker-a"));
+    messageRepository.upsertExchangeMessage(makeExchangeMessage("exchange-runtime-root", "exchange-runtime", "root"));
+    messageRepository.upsertExchangeMessage(makeExchangeMessage(
+      "exchange-runtime-thread",
+      "exchange-runtime",
+      "thread",
+      "exchange-runtime-root",
+      "2026-04-27T00:01:00.000Z",
+    ));
+    exchangeRepository.upsertExchange({
+      ...makeExchange("exchange-runtime", "worker-a"),
+      latestMessageId: "exchange-runtime-thread",
+      messageCount: 2,
+      lastMessageAt: "2026-04-27T00:01:00.000Z",
+      updatedAt: "2026-04-27T00:01:00.000Z",
+    });
+
+    const exchange = exchangeRepository.getExchange("exchange-runtime");
+    assert.equal(exchange?.latestMessageId, "exchange-runtime-thread");
+    assert.equal(exchange?.messageCount, 2);
+    assert.deepEqual(exchangeRepository.listExchanges().map((item) => item.id), ["exchange-runtime"]);
+    assert.equal(messageRepository.getExchangeMessage("exchange-runtime-thread")?.parentMessageId, "exchange-runtime-root");
+    assert.deepEqual(
+      messageRepository.listExchangeMessages("exchange-runtime").map((item) => item.id),
+      ["exchange-runtime-root", "exchange-runtime-thread"],
+    );
+    assert.deepEqual(store.load().exchanges, []);
+    assert.deepEqual(store.load().exchangeMessages, []);
     store.close();
   } finally {
     temp.cleanup();
