@@ -45,6 +45,26 @@ test("broker passes dirty task, audit, and worker hints to state store saves", (
   assert.deepEqual(heartbeatHints?.hotWorkers?.map((item) => [item.nodeId, item.metadata]), [["worker-a", { check: "alive" }]]);
   assert.deepEqual(heartbeatHints?.hotAuditEvents?.map((item) => item.action), ["worker.heartbeat"]);
 
+  const exchange = broker.startExchange({
+    requester: { id: "hub-a", kind: "node", role: "hub" },
+    target: { id: "worker-a", kind: "node", role: "analyst" },
+    message: "prove exchange hot write hints",
+    intent: "chat",
+  });
+  const exchangeHints = saveHints.at(-1);
+  assert.deepEqual(exchangeHints?.hotExchanges?.map((item) => item.id), [exchange.id]);
+  assert.deepEqual(exchangeHints?.hotExchangeMessages?.map((item) => [item.exchangeId, item.kind]), [[exchange.id, "root"]]);
+
+  const saveCountBeforeMessage = saveHints.length;
+  broker.addExchangeMessage(exchange.id, {
+    actor: { id: "hub-a", kind: "node", role: "hub" },
+    message: "thread message",
+  });
+  const messageSaveHints = saveHints.slice(saveCountBeforeMessage);
+  assert.ok(messageSaveHints.some((hints) => hints?.hotExchanges?.some((item) => item.id === exchange.id && item.messageCount === 2)));
+  assert.ok(messageSaveHints.some((hints) => hints?.hotExchangeMessages?.some((item) => item.exchangeId === exchange.id && item.kind === "thread")));
+  assert.ok(messageSaveHints.some((hints) => hints?.hotAuditEvents?.some((item) => item.action === "exchange.message.added")));
+
   const task = broker.createTask({
     id: "task-hot-hints",
     intent: "chat",

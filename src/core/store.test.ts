@@ -903,6 +903,56 @@ test("SqliteBrokerStateStore save hints update dirty worker rows and prune missi
   }
 });
 
+test("SqliteBrokerStateStore supports exchange hot-table upserts and hinted pruning", () => {
+  const temp = withTempFile("state.sqlite");
+  try {
+    const store = new SqliteBrokerStateStore(temp.filePath);
+    const exchangeKeep = makeExchange("exchange-keep", "worker-a");
+    const exchangePrune = makeExchange("exchange-prune", "worker-a");
+    const rootKeep = makeExchangeMessage("message-keep-root", "exchange-keep", "root");
+    const rootPrune = makeExchangeMessage("message-prune-root", "exchange-prune", "root");
+    store.save({
+      ...emptySnapshot(),
+      exchanges: [exchangeKeep, exchangePrune],
+      exchangeMessages: [rootKeep, rootPrune],
+    });
+
+    const updatedExchange = {
+      ...exchangeKeep,
+      status: "running" as const,
+      updatedAt: "2026-04-27T00:03:00.000Z",
+    };
+    const threadMessage = makeExchangeMessage(
+      "message-keep-thread",
+      "exchange-keep",
+      "thread",
+      "message-keep-root",
+      "2026-04-27T00:03:00.000Z",
+    );
+    store.save(
+      {
+        ...emptySnapshot(),
+        exchanges: [updatedExchange],
+        exchangeMessages: [rootKeep, threadMessage],
+      },
+      {
+        hotExchanges: [updatedExchange],
+        hotExchangeMessages: [threadMessage],
+      },
+    );
+
+    assert.deepEqual(store.readHotExchanges().map((exchange) => exchange.id), ["exchange-keep"]);
+    assert.deepEqual(store.readHotExchangeMessages({ exchangeId: "exchange-keep" }).map((message) => message.id), [
+      "message-keep-root",
+      "message-keep-thread",
+    ]);
+    assert.equal(store.readHotEntityMirrorStatus().ok, true);
+    store.close();
+  } finally {
+    temp.cleanup();
+  }
+});
+
 test("SqliteBrokerStateStore migrates v2 task hot table with task origin column", () => {
   const temp = withTempFile("state.sqlite");
   try {

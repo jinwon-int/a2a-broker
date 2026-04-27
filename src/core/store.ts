@@ -39,6 +39,8 @@ export interface BrokerStateStore {
 }
 
 export interface BrokerStateSaveHints {
+  hotExchanges?: A2AExchangeState[];
+  hotExchangeMessages?: A2AExchangeMessageRecord[];
   hotTasks?: TaskRecord[];
   hotAuditEvents?: AuditEvent[];
   hotWorkers?: WorkerRecord[];
@@ -127,7 +129,7 @@ export interface SqliteWorkerHotTableFilters {
 }
 
 export interface SqliteHotRetentionPlan {
-  table: "broker_tasks" | "broker_audit_events" | "broker_workers";
+  table: "broker_exchanges" | "broker_exchange_messages" | "broker_tasks" | "broker_audit_events" | "broker_workers";
   cutoffMs: number;
   retainedIds: string[];
   pruneIds: string[];
@@ -828,6 +830,18 @@ export class SqliteBrokerStateStore implements BrokerStateStore {
     });
   }
 
+  upsertHotExchanges(exchanges: A2AExchangeState[]): void {
+    this.runImmediateTransaction(() => {
+      this.upsertHotExchangesUnsafe(exchanges);
+    });
+  }
+
+  upsertHotExchangeMessages(messages: A2AExchangeMessageRecord[]): void {
+    this.runImmediateTransaction(() => {
+      this.upsertHotExchangeMessagesUnsafe(messages);
+    });
+  }
+
   upsertHotAuditEvents(events: AuditEvent[]): void {
     this.runImmediateTransaction(() => {
       this.upsertHotAuditEventsUnsafe(events);
@@ -1024,16 +1038,26 @@ export class SqliteBrokerStateStore implements BrokerStateStore {
   }
 
   private writeHotEntityTables(snapshot: BrokerSnapshot, hints?: BrokerStateSaveHints): void {
+    const hotExchangeHints = hints?.hotExchanges;
+    const hotExchangeMessageHints = hints?.hotExchangeMessages;
     const hotTaskHints = hints?.hotTasks;
     const hotAuditHints = hints?.hotAuditEvents;
     const hotWorkerHints = hints?.hotWorkers;
     this.db.exec(`
-      DELETE FROM broker_exchanges;
-      DELETE FROM broker_exchange_messages;
       DELETE FROM broker_proposals;
       DELETE FROM broker_artifacts;
       DELETE FROM broker_validations;
     `);
+    if (hotExchangeHints) {
+      this.applyCanonicalHotRetentionPlan("broker_exchanges", snapshot.exchanges.map((exchange) => exchange.id));
+    } else {
+      this.db.exec("DELETE FROM broker_exchanges;");
+    }
+    if (hotExchangeMessageHints) {
+      this.applyCanonicalHotRetentionPlan("broker_exchange_messages", snapshot.exchangeMessages.map((message) => message.id));
+    } else {
+      this.db.exec("DELETE FROM broker_exchange_messages;");
+    }
     if (hotTaskHints) {
       this.applyCanonicalHotRetentionPlan("broker_tasks", snapshot.tasks.map((task) => task.id));
     } else {
@@ -1050,40 +1074,8 @@ export class SqliteBrokerStateStore implements BrokerStateStore {
       this.db.exec("DELETE FROM broker_workers;");
     }
 
-    const insertExchange = this.db.prepare(
-      `INSERT INTO broker_exchanges
-        (id, status, intent, target_node_id, assigned_worker_id, created_at, updated_at, payload)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-    );
-    for (const exchange of snapshot.exchanges) {
-      insertExchange.run(
-        exchange.id,
-        exchange.status,
-        exchange.intent,
-        exchange.targetNodeId,
-        exchange.assignedWorkerId ?? null,
-        exchange.createdAt,
-        exchange.updatedAt,
-        JSON.stringify(exchange),
-      );
-    }
-
-    const insertExchangeMessage = this.db.prepare(
-      `INSERT INTO broker_exchange_messages
-        (id, exchange_id, kind, parent_message_id, created_at, updated_at, payload)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
-    );
-    for (const message of snapshot.exchangeMessages) {
-      insertExchangeMessage.run(
-        message.id,
-        message.exchangeId,
-        message.kind,
-        message.parentMessageId ?? null,
-        message.createdAt,
-        message.updatedAt,
-        JSON.stringify(message),
-      );
-    }
+    this.upsertHotExchangesUnsafe(hotExchangeHints ?? snapshot.exchanges);
+    this.upsertHotExchangeMessagesUnsafe(hotExchangeMessageHints ?? snapshot.exchangeMessages);
 
     const insertProposal = this.db.prepare(
       `INSERT INTO broker_proposals
@@ -1203,6 +1195,60 @@ export class SqliteBrokerStateStore implements BrokerStateStore {
         task.taskOrigin ?? "unknown",
         task.updatedAt,
         JSON.stringify(task),
+      );
+    }
+  }
+
+  private upsertHotExchangesUnsafe(exchanges: A2AExchangeState[]): void {
+    const upsertExchange = this.db.prepare(
+      `INSERT INTO broker_exchanges
+        (id, status, intent, target_node_id, assigned_worker_id, created_at, updated_at, payload)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET
+         status = excluded.status,
+         intent = excluded.intent,
+         target_node_id = excluded.target_node_id,
+         assigned_worker_id = excluded.assigned_worker_id,
+         created_at = excluded.created_at,
+         updated_at = excluded.updated_at,
+         payload = excluded.payload`,
+    );
+    for (const exchange of exchanges) {
+      upsertExchange.run(
+        exchange.id,
+        exchange.status,
+        exchange.intent,
+        exchange.targetNodeId,
+        exchange.assignedWorkerId ?? null,
+        exchange.createdAt,
+        exchange.updatedAt,
+        JSON.stringify(exchange),
+      );
+    }
+  }
+
+  private upsertHotExchangeMessagesUnsafe(messages: A2AExchangeMessageRecord[]): void {
+    const upsertMessage = this.db.prepare(
+      `INSERT INTO broker_exchange_messages
+        (id, exchange_id, kind, parent_message_id, created_at, updated_at, payload)
+       VALUES (?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET
+         exchange_id = excluded.exchange_id,
+         kind = excluded.kind,
+         parent_message_id = excluded.parent_message_id,
+         created_at = excluded.created_at,
+         updated_at = excluded.updated_at,
+         payload = excluded.payload`,
+    );
+    for (const message of messages) {
+      upsertMessage.run(
+        message.id,
+        message.exchangeId,
+        message.kind,
+        message.parentMessageId ?? null,
+        message.createdAt,
+        message.updatedAt,
+        JSON.stringify(message),
       );
     }
   }
