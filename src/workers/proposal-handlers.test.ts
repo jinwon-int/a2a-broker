@@ -382,6 +382,10 @@ test("apply_local_change: approved proposal → status becomes applied", async (
       workspace: { nodeId: "target-node", workspaceId: "ws-test" },
       message: "apply",
     });
+    server.broker.approveTask(task.id, {
+      actor: { id: "operator-1", kind: "node", role: "operator" },
+      reason: "test approval for live-impact apply task",
+    });
 
     assert.equal(await targetWorker.runOnce(), 1);
 
