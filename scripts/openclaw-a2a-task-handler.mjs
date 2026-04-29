@@ -85,6 +85,21 @@ function buildRunnerTask(task, env = process.env) {
   return runnerTask;
 }
 
+function isGithubEvidenceTask(task) {
+  const mode = taskMode(task);
+  const intent = safeText(task.intent, "");
+  return intent === "propose_patch" && mode === "github-propose-patch";
+}
+
+function buildOutputGithub(parsed) {
+  const github = {};
+  let hasAny = false;
+  if (safeText(parsed.prUrl, "")) { github.prUrl = safeText(parsed.prUrl); hasAny = true; }
+  if (safeText(parsed.doneCommentUrl, "")) { github.doneCommentUrl = safeText(parsed.doneCommentUrl); hasAny = true; }
+  if (safeText(parsed.blockCommentUrl, "")) { github.blockCommentUrl = safeText(parsed.blockCommentUrl); hasAny = true; }
+  return hasAny ? github : undefined;
+}
+
 function runDockerRunner(task, env = process.env) {
   const tempDir = mkdtempSync(join(tmpdir(), "openclaw-a2a-runner-"));
   const taskPath = join(tempDir, "task.json");
@@ -105,10 +120,17 @@ function runDockerRunner(task, env = process.env) {
     const stderr = safeText(child.stderr, "");
     const parsed = stdout ? JSON.parse(stdout) : undefined;
 
+    // timeout detection: runner status, signal, or non-zero exit
+    const isTimeout =
+      parsed?.status === "timeout" ||
+      child.signal === "SIGTERM" ||
+      child.signal === "SIGKILL" ||
+      child.status === 124; // timeout exit code convention
+
     if (child.status !== 0 || !parsed?.ok) {
       return {
         error: {
-          code: parsed?.status === "timeout" ? "docker_runner_timeout" : "docker_runner_failed",
+          code: isTimeout ? "docker_runner_timeout" : "docker_runner_failed",
           message: parsed?.error || stderr || `a2a-docker-runner exited with code ${child.status}`,
           details: {
             runnerTask,
@@ -128,9 +150,30 @@ function runDockerRunner(task, env = process.env) {
       },
     };
 
-    if (safeText(parsed.prUrl, "")) {
-      output.github = { prUrl: safeText(parsed.prUrl) };
-      output.prUrl = safeText(parsed.prUrl);
+    // map all evidence URLs from runner result through both github sub-object and top-level output
+    const githubEvidence = buildOutputGithub(parsed);
+    if (githubEvidence) {
+      output.github = githubEvidence;
+    }
+    if (safeText(parsed.prUrl, "")) output.prUrl = safeText(parsed.prUrl);
+    if (safeText(parsed.doneCommentUrl, "")) output.doneCommentUrl = safeText(parsed.doneCommentUrl);
+    if (safeText(parsed.blockCommentUrl, "")) output.blockCommentUrl = safeText(parsed.blockCommentUrl);
+
+    // github-propose-patch tasks must carry completion evidence; fail early if missing
+    if (isGithubEvidenceTask(task) && !githubEvidence) {
+      return {
+        error: {
+          code: "docker_runner_evidence_missing",
+          message:
+            "docker runner completed but produced no PR/Done/Block evidence URL; " +
+            "github-propose-patch tasks require at least one of prUrl, doneCommentUrl, or blockCommentUrl",
+          details: {
+            runnerTask,
+            runnerResult: parsed,
+            requiredEvidence: ["prUrl", "doneCommentUrl", "blockCommentUrl"],
+          },
+        },
+      };
     }
 
     return {
