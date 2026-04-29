@@ -272,6 +272,21 @@ const workspaceRefSchema = z
   })
   .passthrough();
 
+const exchangeViaObjectSchema = z
+  .object({
+    transport: z.string().min(1).optional(),
+    channel: z.string().min(1).optional(),
+    nodeId: z.string().min(1).optional(),
+    sessionId: z.string().min(1).optional(),
+    traceId: z.string().min(1).optional(),
+  })
+  .passthrough();
+
+const exchangeViaSchema = z.union([
+  exchangeViaObjectSchema,
+  z.string().min(1).transform((transport) => ({ transport })),
+]);
+
 const exchangeStateSchema = z
   .object({
     id: z.string().min(1),
@@ -302,7 +317,7 @@ const exchangeMessageSchema = z
     message: z.string(),
     requester: partyRefSchema.optional(),
     actor: partyRefSchema.optional(),
-    via: z.string().min(1).optional(),
+    via: exchangeViaSchema.optional(),
     decision: z.string().min(1).optional(),
     targetNodeId: z.string().min(1).optional(),
     assignedWorkerId: z.string().min(1).optional(),
@@ -425,7 +440,7 @@ const taskSchema = z
     proposalId: z.string().min(1).optional(),
     artifactIds: z.array(z.string()).optional(),
     assignedWorkerId: z.string().min(1).optional(),
-    via: z.string().min(1).optional(),
+    via: exchangeViaSchema.optional(),
     policyContext: taskPolicyContextSchema.optional(),
     createdAt: z.string(),
     status: z.string().min(1),

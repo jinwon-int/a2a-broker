@@ -51,6 +51,58 @@ test("JsonFileBrokerStateStore loads backward-compatible empty objects", () => {
   }
 });
 
+test("JsonFileBrokerStateStore loads snapshots with legacy and object via metadata", () => {
+  const temp = withTempFile("legacy-via-state.json");
+  try {
+    const task = makeTask("task-legacy-via", "queued", "worker-a");
+    const message = makeExchangeMessage("message-legacy-via", "exchange-1", "root");
+    writeFileSync(
+      temp.filePath,
+      JSON.stringify({
+        ...emptySnapshot(),
+        tasks: [
+          {
+            ...task,
+            via: { transport: "openclaw", channel: "telegram", sessionId: "session-a", traceId: "trace-a" },
+          },
+          {
+            ...makeTask("task-string-via", "queued", "worker-a"),
+            via: "openclaw",
+          },
+        ],
+        exchangeMessages: [
+          {
+            ...message,
+            via: { transport: "openclaw", channel: "telegram", traceId: "message-trace" },
+          },
+          {
+            ...makeExchangeMessage("message-string-via", "exchange-1", "thread"),
+            via: "openclaw",
+          },
+        ],
+      }),
+      "utf8",
+    );
+
+    const loaded = new JsonFileBrokerStateStore(temp.filePath).load();
+    assert.deepEqual(loaded.tasks[0]?.via, {
+      transport: "openclaw",
+      channel: "telegram",
+      sessionId: "session-a",
+      traceId: "trace-a",
+    });
+    assert.deepEqual(loaded.tasks[1]?.via, { transport: "openclaw" });
+    assert.deepEqual(loaded.exchangeMessages[0]?.via, {
+      transport: "openclaw",
+      channel: "telegram",
+      traceId: "message-trace",
+    });
+    assert.deepEqual(loaded.exchangeMessages[1]?.via, { transport: "openclaw" });
+  } finally {
+    temp.cleanup();
+  }
+});
+
 test("JsonFileBrokerStateStore rejects oversized snapshots", () => {
   const temp = withTempFile("large-state.json");
   try {
