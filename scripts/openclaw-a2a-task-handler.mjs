@@ -49,7 +49,13 @@ function parseJsonArrayEnv(value) {
 function shouldUseDockerRunner(task, env = process.env) {
   if (!isTruthyEnv(env.A2A_DOCKER_RUNNER_ENABLED)) return false;
   const mode = taskMode(task);
-  return task?.intent === "propose_patch" || mode === "github-propose-patch";
+  if (task?.intent !== "propose_patch" && mode !== "github-propose-patch") return false;
+  if (isTruthyEnv(env.A2A_DOCKER_RUNNER_ALL_GITHUB)) return true;
+
+  const payload = taskPayload(task);
+  const repo = safeText(payload.repo, "");
+  const requestedPreset = safeText(payload.runnerPreset ?? env.A2A_DOCKER_RUNNER_PRESET, "");
+  return requestedPreset === "openclaw-plugin-a2a-dev" || /openclaw-plugin-a2a/.test(repo);
 }
 
 function buildRunnerTask(task, env = process.env) {
