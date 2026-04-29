@@ -23,6 +23,7 @@ map.
 - `docs/docker-compose-trading-partners.md` plus `examples/docker-compose.trading-partners.yml` for broker and worker isolation examples (the compose example is not a turnkey smoke stack)
 - `docs/restart-recovery-smoke.md` for the operator runbook and automation flow that validates restart recovery
 - `docs/wake-on-task-live-canary-runbook.md` for the live Wake-on-Task canary proof, resource-warning classification, and rollback/reset checklist
+- `docs/docker-runner-rollout-runbook.md` for the A2A docker-runner worker rollout and rollback procedure: canary smoke, node expansion, feature flags, and failure rollback
 - `docs/durable-persistence-path.md` for the recommended next persistence step beyond the phase-1 JSON snapshot backend
 - `docs/sqlite-persistence.md` and `docs/release-notes-round-34-sqlite.md` for the SQLite schema v8 operator baseline, hot-table coverage, and diagnostics hot-read release notes
 - `docs/production-stabilization-20260429.md` for the live production closeout: SQLite hot-table cutover, stale-reaper threshold, worker session isolation, active-worker scope, and 502 mitigation notes
