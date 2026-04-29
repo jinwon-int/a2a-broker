@@ -155,6 +155,57 @@ secrets and host-specific noise. This document is the sanitized GitHub record.
   standard. If the full-handler runtime is promoted into a shared source repo,
   this behavior must become a tested source-level invariant.
 
+## Docker-runner evidence contract (2026-04-30)
+
+The `openclaw-a2a-task-handler` enforces a strict result contract for
+`a2a-docker-runner` workers. Canonical source: issue #169.
+
+### Feature flag scope
+
+- `A2A_DOCKER_RUNNER_ENABLED=1` activates the docker runner path **only** for
+  `intent=propose_patch` + `mode=github-propose-patch` tasks.
+- `A2A_DOCKER_RUNNER_ALL_GITHUB=1` is an explicit opt-in that extends routing to
+  **all** GitHub propose_patch tasks (not only plugin repos).
+- Non-github tasks (`intent=analyze`, `mode=analysis`, etc.) always stay on the
+  built-in handler path regardless of env flags.
+
+### Evidence requirement
+
+Every `github-propose-patch` docker runner task must produce at least one
+completion evidence URL; otherwise the handler returns a structured
+`docker_runner_evidence_missing` error. Accepted evidence keys:
+
+- `prUrl` — GitHub pull request URL
+- `doneCommentUrl` — GitHub issue comment URL for Done outcomes
+- `blockCommentUrl` — GitHub issue comment URL for Block outcomes
+
+All evidence URLs are mapped into both `output.github.{key}` (the `hasGithubCompletionEvidence`
+contract inside `validateTaskCompletionEvidence`) and `output.{key}` (the
+flat `outputHasEvidenceGate` contract).
+
+### Structured error codes
+
+| Code | Trigger |
+|------|---------|
+| `docker_runner_timeout` | Runner status is `timeout`, process received SIGTERM/SIGKILL, or exit code 124 |
+| `docker_runner_failed` | Runner exited non-zero or `ok:false` without timeout signal |
+| `docker_runner_evidence_missing` | Runner succeeded (`ok:true`, exit 0) but produced zero evidence URLs |
+| `docker_runner_exception` | Runner could not be spawned or its output could not be parsed |
+
+### Regression tests
+
+The handler test suite (`src/openclaw-handler-artifact.test.ts`) includes
+explicit regression tests that verify:
+
+1. `prUrl` / `doneCommentUrl` / `blockCommentUrl` all pass through
+   `validateTaskCompletionEvidence` unchanged.
+2. An evidence-missing runner output is rejected by
+   `validateTaskCompletionEvidence`.
+3. Timeout, failure, and evidence-missing conditions surface as structured
+   handler errors with predictable `error.code` values.
+4. Multi-evidence runner output maps all three URL keys correctly into both
+   `output.github` and flat output fields.
+
 ## Operator checklist
 
 Before dispatching a broad A2A operation:
