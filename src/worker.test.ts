@@ -278,6 +278,98 @@ test("worker fails tasks when an external handler exits non-zero", async () => {
   }
 });
 
+
+test("worker fails GitHub propose_patch tasks without PR or block evidence", async () => {
+  const server = await startTestServer();
+  const worker = createWorker(server.baseUrl);
+
+  try {
+    await worker.register();
+    const task = await createTask(server.baseUrl, {
+      intent: "propose_patch",
+      requester: { id: "hub-a", kind: "node", role: "hub" },
+      target: { id: "worker-a", kind: "node", role: "analyst" },
+      assignedWorkerId: "worker-a",
+      message: "open a GitHub PR",
+      payload: { mode: "github-propose-patch", repo: "owner/repo", issue: "#1" },
+      taskOrigin: "github",
+    });
+
+    const processed = await worker.runOnce();
+    assert.equal(processed, 1);
+
+    const taskResponse = await fetch(`${server.baseUrl}/tasks/${task.id}`);
+    assert.equal(taskResponse.status, 200);
+    const failedTask = await taskResponse.json();
+
+    assert.equal(failedTask.status, "failed");
+    assert.equal(failedTask.error.code, "github_completion_evidence_missing");
+  } finally {
+    await worker.stop();
+    await server.close();
+  }
+});
+
+test("worker allows GitHub propose_patch tasks with PR evidence", async () => {
+  const server = await startTestServer();
+  const worker = new A2ABrokerWorker({
+    brokerUrl: server.baseUrl,
+    requesterKind: "node",
+    pollIntervalMs: 25,
+    heartbeatIntervalMs: 25,
+    handlerTimeoutMs: 1_000,
+    userAgent: "a2a-broker-worker-test",
+    handler: async () => ({
+      result: {
+        summary: "opened PR",
+        output: {
+          github: {
+            prUrl: "https://github.com/owner/repo/pull/2",
+          },
+        },
+      },
+    }),
+    worker: {
+      nodeId: "worker-a",
+      role: "analyst",
+      capabilities: {
+        canAnalyze: true,
+        canBackfill: false,
+        canPatchWorkspace: true,
+        canPromoteLive: false,
+        workspaceIds: ["test"],
+        environments: ["research"],
+      },
+    },
+  });
+
+  try {
+    await worker.register();
+    const task = await createTask(server.baseUrl, {
+      intent: "propose_patch",
+      requester: { id: "hub-a", kind: "node", role: "hub" },
+      target: { id: "worker-a", kind: "node", role: "analyst" },
+      assignedWorkerId: "worker-a",
+      message: "open a GitHub PR",
+      payload: { mode: "github-propose-patch", repo: "owner/repo", issue: "#1" },
+      taskOrigin: "github",
+    });
+
+    const processed = await worker.runOnce();
+    assert.equal(processed, 1);
+
+    const taskResponse = await fetch(`${server.baseUrl}/tasks/${task.id}`);
+    assert.equal(taskResponse.status, 200);
+    const completedTask = await taskResponse.json();
+
+    assert.equal(completedTask.status, "succeeded");
+    assert.equal(completedTask.result.output.github.prUrl, "https://github.com/owner/repo/pull/2");
+  } finally {
+    await worker.stop();
+    await server.close();
+  }
+});
+
 test("worker proposal APIs: createProposal, getProposalDetails, submitValidation", async () => {
   const server = await startTestServer();
   const worker = createWorker(server.baseUrl);
