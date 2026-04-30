@@ -108,12 +108,13 @@ A2A_DOCKER_RUNNER_ALL_GITHUB=1
 |---|---|---|---|
 | `ENABLED=0` or unset | any | any | built-in handler |
 | `ENABLED=1`, `ALL_GITHUB=0` | `propose_patch` | `.../openclaw-plugin-a2a` | docker-runner |
-| `ENABLED=1`, `ALL_GITHUB=0` | `propose_patch` | `jinon86/a2a-broker` | built-in handler |
+| `ENABLED=1`, `ALL_GITHUB=0` | `propose_patch` | `jinwon-int/a2a-broker` | OpenClaw bridge if `OPENCLAW_BIN` is configured, otherwise built-in handler |
 | `ENABLED=1`, `ALL_GITHUB=1` | `propose_patch` | any GitHub repo | docker-runner |
 | `ENABLED=1` | `chat`, `analyze`, `backfill` | any | built-in handler |
 | `A2A_EXECUTOR_MODE=builtin` | any | any | built-in handler |
 | `A2A_EXECUTOR_MODE=docker` | `propose_patch` | any GitHub repo | docker-runner |
 | `A2A_EXECUTOR_MODE=auto`, `SCOPE=plugin-only` | `propose_patch` | `.../openclaw-plugin-a2a` | docker-runner |
+| `A2A_EXECUTOR_MODE=auto`, `SCOPE=plugin-only` | `propose_patch` | non-plugin GitHub repo + `OPENCLAW_BIN` | host OpenClaw bridge |
 | `A2A_EXECUTOR_MODE=auto`, `SCOPE=all-github` | `propose_patch` | any GitHub repo | docker-runner |
 
 ## 3. Runtime Environment Variables
@@ -130,6 +131,13 @@ A2A_DOCKER_RUNNER_ALL_GITHUB=0           # plugin-only scope
 # runner CLI 경로 — handler 가 spawn 하는 binary
 A2A_DOCKER_RUNNER_BIN=/usr/bin/node
 A2A_DOCKER_RUNNER_ARGS_JSON='["/opt/a2a-docker-runner/dist/cli.js"]'
+
+# host OpenClaw bridge — plugin-only scope에서 non-plugin GitHub patch task를 처리
+OPENCLAW_BIN=/usr/bin/openclaw
+A2A_OPENCLAW_AGENT_ID=main
+A2A_OPENCLAW_THINKING=low
+A2A_OPENCLAW_TIMEOUT_SEC=900
+# A2A_OPENCLAW_BRIDGE_DISABLED=1  # emergency disable
 
 # task root — host 쪽 작업 디렉토리 root
 A2A_DOCKER_RUNNER_ROOT=/var/lib/openclaw-a2a/tasks
