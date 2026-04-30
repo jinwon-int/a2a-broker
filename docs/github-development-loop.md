@@ -20,6 +20,12 @@ If evidence is absent, the broker worker fails the task with
 "succeeded" tasks into actionable failures so the operator can retry, recover
 local work, or fix the handler.
 
+Operator-dispatched tasks may use `taskOrigin: "operator"` when they are not
+GitHub-ingestion events but still need to survive SQLite hot-table reloads and
+support origin filtering. Use `taskOrigin: "github"` only when GitHub completion
+evidence should be enforced; use `payload.mode: "github-propose-patch"` when the
+task should still route through the GitHub patch runner.
+
 The versioned handler artifact in `scripts/openclaw-a2a-task-handler.mjs` exposes
 `BUILD_INFO` with version, source path, runtime checksum, and a credential-free /
 host-neutral contract. Installers should deploy this artifact from the repo (or a

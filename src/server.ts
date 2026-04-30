@@ -1531,7 +1531,7 @@ function taskFiltersFromUrl(url: URL): {
     ]),
     claimedBy: optionalString(url.searchParams.get("claimedBy")),
     assignedWorkerId: optionalString(url.searchParams.get("assignedWorkerId")),
-    taskOrigin: optionalEnum(url.searchParams.get("taskOrigin"), ["github", "api", "sessions_send", "unknown"]),
+    taskOrigin: optionalEnum(url.searchParams.get("taskOrigin"), ["github", "api", "sessions_send", "operator", "unknown"]),
   };
 }
 

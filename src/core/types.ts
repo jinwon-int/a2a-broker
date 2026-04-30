@@ -78,7 +78,7 @@ export type WorkerStatus = "online" | "stale";
  * source. Downstream consumers use this to distinguish GitHub-driven
  * collaboration from API/sessions_send invocations.
  */
-export type TaskOrigin = "github" | "api" | "sessions_send" | "unknown";
+export type TaskOrigin = "github" | "api" | "sessions_send" | "operator" | "unknown";
 
 export interface A2APartyRef {
   id: string;
