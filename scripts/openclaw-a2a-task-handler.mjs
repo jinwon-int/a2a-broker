@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
-const HANDLER_VERSION = "0.2.0";
+const HANDLER_VERSION = "0.2.1";
 const SOURCE_PATH = fileURLToPath(import.meta.url);
 const sourceSha256 = createHash("sha256").update(readFileSync(SOURCE_PATH)).digest("hex");
 
@@ -129,8 +129,27 @@ function isGithubEvidenceTask(task) {
 function shouldUseOpenClawBridge(task, env = process.env) {
   if (!isGithubEvidenceTask(task)) return false;
   if (normalizedExecutorMode(env) !== "auto") return false;
+  if (normalizedDockerScope(env) !== "plugin-only") return false;
   if (isTruthyEnv(env.A2A_OPENCLAW_BRIDGE_DISABLED)) return false;
   return isTruthyEnv(env.A2A_OPENCLAW_BRIDGE_ENABLED) || Boolean(safeText(env.OPENCLAW_BIN, ""));
+}
+
+function githubExecutorNotConfigured(task, env = process.env) {
+  return {
+    error: {
+      code: "github_executor_not_configured",
+      message:
+        "github-propose-patch tasks require docker-runner or OpenClaw bridge execution evidence; " +
+        "refusing built-in no-op success without PR/Done/Block URL",
+      details: {
+        executorMode: normalizedExecutorMode(env),
+        dockerScope: normalizedDockerScope(env),
+        bridgeConfigured: shouldUseOpenClawBridge(task, env),
+        requiredEvidence: ["prUrl", "doneCommentUrl", "blockCommentUrl"],
+        buildInfo: BUILD_INFO,
+      },
+    },
+  };
 }
 
 function stripCodeFences(text) {
@@ -445,7 +464,7 @@ function runDockerRunner(task, env = process.env) {
     };
   } catch (error) {
     if (shouldFallbackToBuiltin(env)) {
-      return handleBuiltinTask(task);
+      return handleBuiltinTask(task, env);
     }
     return {
       error: {
@@ -459,11 +478,13 @@ function runDockerRunner(task, env = process.env) {
   }
 }
 
-function handleBuiltinTask(task) {
+function handleBuiltinTask(task, env = process.env) {
+  if (isGithubEvidenceTask(task)) {
+    return githubExecutorNotConfigured(task, env);
+  }
+
   const mode = taskMode(task);
-  const summary = mode === "github-propose-patch"
-    ? "generic patch proposal task accepted by versioned OpenClaw A2A handler"
-    : `generic ${mode} task accepted by versioned OpenClaw A2A handler`;
+  const summary = `generic ${mode} task accepted by versioned OpenClaw A2A handler`;
 
   return {
     result: {
@@ -499,7 +520,7 @@ export function handleTask(task, env = process.env) {
     return runOpenClawBridge(task, env);
   }
 
-  return handleBuiltinTask(task);
+  return handleBuiltinTask(task, env);
 }
 
 async function readStdin() {

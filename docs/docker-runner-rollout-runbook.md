@@ -108,14 +108,48 @@ A2A_DOCKER_RUNNER_ALL_GITHUB=1
 |---|---|---|---|
 | `ENABLED=0` or unset | any | any | built-in handler |
 | `ENABLED=1`, `ALL_GITHUB=0` | `propose_patch` | `.../openclaw-plugin-a2a` | docker-runner |
-| `ENABLED=1`, `ALL_GITHUB=0` | `propose_patch` | `jinwon-int/a2a-broker` | OpenClaw bridge if `OPENCLAW_BIN` is configured, otherwise built-in handler |
+| `ENABLED=1`, `ALL_GITHUB=0` | `propose_patch` | `jinwon-int/a2a-broker` | OpenClaw bridge if configured, otherwise `github_executor_not_configured` |
 | `ENABLED=1`, `ALL_GITHUB=1` | `propose_patch` | any GitHub repo | docker-runner |
 | `ENABLED=1` | `chat`, `analyze`, `backfill` | any | built-in handler |
-| `A2A_EXECUTOR_MODE=builtin` | any | any | built-in handler |
+| `A2A_EXECUTOR_MODE=builtin` | non-GitHub task | any | built-in handler |
+| `A2A_EXECUTOR_MODE=builtin` | `propose_patch` | any GitHub repo | `github_executor_not_configured` no-op guard |
 | `A2A_EXECUTOR_MODE=docker` | `propose_patch` | any GitHub repo | docker-runner |
 | `A2A_EXECUTOR_MODE=auto`, `SCOPE=plugin-only` | `propose_patch` | `.../openclaw-plugin-a2a` | docker-runner |
-| `A2A_EXECUTOR_MODE=auto`, `SCOPE=plugin-only` | `propose_patch` | non-plugin GitHub repo + `OPENCLAW_BIN` | host OpenClaw bridge |
+| `A2A_EXECUTOR_MODE=auto`, `SCOPE=plugin-only` | `propose_patch` | non-plugin GitHub repo + bridge configured | host OpenClaw bridge |
+| `A2A_EXECUTOR_MODE=auto`, `SCOPE=plugin-only` | `propose_patch` | non-plugin GitHub repo + no bridge | `github_executor_not_configured` no-op guard |
 | `A2A_EXECUTOR_MODE=auto`, `SCOPE=all-github` | `propose_patch` | any GitHub repo | docker-runner |
+
+### 2.4 Docker-first no-op guard (handler >= 0.2.1)
+
+GitHub `propose_patch` / `github-propose-patch` task 는 성공 결과에 반드시
+PR/Done/Block evidence URL 이 있어야 한다. handler 는 다음 경우를 성공으로
+처리하지 않는다.
+
+- `plugin-only` scope 에서 non-plugin GitHub repo 를 받았지만 `OPENCLAW_BIN` 또는
+  `A2A_OPENCLAW_BRIDGE_ENABLED=1` 이 없어 host OpenClaw bridge 를 사용할 수 없는 경우
+- `A2A_EXECUTOR_MODE=builtin` 으로 GitHub patch task 를 처리하려는 경우
+- docker-runner 가 `ok=true` 로 종료했지만 `prUrl`, `doneCommentUrl`,
+  `blockCommentUrl` 중 하나도 반환하지 않은 경우
+
+이때 handler 는 `github_executor_not_configured` 또는
+`docker_runner_evidence_missing` error 를 반환한다. 운영자는 이 error 를 GitHub
+Block comment 로 남기고, worker fleet 설정을 고친 뒤 재시도한다. 이는 builtin
+handler 가 GitHub task 를 “받았다”는 이유만으로 false success/no-op 성공을 만들지
+못하게 하는 안전장치다.
+
+### 2.5 Operator decision table
+
+| 정책 | 권장 조건 | GitHub patch route | readiness guard | 사용 시점 |
+|---|---|---|---|---|
+| `plugin-only` | 기본/canary | `openclaw-plugin-a2a` 는 docker, 그 외 GitHub repo 는 bridge | bridge 미설정 시 `github_executor_not_configured` | Docker runner를 제한적으로 검증할 때 |
+| `all-github` | docker patch command와 evidence 수집 검증 완료 | 모든 GitHub patch task 는 docker | runner 실패/무증거 시 error, builtin fallback 금지 | fleet 전체를 Docker-first 로 전환할 때 |
+| `docker` | 긴급 Docker 강제 검증 | 모든 GitHub patch task 는 docker | PR/Done/Block URL 필수 | 특정 worker에서 Docker 경로만 허용할 때 |
+| `builtin` | 비-GitHub task 또는 임시 차단 | GitHub patch task 는 no-op guard 로 실패 | `github_executor_not_configured` | runner/bridge를 일부러 끌 때; GitHub 작업 성공 처리용 아님 |
+
+`plugin-only → all-github` 전환 전에는 최소 1개 canary worker 에서
+`A2A_EXECUTOR_MODE=auto`, `A2A_DOCKER_RUNNER_SCOPE=all-github`, 올바른
+`A2A_DOCKER_RUNNER_BIN`/`A2A_DOCKER_RUNNER_ARGS_JSON` 로 dry task 를 실행하고,
+runner 결과에 PR/Done/Block URL 이 포함되는지 확인한다.
 
 ## 3. Runtime Environment Variables
 
