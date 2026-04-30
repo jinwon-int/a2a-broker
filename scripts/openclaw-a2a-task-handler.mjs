@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
-const HANDLER_VERSION = "0.2.1";
+const HANDLER_VERSION = "0.2.2";
 const SOURCE_PATH = fileURLToPath(import.meta.url);
 const sourceSha256 = createHash("sha256").update(readFileSync(SOURCE_PATH)).digest("hex");
 
@@ -284,16 +284,28 @@ function runOpenClawBridge(task, env = process.env) {
     "--json",
   ];
 
+  const watchdogMs = env.A2A_OPENCLAW_WATCHDOG_MS
+    ? Number(env.A2A_OPENCLAW_WATCHDOG_MS)
+    : (Number(timeoutSec) + 30) * 1000;
+
   const child = spawnSync(command, args, {
     cwd: safeText(env.A2A_HANDLER_CWD, process.cwd()),
     env,
     encoding: "utf8",
     maxBuffer: 50 * 1024 * 1024,
-    timeout: (Number(timeoutSec) + 30) * 1000,
+    timeout: watchdogMs,
+    killSignal: "SIGKILL",
   });
 
   if (child.error) {
-    return { error: { code: "openclaw_bridge_spawn_failed", message: child.error.message, details: { buildInfo: BUILD_INFO } } };
+    const isTimeout = child.error.code === "ETIMEDOUT";
+    return {
+      error: {
+        code: isTimeout ? "openclaw_bridge_timeout" : "openclaw_bridge_spawn_failed",
+        message: child.error.message,
+        details: { signal: child.signal ?? undefined, buildInfo: BUILD_INFO },
+      },
+    };
   }
   if (child.status !== 0) {
     return {
@@ -305,16 +317,56 @@ function runOpenClawBridge(task, env = process.env) {
     };
   }
 
+  // --- no-final-json safeguards (issue #193) ---
+  let envelope;
   try {
-    const envelope = parseOpenClawEnvelope(child.stdout, child.stderr);
-    const text = extractOpenClawText(envelope);
-    if (!text) throw new Error("OpenClaw bridge returned no visible text");
-    const response = parseJsonFromLooseText(text);
-    const evidence = githubEvidenceFromResponse(response);
-    if (!evidence) {
-      throw new Error("OpenClaw bridge response missing prUrl, doneCommentUrl, or blockCommentUrl");
-    }
+    envelope = parseOpenClawEnvelope(child.stdout, child.stderr);
+  } catch {
+    return {
+      error: {
+        code: "openclaw_bridge_no_final_json",
+        message: "OpenClaw bridge produced no parseable output envelope",
+        details: { buildInfo: BUILD_INFO },
+      },
+    };
+  }
 
+  const text = extractOpenClawText(envelope);
+  if (!text) {
+    return {
+      error: {
+        code: "openclaw_bridge_no_final_json",
+        message: "OpenClaw bridge returned no visible text output",
+        details: { buildInfo: BUILD_INFO },
+      },
+    };
+  }
+
+  let response;
+  try {
+    response = parseJsonFromLooseText(text);
+  } catch {
+    return {
+      error: {
+        code: "openclaw_bridge_no_final_json",
+        message: "OpenClaw bridge response text contained no valid JSON",
+        details: { buildInfo: BUILD_INFO },
+      },
+    };
+  }
+
+  const evidence = githubEvidenceFromResponse(response);
+  if (!evidence) {
+    return {
+      error: {
+        code: "openclaw_bridge_evidence_missing",
+        message: "OpenClaw bridge response JSON missing prUrl, doneCommentUrl, or blockCommentUrl",
+        details: { buildInfo: BUILD_INFO },
+      },
+    };
+  }
+
+  try {
     const output = {
       github: evidence,
       repo,

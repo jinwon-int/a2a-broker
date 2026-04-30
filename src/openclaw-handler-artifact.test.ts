@@ -59,7 +59,7 @@ test("versioned OpenClaw handler exposes credential-free build metadata", () => 
   assert.equal(result.status, 0, result.stderr);
   const payload = JSON.parse(result.stdout);
   assert.equal(payload.result.handler.name, "openclaw-a2a-task-handler");
-  assert.equal(payload.result.handler.version, "0.2.1");
+  assert.equal(payload.result.handler.version, "0.2.2");
   assert.match(payload.result.handler.sourceSha256, /^[a-f0-9]{64}$/);
   assert.equal(payload.result.handler.credentialFree, true);
   assert.equal(payload.result.handler.hostNeutral, true);
@@ -647,7 +647,7 @@ test("docker runner evidence-missing fails validateTaskCompletionEvidence (contr
   const task = githubTask();
   const emptyResult = {
     summary: "completed with no evidence",
-    handler: { name: "openclaw-a2a-task-handler", version: "0.2.1" },
+    handler: { name: "openclaw-a2a-task-handler", version: "0.2.2" },
     lifecycle: {
       intent: task.intent,
       mode: task.payload.mode,
@@ -711,6 +711,154 @@ console.log(JSON.stringify({
       payload.result,
     );
     assert.equal(evidenceError, null, `multi-evidence should pass gate: ${JSON.stringify(evidenceError)}`);
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+// ——— OpenClaw bridge watchdog and final-evidence safeguards (issue #193) ———
+
+test("OpenClaw bridge SIGKILL surfaces as openclaw_bridge_timeout (issue #193 watchdog)", () => {
+  const tempDir = mkdtempSync(join(tmpdir(), "handler-bridge-kill-193-"));
+  const fakeBridgePath = join(tempDir, "fake-openclaw-kill.mjs");
+  try {
+    writeFileSync(fakeBridgePath, `#!/usr/bin/env node
+process.kill(process.pid, "SIGKILL");
+`);
+    chmodSync(fakeBridgePath, 0o755);
+
+    const result = spawnSync(process.execPath, [handlerPath], {
+      input: JSON.stringify(githubTask()),
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        A2A_EXECUTOR_MODE: "auto",
+        A2A_DOCKER_RUNNER_SCOPE: "plugin-only",
+        OPENCLAW_BIN: fakeBridgePath,
+      },
+    });
+
+    assert.equal(result.status, 1);
+    const payload = JSON.parse(result.stdout);
+    assert.equal(payload.error.code, "openclaw_bridge_timeout");
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("OpenClaw bridge watchdog ETIMEDOUT surfaces as openclaw_bridge_timeout (issue #193 watchdog)", () => {
+  const tempDir = mkdtempSync(join(tmpdir(), "handler-bridge-watchdog-193-"));
+  const fakeBridgePath = join(tempDir, "fake-openclaw-hang.mjs");
+  try {
+    writeFileSync(fakeBridgePath, `#!/usr/bin/env node
+// keeps event loop alive so the watchdog must kill it
+setTimeout(() => {}, 99999999);
+`);
+    chmodSync(fakeBridgePath, 0o755);
+
+    const result = spawnSync(process.execPath, [handlerPath], {
+      input: JSON.stringify(githubTask()),
+      encoding: "utf8",
+      timeout: 10000,
+      env: {
+        ...process.env,
+        A2A_EXECUTOR_MODE: "auto",
+        A2A_DOCKER_RUNNER_SCOPE: "plugin-only",
+        OPENCLAW_BIN: fakeBridgePath,
+        A2A_OPENCLAW_WATCHDOG_MS: "1500",
+      },
+    });
+
+    assert.equal(result.status, 1);
+    const payload = JSON.parse(result.stdout);
+    assert.equal(payload.error.code, "openclaw_bridge_timeout");
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("OpenClaw bridge empty output surfaces as openclaw_bridge_no_final_json (issue #193)", () => {
+  const tempDir = mkdtempSync(join(tmpdir(), "handler-bridge-nojson-193-"));
+  const fakeBridgePath = join(tempDir, "fake-openclaw-empty.mjs");
+  try {
+    writeFileSync(fakeBridgePath, `#!/usr/bin/env node
+process.stderr.write("bridge ran but produced no JSON output\\n");
+`);
+    chmodSync(fakeBridgePath, 0o755);
+
+    const result = spawnSync(process.execPath, [handlerPath], {
+      input: JSON.stringify(githubTask()),
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        A2A_EXECUTOR_MODE: "auto",
+        A2A_DOCKER_RUNNER_SCOPE: "plugin-only",
+        OPENCLAW_BIN: fakeBridgePath,
+      },
+    });
+
+    assert.equal(result.status, 1);
+    const payload = JSON.parse(result.stdout);
+    assert.equal(payload.error.code, "openclaw_bridge_no_final_json");
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("OpenClaw bridge text-only output (no JSON) surfaces as openclaw_bridge_no_final_json (issue #193)", () => {
+  const tempDir = mkdtempSync(join(tmpdir(), "handler-bridge-textonly-193-"));
+  const fakeBridgePath = join(tempDir, "fake-openclaw-textonly.mjs");
+  try {
+    writeFileSync(fakeBridgePath, `#!/usr/bin/env node
+// envelope parses but inner text has no JSON
+console.log(JSON.stringify({ payloads: [{ text: "I worked on it but could not finish. No structured result available." }] }));
+`);
+    chmodSync(fakeBridgePath, 0o755);
+
+    const result = spawnSync(process.execPath, [handlerPath], {
+      input: JSON.stringify(githubTask()),
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        A2A_EXECUTOR_MODE: "auto",
+        A2A_DOCKER_RUNNER_SCOPE: "plugin-only",
+        OPENCLAW_BIN: fakeBridgePath,
+      },
+    });
+
+    assert.equal(result.status, 1);
+    const payload = JSON.parse(result.stdout);
+    assert.equal(payload.error.code, "openclaw_bridge_no_final_json");
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("OpenClaw bridge JSON without evidence URLs surfaces as openclaw_bridge_evidence_missing (issue #193)", () => {
+  const tempDir = mkdtempSync(join(tmpdir(), "handler-bridge-noevidence-193-"));
+  const fakeBridgePath = join(tempDir, "fake-openclaw-noevidence.mjs");
+  try {
+    writeFileSync(fakeBridgePath, `#!/usr/bin/env node
+// valid JSON in the response but no prUrl/doneCommentUrl/blockCommentUrl
+console.log(JSON.stringify({ payloads: [{ text: JSON.stringify({ status: "done", summary: "work completed" }) }] }));
+`);
+    chmodSync(fakeBridgePath, 0o755);
+
+    const result = spawnSync(process.execPath, [handlerPath], {
+      input: JSON.stringify(githubTask()),
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        A2A_EXECUTOR_MODE: "auto",
+        A2A_DOCKER_RUNNER_SCOPE: "plugin-only",
+        OPENCLAW_BIN: fakeBridgePath,
+      },
+    });
+
+    assert.equal(result.status, 1);
+    const payload = JSON.parse(result.stdout);
+    assert.equal(payload.error.code, "openclaw_bridge_evidence_missing");
+    assert.match(payload.error.message, /prUrl|doneCommentUrl|blockCommentUrl/);
   } finally {
     rmSync(tempDir, { recursive: true, force: true });
   }
