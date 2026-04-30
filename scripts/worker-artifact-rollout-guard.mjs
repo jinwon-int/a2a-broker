@@ -7,6 +7,7 @@
 // Usage:
 //   node scripts/worker-artifact-rollout-guard.mjs [--dry-run] [--smoke] [--verbose]
 //   node scripts/worker-artifact-rollout-guard.mjs --docker-check
+//   node scripts/worker-artifact-rollout-guard.mjs --deployed
 //
 // Exit codes:
 //   0  — all guards passed / dry-run completed
@@ -39,6 +40,7 @@ const DRY_RUN = process.argv.includes('--dry-run');
 const SMOKE = process.argv.includes('--smoke') || DRY_RUN;
 const VERBOSE = process.argv.includes('--verbose');
 const DOCKER_CHECK = process.argv.includes('--docker-check');
+const DEPLOYED_CHECK = process.argv.includes('--deployed') || process.argv.includes('--runtime');
 
 const HANDLER_FILENAME = 'openclaw-a2a-task-handler.mjs';
 
@@ -228,6 +230,16 @@ guard('handlers-compat-path', () => {
   const sourceHash = sha256(sourceContent);
 
   if (!existsSync(handlersPath)) {
+    if (!DEPLOYED_CHECK) {
+      return ok('handlers-compat-path', {
+        checked: false,
+        reason: 'handlers compat path is generated during worker artifact deploy; use --deployed to require it',
+        sourcePath,
+        handlersPath,
+        sourceHash,
+      });
+    }
+
     return fail(
       'handlers-compat-path',
       `handlers compat path missing: ${handlersPath}`,
