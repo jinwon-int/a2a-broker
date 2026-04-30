@@ -25,12 +25,48 @@ A2A Broker → Host A2A Worker (systemd) → Handler MJS → a2a-docker-runner C
 runner 가 Docker container 를 띄워 격리된 `/work` 아래서 repo clone →
 `npm ci` → `npm test` → command 실행을 수행하고 결과를 반환한다.
 
+운영 원칙은 **워커 분리 금지, executor backend 선택**이다. 즉
+`openclaw-a2a-worker` 는 하나의 worker identity/service 로 유지하고,
+task 별 실행 backend 만 `builtin` 또는 `docker` 로 선택한다. 별도의
+`openclaw-a2a-worker-docker` / `openclaw-a2a-worker-legacy` 서비스를 만들면
+broker claim 경쟁, worker status 중복, 버전 drift 가 생기므로 피한다.
+
 ## 2. Feature Flags
+
+### 2.0 Unified Executor Policy
+
+신규 설정은 `A2A_EXECUTOR_MODE` 를 기준으로 한다.
+
+```bash
+# 권장 기본값: worker 는 하나, executor 만 자동 선택
+A2A_EXECUTOR_MODE=auto        # auto | docker | builtin
+A2A_DOCKER_RUNNER_SCOPE=plugin-only  # plugin-only | all-github
+
+# runner 장애 시 handler spawn/환경 예외에 한해 built-in fallback 허용
+A2A_EXECUTOR_FALLBACK=builtin
+```
+
+| Mode | Behavior |
+|---|---|
+| `builtin` | docker-runner 를 호출하지 않고 기존 built-in handler 경로만 사용 |
+| `docker` | GitHub `propose_patch` / `github-propose-patch` task 를 docker-runner 로 라우팅 |
+| `auto` | scope 정책에 맞는 GitHub patch task 만 docker-runner 로 라우팅 |
+
+`A2A_DOCKER_RUNNER_SCOPE=plugin-only` 는 `openclaw-plugin-a2a` repo/preset 만
+docker-runner 로 보낸다. `all-github` 은 모든 GitHub patch task 를 보낸다.
+
+기존 운영 env 는 계속 호환된다:
+
+- `A2A_DOCKER_RUNNER_ENABLED=1` → `A2A_EXECUTOR_MODE=auto` 와 동일한 legacy gate
+- `A2A_DOCKER_RUNNER_ALL_GITHUB=1` → `A2A_DOCKER_RUNNER_SCOPE=all-github` 와 동일
+- 미설정 또는 `A2A_DOCKER_RUNNER_ENABLED=0` → `builtin`
 
 ### 2.1 `A2A_DOCKER_RUNNER_ENABLED=1`
 
-worker handler 의 docker-runner 진입 gate. `0` 또는 미설정 시 handler 는
-기존 built-in 경로 (OpenClaw session dispatch) 만 사용한다.
+worker handler 의 legacy docker-runner 진입 gate. 신규 배포에서는
+`A2A_EXECUTOR_MODE=auto` 를 선호한다. `0` 또는 미설정 시 handler 는
+기존 built-in 경로 (OpenClaw session dispatch) 만 사용한다. 단,
+`A2A_EXECUTOR_MODE` 이 명시되어 있으면 그 값이 우선한다.
 
 ```bash
 # /etc/default/openclaw-a2a-worker
@@ -43,6 +79,9 @@ A2A_DOCKER_RUNNER_ENABLED=1
 기존 built-in handler 경로로 처리된다 (PR #167, #168).
 
 ### 2.2 `A2A_DOCKER_RUNNER_ALL_GITHUB=1`
+
+legacy all-GitHub opt-in 이다. 신규 배포에서는
+`A2A_DOCKER_RUNNER_SCOPE=all-github` 를 선호한다.
 
 기본값은 **plugin-only scope** 이다. handler 의 `shouldUseDockerRunner()` 는
 다음 조건을 모두 만족할 때만 runner 로 라우팅한다:
@@ -72,6 +111,10 @@ A2A_DOCKER_RUNNER_ALL_GITHUB=1
 | `ENABLED=1`, `ALL_GITHUB=0` | `propose_patch` | `jinon86/a2a-broker` | built-in handler |
 | `ENABLED=1`, `ALL_GITHUB=1` | `propose_patch` | any GitHub repo | docker-runner |
 | `ENABLED=1` | `chat`, `analyze`, `backfill` | any | built-in handler |
+| `A2A_EXECUTOR_MODE=builtin` | any | any | built-in handler |
+| `A2A_EXECUTOR_MODE=docker` | `propose_patch` | any GitHub repo | docker-runner |
+| `A2A_EXECUTOR_MODE=auto`, `SCOPE=plugin-only` | `propose_patch` | `.../openclaw-plugin-a2a` | docker-runner |
+| `A2A_EXECUTOR_MODE=auto`, `SCOPE=all-github` | `propose_patch` | any GitHub repo | docker-runner |
 
 ## 3. Runtime Environment Variables
 
@@ -79,6 +122,8 @@ A2A_DOCKER_RUNNER_ALL_GITHUB=1
 
 ```bash
 # feature gate
+A2A_EXECUTOR_MODE=auto
+A2A_DOCKER_RUNNER_SCOPE=plugin-only
 A2A_DOCKER_RUNNER_ENABLED=1
 A2A_DOCKER_RUNNER_ALL_GITHUB=0           # plugin-only scope
 

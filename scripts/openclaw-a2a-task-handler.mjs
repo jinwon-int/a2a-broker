@@ -37,6 +37,24 @@ function isTruthyEnv(value) {
   return /^(1|true|yes|on)$/i.test(String(value ?? "").trim());
 }
 
+function normalizedExecutorMode(env = process.env) {
+  const mode = safeText(env.A2A_EXECUTOR_MODE, "").toLowerCase();
+  if (["auto", "docker", "builtin"].includes(mode)) return mode;
+  return isTruthyEnv(env.A2A_DOCKER_RUNNER_ENABLED) ? "auto" : "builtin";
+}
+
+function normalizedDockerScope(env = process.env) {
+  const scope = safeText(env.A2A_DOCKER_RUNNER_SCOPE, "").toLowerCase().replace(/_/g, "-");
+  if (["all", "all-github", "github"].includes(scope)) return "all-github";
+  if (["plugin", "plugin-only", "openclaw-plugin-a2a"].includes(scope)) return "plugin-only";
+  return isTruthyEnv(env.A2A_DOCKER_RUNNER_ALL_GITHUB) ? "all-github" : "plugin-only";
+}
+
+function shouldFallbackToBuiltin(env = process.env) {
+  return isTruthyEnv(env.A2A_DOCKER_RUNNER_FALLBACK_TO_BUILTIN) ||
+    safeText(env.A2A_EXECUTOR_FALLBACK, "").toLowerCase() === "builtin";
+}
+
 function parseJsonArrayEnv(value) {
   if (!value) return [];
   const parsed = JSON.parse(value);
@@ -47,10 +65,13 @@ function parseJsonArrayEnv(value) {
 }
 
 function shouldUseDockerRunner(task, env = process.env) {
-  if (!isTruthyEnv(env.A2A_DOCKER_RUNNER_ENABLED)) return false;
+  const executorMode = normalizedExecutorMode(env);
+  if (executorMode === "builtin") return false;
+
   const mode = taskMode(task);
   if (task?.intent !== "propose_patch" && mode !== "github-propose-patch") return false;
-  if (isTruthyEnv(env.A2A_DOCKER_RUNNER_ALL_GITHUB)) return true;
+  if (executorMode === "docker") return true;
+  if (normalizedDockerScope(env) === "all-github") return true;
 
   const payload = taskPayload(task);
   const repo = safeText(payload.repo, "");
@@ -210,7 +231,7 @@ function runDockerRunner(task, env = process.env) {
       },
     };
   } catch (error) {
-    if (isTruthyEnv(env.A2A_DOCKER_RUNNER_FALLBACK_TO_BUILTIN)) {
+    if (shouldFallbackToBuiltin(env)) {
       return handleBuiltinTask(task);
     }
     return {
