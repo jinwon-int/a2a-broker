@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
-const HANDLER_VERSION = "0.2.3";
+const HANDLER_VERSION = "0.2.4";
 const SOURCE_PATH = fileURLToPath(import.meta.url);
 const sourceSha256 = createHash("sha256").update(readFileSync(SOURCE_PATH)).digest("hex");
 
@@ -499,6 +499,11 @@ function runDockerRunner(task, env = process.env) {
       };
     }
 
+    const nodeId = safeText(env.A2A_NODE_ID || env.NODE_ID || env.WORKER_ID, "unknown-node");
+    const repo = safeText(runnerTask.repo, "");
+    const issue = safeText(runnerTask.issue, "");
+    const issueUrl = safeText(runnerTask.issueUrl, "");
+
     const output = {
       runner: {
         status: parsed.status,
@@ -506,6 +511,21 @@ function runDockerRunner(task, env = process.env) {
         artifacts: Array.isArray(parsed.artifacts) ? parsed.artifacts : [],
       },
     };
+
+    if (repo) output.repo = repo;
+    if (issue) output.issue = issue;
+    if (issueUrl) output.issueUrl = issueUrl;
+    output.nodeId = nodeId;
+    output.taskId = safeText(task.id, undefined);
+
+    const branch = safeText(parsed.branch, "");
+    if (branch) output.branch = branch;
+    const tests = normalizeStringArray(parsed.tests);
+    if (tests.length) output.tests = tests;
+    const filesChanged = normalizeStringArray(parsed.filesChanged);
+    if (filesChanged.length) output.filesChanged = filesChanged;
+    const risks = normalizeStringArray(parsed.risks);
+    if (risks.length) output.risks = risks;
 
     // map all evidence URLs from runner result through both github sub-object and top-level output
     const githubEvidence = buildOutputGithub(parsed);
