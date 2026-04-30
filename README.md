@@ -22,6 +22,7 @@ map.
 - `docs/smoke-compose.md` plus `examples/docker-compose.smoke.yml` for a runnable single-host smoke stack using the built-in echo worker
 - `docs/docker-compose-trading-partners.md` plus `examples/docker-compose.trading-partners.yml` for broker and worker isolation examples (the compose example is not a turnkey smoke stack)
 - `docs/restart-recovery-smoke.md` for the operator runbook and automation flow that validates restart recovery
+- `docs/operator-dashboard-snapshot.md` for the `GET /dashboard` operator snapshot JSON projection: workers, task status counters, stale/retry/dead-letter summary, and attention items
 - `docs/wake-on-task-live-canary-runbook.md` for the live Wake-on-Task canary proof, resource-warning classification, and rollback/reset checklist
 - `docs/docker-runner-rollout-runbook.md` for the A2A docker-runner worker rollout and rollback procedure: canary smoke, node expansion, feature flags, and failure rollback
 - `docs/durable-persistence-path.md` for the recommended next persistence step beyond the phase-1 JSON snapshot backend

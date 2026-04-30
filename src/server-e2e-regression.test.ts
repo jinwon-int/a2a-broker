@@ -437,6 +437,21 @@ test("E2E: stale recovery via requeue endpoint leads to tombstone when cap excee
     assert.equal(dashboard.observability.recovery.totalDeadLettered, 1);
     assert.equal(dashboard.observability.recovery.recentDeadLetters[0].error.code, "exceeded_requeue_limit");
 
+    // Operator snapshot projection: compact JSON for dashboards/runbooks.
+    assert.equal(dashboard.operatorSnapshot.workers.total, 1);
+    assert.equal(dashboard.operatorSnapshot.taskStatusSummary.total, 1);
+    assert.equal(dashboard.operatorSnapshot.taskStatusSummary.terminal, 1);
+    assert.equal(dashboard.operatorSnapshot.taskStatusSummary.byStatus.failed, 1);
+    assert.equal(dashboard.operatorSnapshot.recoverySummary.retry.totalRequeued, 2);
+    assert.equal(dashboard.operatorSnapshot.recoverySummary.retry.maxRequeueAttempts, 2);
+    assert.equal(dashboard.operatorSnapshot.recoverySummary.deadLetter.totalDeadLettered, 1);
+    const deadLetterAttention = dashboard.operatorSnapshot.attentionItems.find((item: { taskId: string }) => item.taskId === task.id);
+    assert.ok(deadLetterAttention);
+    assert.equal(deadLetterAttention.code, "dead_lettered");
+    assert.equal(deadLetterAttention.whoClaimed, "w1");
+    assert.match(deadLetterAttention.whyStuck, /requeue limit/);
+    assert.match(deadLetterAttention.whatNext, /inspect/i);
+
     // Health endpoint reflects reaper-managed dead-letters (auto reaper only);
     // manual /tasks/requeue_stale calls are not tracked in health.staleReaper counters.
     // The dashboard counters above cover both manual and auto dead-letters.
