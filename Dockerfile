@@ -16,5 +16,7 @@ COPY package.json package-lock.json* ./
 RUN if [ -f package-lock.json ]; then npm ci --omit=dev; else npm install --omit=dev; fi
 COPY --from=build /app/dist ./dist
 COPY scripts/export-sqlite-state.mjs ./scripts/export-sqlite-state.mjs
+COPY scripts/openclaw-a2a-task-handler.mjs ./scripts/openclaw-a2a-task-handler.mjs
+RUN mkdir -p ./handlers && cp scripts/openclaw-a2a-task-handler.mjs ./handlers/openclaw-a2a-task-handler.mjs
 EXPOSE 8787
 CMD ["node", "dist/server.js"]
