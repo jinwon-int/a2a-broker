@@ -1603,6 +1603,29 @@ test("SqliteBrokerStateStore migrates v2 task hot table with task origin column"
   }
 });
 
+test("SqliteBrokerStateStore accepts operator-origin hot task payloads", () => {
+  const temp = withTempFile("state.sqlite");
+  try {
+    const store = new SqliteBrokerStateStore(temp.filePath);
+    const operatorTask: BrokerSnapshot["tasks"][number] = {
+      ...makeTask("task-operator", "queued", "worker-a"),
+      taskOrigin: "operator",
+    };
+    store.save({
+      ...emptySnapshot(),
+      tasks: [operatorTask],
+    });
+    store.close();
+
+    const reloaded = new SqliteBrokerStateStore(temp.filePath);
+    assert.deepEqual(reloaded.readHotTasks({ taskOrigin: "operator" }).map((task) => task.id), ["task-operator"]);
+    assert.equal(reloaded.load().tasks[0]!.taskOrigin, "operator");
+    reloaded.close();
+  } finally {
+    temp.cleanup();
+  }
+});
+
 function readSqliteCount(db: DatabaseSync, tableName: string): number {
   const row = db.prepare(`SELECT count(*) AS count FROM ${tableName}`).get() as { count: number };
   return row.count;

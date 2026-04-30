@@ -861,6 +861,14 @@ describe("GitHubIngestionService — replay protection", () => {
       taskOrigin: "api",
     });
 
+    // Explicit operator-origin task from an operator-dispatched workflow.
+    broker.createTask({
+      intent: "analyze",
+      requester: { id: "operator", kind: "service", role: "operator" },
+      target: { id: "worker-a", kind: "node" },
+      taskOrigin: "operator",
+    });
+
     const githubTasks = broker.listTasks({ taskOrigin: "github" });
     assert.equal(githubTasks.length, 1);
     assert.equal(githubTasks[0]!.taskOrigin, "github");
@@ -873,7 +881,11 @@ describe("GitHubIngestionService — replay protection", () => {
     assert.equal(apiTasks.length, 1);
     assert.equal(apiTasks[0]!.taskOrigin, "api");
 
-    // No filter still returns all three.
-    assert.equal(broker.listTasks({}).length, 3);
+    const operatorTasks = broker.listTasks({ taskOrigin: "operator" });
+    assert.equal(operatorTasks.length, 1);
+    assert.equal(operatorTasks[0]!.taskOrigin, "operator");
+
+    // No filter still returns all four.
+    assert.equal(broker.listTasks({}).length, 4);
   });
 });
