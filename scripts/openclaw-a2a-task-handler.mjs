@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
-const HANDLER_VERSION = "0.2.2";
+const HANDLER_VERSION = "0.2.3";
 const SOURCE_PATH = fileURLToPath(import.meta.url);
 const sourceSha256 = createHash("sha256").update(readFileSync(SOURCE_PATH)).digest("hex");
 
@@ -53,6 +53,19 @@ function normalizedDockerScope(env = process.env) {
 function shouldFallbackToBuiltin(env = process.env) {
   return isTruthyEnv(env.A2A_DOCKER_RUNNER_FALLBACK_TO_BUILTIN) ||
     safeText(env.A2A_EXECUTOR_FALLBACK, "").toLowerCase() === "builtin";
+}
+
+function isDockerRunnerBinConfigured(env = process.env) {
+  return safeText(env.A2A_DOCKER_RUNNER_BIN, "").length > 0;
+}
+
+// Returns true when the executor policy mandates docker for all GitHub patch tasks.
+// In these modes the runner binary must be explicitly configured up-front.
+function isDockerFirstMode(env = process.env) {
+  const executorMode = normalizedExecutorMode(env);
+  if (executorMode === "docker") return true;
+  if (executorMode === "auto" && normalizedDockerScope(env) === "all-github") return true;
+  return false;
 }
 
 function parseJsonArrayEnv(value) {
@@ -425,6 +438,26 @@ function buildOutputGithub(parsed) {
 }
 
 function runDockerRunner(task, env = process.env) {
+  // docker-first readiness guard: explicit docker mode or all-github scope requires
+  // A2A_DOCKER_RUNNER_BIN to be set so the operator has consciously chosen a runner path.
+  // Without it we return a clear config error instead of a confusing ENOENT spawn failure.
+  if (isDockerFirstMode(env) && !isDockerRunnerBinConfigured(env)) {
+    return {
+      error: {
+        code: "docker_runner_not_configured",
+        message:
+          "docker-first executor policy requires A2A_DOCKER_RUNNER_BIN to be explicitly configured; " +
+          "refusing github-propose-patch without a confirmed runner path",
+        details: {
+          executorMode: normalizedExecutorMode(env),
+          dockerScope: normalizedDockerScope(env),
+          requiredEnv: ["A2A_DOCKER_RUNNER_BIN"],
+          buildInfo: BUILD_INFO,
+        },
+      },
+    };
+  }
+
   const tempDir = mkdtempSync(join(tmpdir(), "openclaw-a2a-runner-"));
   const taskPath = join(tempDir, "task.json");
   const runnerTask = buildRunnerTask(task, env);

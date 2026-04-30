@@ -431,7 +431,80 @@ curl -sf -X POST https://broker.seoyoon-family.com/tasks \
 4. **Bangtong** — VPS3, Codex CLI harness 의존 노드, runner 간섭
    확인 후 마지막 확대
 
-### 5.5 Rollout Gate
+### 5.5 Switching Scope: plugin-only → all-github
+
+`plugin-only` scope 에서 `all-github` scope 로 fleet 을 전환하면 모든 GitHub
+`propose_patch` / `github-propose-patch` task 가 docker-runner 를 거치게 된다.
+이 전환 전에 아래 전제 조건과 단계를 반드시 확인한다.
+
+#### 5.5.1 전환 전 전제 조건 (readiness checklist)
+
+| 항목 | 확인 방법 | 기준 |
+|---|---|---|
+| `A2A_DOCKER_RUNNER_BIN` 명시 설정 | `cat /etc/default/openclaw-a2a-worker` | 빈 값·미설정 시 `docker_runner_not_configured` 오류 발생 |
+| runner doctor pass | `node $RUNNER_BIN doctor` | `ok: true`, engine + token 확인 |
+| non-plugin repo dry-run | 아래 smoke 참고 | runner result 에 `prUrl`/`doneCommentUrl`/`blockCommentUrl` 존재 |
+| Sogyo all-github canary | plugin-only 와 동일한 smoke | 성공률 ≥ 90% (최근 5건) |
+
+**`A2A_DOCKER_RUNNER_BIN` 이 빈 값이거나 설정되지 않은 상태에서
+`A2A_DOCKER_RUNNER_SCOPE=all-github` 또는 `A2A_EXECUTOR_MODE=docker` 로
+설정하면 handler (>= 0.2.3) 가 `docker_runner_not_configured` 오류를
+반환한다. Docker-first 모드는 runner binary 가 명시적으로 설정된 경우에만
+동작한다.**
+
+#### 5.5.2 전환 단계 (per node)
+
+```bash
+# 1. 전환 전 현재 scope 확인
+grep -E 'A2A_DOCKER_RUNNER_SCOPE|A2A_EXECUTOR_MODE|A2A_DOCKER_RUNNER_BIN' \
+  /etc/default/openclaw-a2a-worker
+
+# 2. non-plugin repo 대상 dry-run smoke (broker 없이 handler 직접 호출)
+node scripts/openclaw-a2a-task-handler.mjs <<'EOF'
+{"id":"dryrun-1","intent":"propose_patch","message":"all-github scope dry-run","payload":{"mode":"github-propose-patch","repo":"jinwon-int/a2a-broker","issue":"#189"}}
+EOF
+# 기대: error.code === "docker_runner_not_configured"  (BIN 미설정 시)
+# 기대: result.output.github.* 에 evidence URL   (runner 정상 시)
+
+# 3. /etc/default/openclaw-a2a-worker 수정
+A2A_EXECUTOR_MODE=auto
+A2A_DOCKER_RUNNER_SCOPE=all-github          # plugin-only → all-github
+A2A_DOCKER_RUNNER_BIN=/usr/bin/node         # 반드시 명시 설정
+A2A_DOCKER_RUNNER_ARGS_JSON='["/opt/a2a-docker-runner/dist/cli.js"]'
+
+# 4. worker 재시작 및 확인
+systemctl daemon-reload
+systemctl restart openclaw-a2a-worker
+systemctl status openclaw-a2a-worker --no-pager
+
+# 5. 전환 후 live task smoke (4.4 절 참고, 비-plugin repo 로도 실행)
+```
+
+#### 5.5.3 전환 후 검증
+
+전환 직후 broker 를 통해 비-plugin repo (예: `jinwon-int/a2a-broker`) 로
+`propose_patch` task 를 전송하고 아래를 확인한다:
+
+- `GET /tasks/:id` → `status: "succeeded"`
+- `result.output.github` 에 `prUrl`, `doneCommentUrl`, `blockCommentUrl` 중
+  하나 이상 존재
+
+runner 가 증거 URL 없이 `ok: true` 로 종료하면 handler 가
+`docker_runner_evidence_missing` 오류를 반환한다. 이 경우 runner 설정 또는
+runner 구현을 점검한 뒤 재시도한다.
+
+#### 5.5.4 all-github → plugin-only 롤백
+
+```bash
+# /etc/default/openclaw-a2a-worker
+A2A_DOCKER_RUNNER_SCOPE=plugin-only   # all-github → plugin-only
+systemctl daemon-reload && systemctl restart openclaw-a2a-worker
+```
+
+롤백 후 비-plugin GitHub task 는 bridge (`OPENCLAW_BIN`) 가 설정된 경우 bridge 로,
+미설정 시 `github_executor_not_configured` 오류를 반환한다.
+
+### 5.6 Rollout Gate
 
 **전체 rollout 은 runner evidence executor 가 안정화될 때까지 보류한다.**
 
