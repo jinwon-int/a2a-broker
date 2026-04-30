@@ -67,9 +67,22 @@ function buildRunnerTask(task, env = process.env) {
   const runnerTask = {
     id: safeText(task.id, `task-${Date.now()}`),
     intent: safeText(task.intent, "propose_patch"),
+    mode: taskMode(task),
     prompt: safeText(task.message, safeText(payload.prompt, "")),
     timeoutMs: Number(env.A2A_DOCKER_RUNNER_TASK_TIMEOUT_MS || payload.timeoutMs || 45 * 60 * 1000),
   };
+
+  const issueUrl = safeText(payload.issueUrl, "");
+  const issue = safeText(payload.issue, "");
+  const issueNumber = safeText(payload.issueNumber, "");
+  const reportLanguage = safeText(payload.reportLanguage, "");
+  const requestedBy = safeText(payload.requestedBy, safeText(task?.requester?.id, ""));
+
+  if (issueUrl) runnerTask.issueUrl = issueUrl;
+  if (issue) runnerTask.issue = issue;
+  if (issueNumber) runnerTask.issueNumber = issueNumber;
+  if (reportLanguage) runnerTask.reportLanguage = reportLanguage;
+  if (requestedBy) runnerTask.requestedBy = requestedBy;
 
   if (usesPluginPreset) {
     runnerTask.preset = "openclaw-plugin-a2a-dev";
@@ -92,11 +105,17 @@ function isGithubEvidenceTask(task) {
 }
 
 function buildOutputGithub(parsed) {
+  const nested = parsed?.github && typeof parsed.github === "object" && !Array.isArray(parsed.github)
+    ? parsed.github
+    : {};
   const github = {};
   let hasAny = false;
-  if (safeText(parsed.prUrl, "")) { github.prUrl = safeText(parsed.prUrl); hasAny = true; }
-  if (safeText(parsed.doneCommentUrl, "")) { github.doneCommentUrl = safeText(parsed.doneCommentUrl); hasAny = true; }
-  if (safeText(parsed.blockCommentUrl, "")) { github.blockCommentUrl = safeText(parsed.blockCommentUrl); hasAny = true; }
+  const prUrl = safeText(parsed.prUrl, safeText(nested.prUrl, ""));
+  const doneCommentUrl = safeText(parsed.doneCommentUrl, safeText(nested.doneCommentUrl, ""));
+  const blockCommentUrl = safeText(parsed.blockCommentUrl, safeText(nested.blockCommentUrl, ""));
+  if (prUrl) { github.prUrl = prUrl; hasAny = true; }
+  if (doneCommentUrl) { github.doneCommentUrl = doneCommentUrl; hasAny = true; }
+  if (blockCommentUrl) { github.blockCommentUrl = blockCommentUrl; hasAny = true; }
   return hasAny ? github : undefined;
 }
 
@@ -155,9 +174,9 @@ function runDockerRunner(task, env = process.env) {
     if (githubEvidence) {
       output.github = githubEvidence;
     }
-    if (safeText(parsed.prUrl, "")) output.prUrl = safeText(parsed.prUrl);
-    if (safeText(parsed.doneCommentUrl, "")) output.doneCommentUrl = safeText(parsed.doneCommentUrl);
-    if (safeText(parsed.blockCommentUrl, "")) output.blockCommentUrl = safeText(parsed.blockCommentUrl);
+    if (safeText(githubEvidence?.prUrl, "")) output.prUrl = safeText(githubEvidence.prUrl);
+    if (safeText(githubEvidence?.doneCommentUrl, "")) output.doneCommentUrl = safeText(githubEvidence.doneCommentUrl);
+    if (safeText(githubEvidence?.blockCommentUrl, "")) output.blockCommentUrl = safeText(githubEvidence.blockCommentUrl);
 
     // github-propose-patch tasks must carry completion evidence; fail early if missing
     if (isGithubEvidenceTask(task) && !githubEvidence) {
