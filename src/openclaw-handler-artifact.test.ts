@@ -83,6 +83,11 @@ const taskPath = process.argv.at(-1);
 const task = JSON.parse(readFileSync(taskPath, "utf8"));
 if (process.argv[2] !== "run") throw new Error("expected run subcommand");
 if (task.repo !== "owner/repo") throw new Error("expected repo mapping");
+if (task.mode !== "github-propose-patch") throw new Error("expected mode propagation");
+if (task.issue !== "#1") throw new Error("expected issue propagation");
+if (task.issueUrl !== "https://github.com/owner/repo/issues/1") throw new Error("expected issueUrl propagation");
+if (task.reportLanguage !== "ko") throw new Error("expected reportLanguage propagation");
+if (task.requestedBy !== "seoseo-test") throw new Error("expected requestedBy propagation");
 console.log(JSON.stringify({
   ok: true,
   taskId: task.id,
@@ -95,8 +100,18 @@ console.log(JSON.stringify({
 }));
 `);
 
+    const task = githubTask({
+      payload: {
+        mode: "github-propose-patch",
+        repo: "owner/repo",
+        issue: "#1",
+        issueUrl: "https://github.com/owner/repo/issues/1",
+        reportLanguage: "ko",
+        requestedBy: "seoseo-test",
+      },
+    });
     const result = spawnSync(process.execPath, [handlerPath], {
-      input: JSON.stringify(githubTask()),
+      input: JSON.stringify(task),
       encoding: "utf8",
       env: {
         ...process.env,
@@ -369,7 +384,7 @@ console.log(JSON.stringify({
   status: "completed",
   workDir: "/tmp/work-fixture",
   artifacts: [],
-  doneCommentUrl: "https://github.com/owner/repo/issues/1#issuecomment-123"
+  github: { doneCommentUrl: "https://github.com/owner/repo/issues/1#issuecomment-123" }
 }));
 `);
 
