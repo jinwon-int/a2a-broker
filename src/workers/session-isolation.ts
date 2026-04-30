@@ -42,7 +42,7 @@
  * - `buildSessionIsolatedArgs` constructs handler arguments with the invariant
  *   baked in, suitable for use with `createExternalWorkerHandler`.
  *
- * @see jinon86/a2a-broker#164
+ * @see jinwon-int/a2a-broker#164
  */
 
 import type { TaskRecord } from "../core/types.js";

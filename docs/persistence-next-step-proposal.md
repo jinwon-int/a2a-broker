@@ -1,6 +1,6 @@
 # Persistence next step proposal
 
-Drafted for `jinon86/a2a-broker#9`.
+Drafted for `jinwon-int/a2a-broker#9`.
 
 ## Current baseline
 

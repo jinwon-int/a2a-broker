@@ -6,8 +6,8 @@
  * future seam changes. They act as change detectors — if a refactoring silently
  * breaks cancel, stale recovery, or tombstone behavior, these tests fail.
  *
- * @see jinon86/a2a-broker#22
- * @see jinon86/openclaw#15 (dashboard read-surface coverage — cross-linked)
+ * @see jinwon-int/a2a-broker#22
+ * @see jinwon-int/openclaw#15 (dashboard read-surface coverage — cross-linked)
  */
 
 import test from "node:test";

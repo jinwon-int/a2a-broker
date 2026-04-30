@@ -92,7 +92,7 @@ broker upstream in the reverse proxy path and then verify public `/health` again
 Operator signal to watch:
 
 ```bash
-curl -fsS https://broker.seoyoon-family.com/health
+curl -fsS https://broker.example.com/health
 ```
 
 A healthy post-mitigation broker should return `ok=true` and SQLite hot-table
@@ -222,7 +222,7 @@ Before dispatching a broad A2A operation:
 2. Confirm broker health:
 
    ```bash
-   curl -fsS https://broker.seoyoon-family.com/health | jq '{ok,persistence,staleReaper}'
+   curl -fsS https://broker.example.com/health | jq '{ok,persistence,staleReaper}'
    ```
 
 3. Confirm SQLite health shows hot-table coverage `9/9` and no mirror

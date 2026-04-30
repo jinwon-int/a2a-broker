@@ -6,8 +6,8 @@
  * surface — dashboard, audit, SSE, JSON-RPC — produces correct and
  * consistent responses for each runtime state.
  *
- * @see jinon86/a2a-broker#22
- * @see jinon86/openclaw#15 (dashboard read-surface coverage — cross-linked)
+ * @see jinwon-int/a2a-broker#22
+ * @see jinwon-int/openclaw#15 (dashboard read-surface coverage — cross-linked)
  */
 
 import test from "node:test";

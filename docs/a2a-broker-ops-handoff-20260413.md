@@ -11,8 +11,8 @@
 
 ## Standard entrypoints
 
-- Primary endpoint: `https://broker.seoyoon-family.com`
-- Temporary fallback endpoint: `https://broker.192.3.106.253.sslip.io`
+- Primary endpoint: `https://broker.example.com`
+- Temporary fallback endpoint: `https://broker-fallback.example.net`
 - Fallback policy: no public direct fallback
 - Local maintenance path only: `http://127.0.0.1:8787`
 - Edge auth: all broker routes except `GET /health` now require `X-A2A-Edge-Secret`
@@ -20,7 +20,7 @@
 ## Direct exposure control
 
 - Docker publish is restricted to `127.0.0.1:8787:8787`
-- Result: direct access from outside the host should no longer reach broker on `192.3.106.253:8787`
+- Result: direct access from outside the host should no longer reach broker on `203.0.113.10:8787`
 - Caddy remains the only supported external entrypoint
 - Loopback direct access is retained only for host-local diagnostics and Caddy upstream reachability checks
 
@@ -39,8 +39,8 @@
 
 ## External verification result
 
-- Verified through the reverse proxy host `https://broker.seoyoon-family.com`
-- Legacy fallback host `https://broker.192.3.106.253.sslip.io` remains available during transition
+- Verified through the reverse proxy host `https://broker.example.com`
+- Legacy fallback host `https://broker-fallback.example.net` remains available during transition
 - Verified routes:
   - `GET /health`
   - `POST /workers/register`
@@ -57,7 +57,7 @@
   - missing or wrong edge secret returns `401 unauthorized`
   - unauthorized reassign without the edge secret returns `401 unauthorized`
   - `health.persistence.stateVersion = 5`
-  - direct public access on `http://192.3.106.253:8787` should fail after loopback bind restriction
+  - direct public access on `http://203.0.113.10:8787` should fail after loopback bind restriction
 
 ## Soak and concurrency verification
 
@@ -78,14 +78,14 @@
 
 ## Minimum post-deploy smoke
 
-1. `curl https://broker.seoyoon-family.com/health`
+1. `curl https://broker.example.com/health`
 2. Register two disposable workers with requester headers and `X-A2A-Edge-Secret`
 3. Create one exchange and append one accepted message
 4. Verify subtree lookup with `parentMessageId` and `includeDescendants=true`
 5. Reassign the active task once and confirm `GET /audit?action=task.reassigned&targetId=<taskId>`
 6. Call `POST /tasks/requeue_stale?older_than_seconds=0` and confirm `policy=requeue_only`
 7. Confirm the same flow without `X-A2A-Edge-Secret` returns `401 unauthorized`
-8. Confirm `curl http://192.3.106.253:8787/health` fails while `curl http://127.0.0.1:8787/health` still works on the host
+8. Confirm `curl http://203.0.113.10:8787/health` fails while `curl http://127.0.0.1:8787/health` still works on the host
 
 ## Apply and verify commands
 
@@ -95,31 +95,31 @@
   - `cp /etc/caddy/broker-edge-auth.caddy /etc/caddy/broker-edge-auth.caddy.bak_YYYYMMDD_HHMMSS`
   - `cp /etc/caddy/Caddyfile /etc/caddy/Caddyfile.bak_YYYYMMDD_HHMMSS`
   - keep `docker-compose.yml` port publish on `127.0.0.1:8787:8787`
-  - keep `.env` on `PUBLIC_BASE_URL=https://broker.seoyoon-family.com`
-  - ensure the broker Caddy site block includes both `broker.seoyoon-family.com` and the temporary sslip fallback host during transition
+  - keep `.env` on `PUBLIC_BASE_URL=https://broker.example.com`
+  - ensure the broker Caddy site block includes both `broker.example.com` and the temporary sslip fallback host during transition
   - `docker compose up -d`
   - `caddy validate --config /etc/caddy/Caddyfile`
   - `caddy reload --config /etc/caddy/Caddyfile`
 - Verify config:
-  - `curl https://broker.seoyoon-family.com/health`
-  - `curl https://broker.192.3.106.253.sslip.io/health`
+  - `curl https://broker.example.com/health`
+  - `curl https://broker-fallback.example.net/health`
   - `curl http://127.0.0.1:8787/health`
-  - `curl --max-time 5 http://192.3.106.253:8787/health` should fail
-  - `curl -H 'X-A2A-Edge-Secret: <EDGE_SECRET>' https://broker.seoyoon-family.com/exchanges/.../messages?parentMessageId=...&includeDescendants=true`
-  - `curl -H 'X-A2A-Edge-Secret: <EDGE_SECRET>' -X POST https://broker.seoyoon-family.com/tasks/.../reassign ...`
-  - `curl -X POST https://broker.seoyoon-family.com/exchanges ...` should return `401` without the edge secret
+  - `curl --max-time 5 http://203.0.113.10:8787/health` should fail
+  - `curl -H 'X-A2A-Edge-Secret: <EDGE_SECRET>' https://broker.example.com/exchanges/.../messages?parentMessageId=...&includeDescendants=true`
+  - `curl -H 'X-A2A-Edge-Secret: <EDGE_SECRET>' -X POST https://broker.example.com/tasks/.../reassign ...`
+  - `curl -X POST https://broker.example.com/exchanges ...` should return `401` without the edge secret
 
 ## Fixed-domain status and fallback plan
 
-- Permanent host: `broker.seoyoon-family.com`
+- Permanent host: `broker.example.com`
 - Current state:
   - DNS is active
   - TLS issuance is active
-  - broker advertises `https://broker.seoyoon-family.com` as its public base URL
+  - broker advertises `https://broker.example.com` as its public base URL
   - the broker Caddy site block serves both the fixed domain and the temporary sslip fallback host
 - Transition policy:
-  - use `broker.seoyoon-family.com` as the operator-facing standard endpoint
-  - keep `broker.192.3.106.253.sslip.io` as a temporary fallback only during transition
+  - use `broker.example.com` as the operator-facing standard endpoint
+  - keep `broker-fallback.example.net` as a temporary fallback only during transition
   - remove sslip references from active docs and operator runbooks as they are updated
 - Ongoing verification:
   - rerun the full proxy smoke on the fixed domain after meaningful proxy/auth changes
@@ -129,7 +129,7 @@
   - proxy smoke fails on exchange, subtree, reassign, or requeue
   - fixed-domain health diverges from the sslip fallback host
 - Rollback action:
-  - keep `broker.192.3.106.253.sslip.io` available as temporary fallback
+  - keep `broker-fallback.example.net` available as temporary fallback
   - restore the previous `PUBLIC_BASE_URL` only if operator-facing flows depend on immediate rollback
   - keep direct port local-only on loopback
 

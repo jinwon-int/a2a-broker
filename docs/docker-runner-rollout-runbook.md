@@ -89,7 +89,7 @@ legacy all-GitHub opt-in 이다. 신규 배포에서는
 - `A2A_DOCKER_RUNNER_ENABLED=1` 이고
 - task repo 가 `openclaw-plugin-a2a` 를 포함하거나 preset 이 `openclaw-plugin-a2a-dev` 인 경우
 
-범용 GitHub repo (예: `jinon86/seoyoon-family-wiki`) 에 대한 docker-runner
+범용 GitHub repo (예: `jinwon-int/example-wiki`) 에 대한 docker-runner
 라우팅은 위 조건에 해당하지 않으므로 **built-in handler 로 폴백**된다.
 
 **명시적 opt-in 이 필요할 때만** `A2A_DOCKER_RUNNER_ALL_GITHUB=1` 을 설정한다.
@@ -177,7 +177,7 @@ A2A_OPENCLAW_TIMEOUT_SEC=900
 A2A_DOCKER_RUNNER_ROOT=/var/lib/openclaw-a2a/tasks
 
 # GitHub token mount source
-A2A_DOCKER_RUNNER_GITHUB_TOKEN_FILE=/root/.config/gh/hosts.yml
+A2A_DOCKER_RUNNER_GITHUB_TOKEN_FILE=/path/to/github-token-file
 
 # task-level timeout (handler → runner)
 A2A_DOCKER_RUNNER_TASK_TIMEOUT_MS=2700000   # 45분
@@ -253,10 +253,10 @@ Sogyo 는 최초 canary node 로서 `A2A_DOCKER_RUNNER_ENABLED=1` (plugin-only s
 systemctl status openclaw-a2a-worker --no-pager -l | head -20
 
 # broker health
-curl -sf https://broker.seoyoon-family.com/health | jq .
+curl -sf https://broker.example.com/health | jq .
 
 # worker 등록 확인
-curl -sf https://broker.seoyoon-family.com/workers/sogyo \
+curl -sf https://broker.example.com/workers/sogyo \
   -H "x-a2a-requester-id: sogyo" \
   -H "x-a2a-requester-kind: node" \
   -H "x-a2a-requester-role: operator" | jq .
@@ -325,7 +325,7 @@ node dist/cli.js run examples/task.openclaw-plugin-a2a.json
 
 ```bash
 TASK_ID=$(uuidgen | tr 'A-Z' 'a-z')
-curl -sf -X POST https://broker.seoyoon-family.com/tasks \
+curl -sf -X POST https://broker.example.com/tasks \
   -H 'content-type: application/json' \
   -H 'x-a2a-requester-id: sogyo' \
   -H 'x-a2a-requester-kind: node' \
@@ -334,7 +334,7 @@ curl -sf -X POST https://broker.seoyoon-family.com/tasks \
     \"id\": \"$TASK_ID\",
     \"intent\": \"propose_patch\",
     \"mode\": \"github-propose-patch\",
-    \"repo\": \"jinon86/openclaw-plugin-a2a\",
+    \"repo\": \"jinwon-int/openclaw-plugin-a2a\",
     \"message\": \"Sogyo docker-runner smoke — verify PR/Block evidence\",
     \"target\": { \"id\": \"sogyo\", \"role\": \"analyst\", \"kind\": \"node\" },
     \"requester\": { \"id\": \"sogyo\", \"role\": \"operator\", \"kind\": \"node\" }
@@ -342,7 +342,7 @@ curl -sf -X POST https://broker.seoyoon-family.com/tasks \
 
 # task 완료 대기 후 확인
 sleep 30
-curl -sf https://broker.seoyoon-family.com/tasks/$TASK_ID \
+curl -sf https://broker.example.com/tasks/$TASK_ID \
   -H 'x-a2a-requester-id: sogyo' \
   -H 'x-a2a-requester-kind: node' \
   -H 'x-a2a-requester-role: operator' | jq .
@@ -384,7 +384,7 @@ A2A_DOCKER_RUNNER_ALL_GITHUB=0
 A2A_DOCKER_RUNNER_BIN=/usr/bin/node
 A2A_DOCKER_RUNNER_ARGS_JSON='["/opt/a2a-docker-runner/dist/cli.js"]'
 A2A_DOCKER_RUNNER_ROOT=/var/lib/openclaw-a2a/tasks
-A2A_DOCKER_RUNNER_GITHUB_TOKEN_FILE=/root/.config/gh/hosts.yml
+A2A_DOCKER_RUNNER_GITHUB_TOKEN_FILE=/path/to/github-token-file
 A2A_DOCKER_RUNNER_TASK_TIMEOUT_MS=2700000
 A2A_DOCKER_RUNNER_TIMEOUT_MS=2700000
 A2A_DOCKER_RUNNER_MEMORY=2g
@@ -405,7 +405,7 @@ systemctl status openclaw-a2a-worker --no-pager
 
 ```bash
 TASK_ID=$(uuidgen | tr 'A-Z' 'a-z')
-curl -sf -X POST https://broker.seoyoon-family.com/tasks \
+curl -sf -X POST https://broker.example.com/tasks \
   -H 'content-type: application/json' \
   -H 'x-a2a-requester-id: sogyo' \
   -H 'x-a2a-requester-kind: node' \
@@ -414,7 +414,7 @@ curl -sf -X POST https://broker.seoyoon-family.com/tasks \
     \"id\": \"$TASK_ID\",
     \"intent\": \"propose_patch\",
     \"mode\": \"github-propose-patch\",
-    \"repo\": \"jinon86/openclaw-plugin-a2a\",
+    \"repo\": \"jinwon-int/openclaw-plugin-a2a\",
     \"message\": \"$NODE docker-runner smoke — verify PR/Block evidence\",
     \"target\": { \"id\": \"$NODE\", \"role\": \"analyst\", \"kind\": \"node\" },
     \"requester\": { \"id\": \"sogyo\", \"role\": \"operator\", \"kind\": \"node\" }
@@ -592,7 +592,7 @@ systemctl status openclaw-a2a-worker --no-pager -l
 journalctl -u openclaw-a2a-worker --since "5 min ago" --no-pager
 
 # broker worker 등록 상태
-curl -sf https://broker.seoyoon-family.com/workers/$NODE \
+curl -sf https://broker.example.com/workers/$NODE \
   -H "x-a2a-requester-id: sogyo" \
   -H "x-a2a-requester-kind: node" \
   -H "x-a2a-requester-role: operator" | jq '{ workerId, status, lastSeenAt, activeTaskCount }'
@@ -614,17 +614,17 @@ cat /var/lib/openclaw-a2a/tasks/*/artifacts/summary.txt 2>/dev/null | tail -30
 
 ```bash
 # broker health + stale reaper status
-curl -sf https://broker.seoyoon-family.com/health | jq '{ status, stateVersion, staleReaper }'
+curl -sf https://broker.example.com/health | jq '{ status, stateVersion, staleReaper }'
 
 # 특정 task audit trail
 TASK_ID="..."
-curl -sf https://broker.seoyoon-family.com/audit?targetId=$TASK_ID \
+curl -sf https://broker.example.com/audit?targetId=$TASK_ID \
   -H "x-a2a-requester-id: sogyo" \
   -H "x-a2a-requester-kind: node" \
   -H "x-a2a-requester-role: operator" | jq .
 
 # 노드별 active task
-curl -sf https://broker.seoyoon-family.com/tasks?status=running&status=claimed \
+curl -sf https://broker.example.com/tasks?status=running&status=claimed \
   -H "x-a2a-requester-id: sogyo" \
   -H "x-a2a-requester-kind: node" \
   -H "x-a2a-requester-role: operator" | jq '[.[] | { id, status, assignedWorkerId }]'
@@ -637,7 +637,7 @@ curl -sf https://broker.seoyoon-family.com/tasks?status=running&status=claimed \
 cat /var/lib/openclaw-a2a/tasks/<task-id>/artifacts/summary.txt
 
 # broker task result 확인
-curl -sf https://broker.seoyoon-family.com/tasks/<task-id> \
+curl -sf https://broker.example.com/tasks/<task-id> \
   -H "x-a2a-requester-id: sogyo" \
   -H "x-a2a-requester-kind: node" \
   -H "x-a2a-requester-role: operator" | jq '{ status, result: .result.output.github }'

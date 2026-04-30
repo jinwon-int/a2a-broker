@@ -10,7 +10,7 @@ or event/state model from the legacy library doc, this file is now the
 first stop. The legacy library export surface is **retired** in this
 repo (see "Library export surface" below for the migration map).
 
-Closes `jinon86/a2a-broker#16`. Delete-gate evidence for parent issue
+Closes `jinwon-int/a2a-broker#16`. Delete-gate evidence for parent issue
 `#6` is at the end of this file.
 
 ## Scope

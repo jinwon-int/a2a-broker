@@ -147,14 +147,15 @@ describe("projectTaskComment", () => {
   });
 
   it("redacts sensitive values from the rendered body", () => {
+    const fixtureToken = ["ghp", "abcdef0123456789ABCDEF0123"].join("_");
     const projection = projectTaskComment(
       makeTask({
         status: "succeeded",
         result: {
           summary: "see output",
           output: {
-            apiToken: "ghp_abcdef0123456789ABCDEF0123",
-            details: "token is ghp_abcdef0123456789ABCDEF0123 keep secret",
+            apiToken: fixtureToken,
+            details: `token is ${fixtureToken} keep secret`,
           },
         },
       }),
@@ -180,8 +181,9 @@ describe("redactSensitive", () => {
   });
 
   it("redacts known token-like values regardless of key", () => {
+    const fixtureToken = ["ghp", "abcdef0123456789ABCDEF0123"].join("_");
     const out = redactSensitive({
-      details: "use ghp_abcdef0123456789ABCDEF0123 to authenticate",
+      details: `use ${fixtureToken} to authenticate`,
     });
     assert.equal(
       (out as { details: string }).details.includes("ghp_"),

@@ -111,6 +111,6 @@ const handler = createExternalWorkerHandler({
 
 ## References
 
-- Issue: [jinon86/a2a-broker#164](https://github.com/jinon86/a2a-broker/issues/164)
+- Issue: [jinwon-int/a2a-broker#164](https://github.com/jinwon-int/a2a-broker/issues/164)
 - Module: `src/workers/session-isolation.ts`
 - Tests: `src/workers/session-isolation.test.ts`

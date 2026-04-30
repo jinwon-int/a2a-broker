@@ -1,7 +1,7 @@
 # SSE Task Subscription Failure-Mode Matrix
 
 **Author:** Gongyung (Android Termux node)
-**Issue:** jinon86/a2a-broker#10
+**Issue:** jinwon-int/a2a-broker#10
 **Date:** 2026-04-18
 
 ## 1. Current Implementation Summary

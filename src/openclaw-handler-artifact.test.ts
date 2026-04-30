@@ -455,11 +455,11 @@ import { readFileSync } from "node:fs";
 const taskPath = process.argv.at(-1);
 const task = JSON.parse(readFileSync(taskPath, "utf8"));
 if (task.preset !== "openclaw-plugin-a2a-dev") throw new Error("expected plugin preset");
-console.log(JSON.stringify({ ok: true, taskId: task.id, status: "completed", workDir: "/tmp/work-fixture", artifacts: [], prUrl: "https://github.com/jinon86/openclaw-plugin-a2a/pull/1" }));
+console.log(JSON.stringify({ ok: true, taskId: task.id, status: "completed", workDir: "/tmp/work-fixture", artifacts: [], prUrl: "https://github.com/jinwon-int/openclaw-plugin-a2a/pull/1" }));
 `);
 
     const task = githubTask();
-    task.payload.repo = "jinon86/openclaw-plugin-a2a";
+    task.payload.repo = "jinwon-int/openclaw-plugin-a2a";
     const result = spawnSync(process.execPath, [handlerPath], {
       input: JSON.stringify(task),
       encoding: "utf8",
