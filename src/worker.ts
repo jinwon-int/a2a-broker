@@ -436,10 +436,12 @@ export function validateTaskCompletionEvidence(task: TaskRecord, result?: TaskRe
 }
 
 function requiresGithubCompletionEvidence(task: TaskRecord): boolean {
-  return (
-    task.intent === "propose_patch" &&
-    (task.taskOrigin === "github" || task.payload?.mode === "github-propose-patch")
-  );
+  const mode = typeof task.payload?.mode === "string" ? task.payload.mode : undefined;
+  return task.intent === "propose_patch" && (task.taskOrigin === "github" || isGithubTaskMode(mode));
+}
+
+function isGithubTaskMode(mode: string | undefined): boolean {
+  return mode === "github-propose-patch" || mode === "github-issue-instruction";
 }
 
 function hasGithubCompletionEvidence(result?: TaskResult): boolean {
