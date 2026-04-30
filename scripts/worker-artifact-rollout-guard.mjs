@@ -460,24 +460,40 @@ guard('docker-compat-path', () => {
     return fail('docker-compat-path', `Dockerfile not found: ${dockerfilePath}`);
   }
 
-  const handlerCopyCount = (
-    dockerfileContent.match(/COPY\s+scripts\/openclaw-a2a-task-handler\.mjs/g) || []
-  ).length;
+  // Count handler copies via COPY or RUN cp to both scripts/ and handlers/ paths
+  const copyMatches = dockerfileContent.match(
+    /COPY\s+scripts\/openclaw-a2a-task-handler\.mjs/g,
+  ) || [];
+  const hasRunCopy = /RUN.*cp\s+.*openclaw-a2a-task-handler\.mjs.*handlers\//.test(dockerfileContent);
+  const hasHandlersMkdir = /mkdir.*handlers/i.test(dockerfileContent);
 
-  if (handlerCopyCount < 2) {
+  const scriptsCopyCount = copyMatches.length;
+  const handlersCopyCount = hasRunCopy ? 1 : 0;
+
+  if (scriptsCopyCount < 1) {
     return fail(
       'docker-compat-path',
-      `Dockerfile copies handler ${handlerCopyCount} time(s); need copies to both scripts/ and handlers/ for compat path`,
+      'Dockerfile does not copy handler to scripts/ path',
+      { hint: 'add COPY scripts/openclaw-a2a-task-handler.mjs ./scripts/', dryRun: DRY_RUN },
+    );
+  }
+
+  if (handlersCopyCount < 1) {
+    return fail(
+      'docker-compat-path',
+      'Dockerfile does not populate handlers/ compat path',
       {
-        current: handlerCopyCount,
-        required: 2,
-        hint: 'Dockerfile should copy the handler to both scripts/ and handlers/ paths',
+        hint: 'add RUN mkdir -p ./handlers && cp scripts/openclaw-a2a-task-handler.mjs ./handlers/',
         dryRun: DRY_RUN,
       },
     );
   }
 
-  return ok('docker-compat-path', { handlerCopyCount });
+  return ok('docker-compat-path', {
+    scriptsCopyCount,
+    handlersPopulated: hasRunCopy,
+    hasHandlersMkdir,
+  });
 });
 
 // ---------------------------------------------------------------------------
