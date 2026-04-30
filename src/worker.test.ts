@@ -310,6 +310,37 @@ test("worker fails GitHub propose_patch tasks without PR or block evidence", asy
   }
 });
 
+test("worker fails GitHub issue-instruction propose_patch tasks without PR or block evidence", async () => {
+  const server = await startTestServer();
+  const worker = createWorker(server.baseUrl);
+
+  try {
+    await worker.register();
+    const task = await createTask(server.baseUrl, {
+      intent: "propose_patch",
+      requester: { id: "hub-a", kind: "node", role: "hub" },
+      target: { id: "worker-a", kind: "node", role: "analyst" },
+      assignedWorkerId: "worker-a",
+      message: "process a GitHub issue instruction",
+      payload: { mode: "github-issue-instruction", repo: "owner/repo", issue: "#1" },
+      taskOrigin: "unknown",
+    });
+
+    const processed = await worker.runOnce();
+    assert.equal(processed, 1);
+
+    const taskResponse = await fetch(`${server.baseUrl}/tasks/${task.id}`);
+    assert.equal(taskResponse.status, 200);
+    const failedTask = await taskResponse.json();
+
+    assert.equal(failedTask.status, "failed");
+    assert.equal(failedTask.error.code, "github_completion_evidence_missing");
+  } finally {
+    await worker.stop();
+    await server.close();
+  }
+});
+
 test("worker allows GitHub propose_patch tasks with PR evidence", async () => {
   const server = await startTestServer();
   const worker = new A2ABrokerWorker({
