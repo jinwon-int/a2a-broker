@@ -59,7 +59,7 @@ test("versioned OpenClaw handler exposes credential-free build metadata", () => 
   assert.equal(result.status, 0, result.stderr);
   const payload = JSON.parse(result.stdout);
   assert.equal(payload.result.handler.name, "openclaw-a2a-task-handler");
-  assert.equal(payload.result.handler.version, "0.2.3");
+  assert.equal(payload.result.handler.version, "0.2.4");
   assert.match(payload.result.handler.sourceSha256, /^[a-f0-9]{64}$/);
   assert.equal(payload.result.handler.credentialFree, true);
   assert.equal(payload.result.handler.hostNeutral, true);
@@ -903,6 +903,99 @@ test("SCOPE=all-github without A2A_DOCKER_RUNNER_BIN returns docker_runner_not_c
   assert.equal(payload.error.details.executorMode, "auto");
   assert.equal(payload.error.details.dockerScope, "all-github");
   assert.deepEqual(payload.error.details.requiredEnv, ["A2A_DOCKER_RUNNER_BIN"]);
+});
+
+// ——— docker-runner evidence metadata projection (issue #196) ———
+
+test("docker runner output preserves repo/issue/issueUrl/nodeId/taskId trace fields (issue #196)", () => {
+  const tempDir = mkdtempSync(join(tmpdir(), "handler-trace-fields-196-"));
+  const fakeRunnerPath = join(tempDir, "fake-runner.mjs");
+  try {
+    writeFileSync(fakeRunnerPath, `
+import { readFileSync } from "node:fs";
+const taskPath = process.argv.at(-1);
+const task = JSON.parse(readFileSync(taskPath, "utf8"));
+console.log(JSON.stringify({
+  ok: true,
+  taskId: task.id,
+  status: "completed",
+  workDir: "/tmp/work-fixture",
+  artifacts: [],
+  prUrl: "https://github.com/owner/repo/pull/196",
+  branch: "fix/issue-196",
+  tests: ["npm test -- --testNamePattern handler -> pass"],
+  filesChanged: ["scripts/openclaw-a2a-task-handler.mjs"],
+  risks: ["minor: version bump required"]
+}));
+`);
+
+    const task = githubTask({
+      payload: {
+        mode: "github-propose-patch",
+        repo: "owner/repo",
+        issue: "#196",
+        issueUrl: "https://github.com/owner/repo/issues/196",
+      },
+    });
+    const result = spawnSync(process.execPath, [handlerPath], {
+      input: JSON.stringify(task),
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        A2A_EXECUTOR_MODE: "docker",
+        A2A_DOCKER_RUNNER_BIN: process.execPath,
+        A2A_DOCKER_RUNNER_ARGS_JSON: JSON.stringify([fakeRunnerPath]),
+        A2A_NODE_ID: "dungae-node",
+      },
+    });
+
+    assert.equal(result.status, 0, result.stderr);
+    const payload = JSON.parse(result.stdout);
+    assert.equal(payload.result.output.repo, "owner/repo", "repo must be in output");
+    assert.equal(payload.result.output.issue, "#196", "issue must be in output");
+    assert.equal(payload.result.output.issueUrl, "https://github.com/owner/repo/issues/196", "issueUrl must be in output");
+    assert.equal(payload.result.output.nodeId, "dungae-node", "nodeId must be in output");
+    assert.equal(payload.result.output.taskId, "task-fixture-1", "taskId must be in output");
+    assert.equal(payload.result.output.branch, "fix/issue-196", "branch must be projected from runner response");
+    assert.deepEqual(payload.result.output.tests, ["npm test -- --testNamePattern handler -> pass"], "tests must be projected");
+    assert.deepEqual(payload.result.output.filesChanged, ["scripts/openclaw-a2a-task-handler.mjs"], "filesChanged must be projected");
+    assert.deepEqual(payload.result.output.risks, ["minor: version bump required"], "risks must be projected");
+    assert.equal(payload.result.output.prUrl, "https://github.com/owner/repo/pull/196");
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("docker runner output nodeId falls back to unknown-node when no node env is set (issue #196)", () => {
+  const tempDir = mkdtempSync(join(tmpdir(), "handler-nodeid-fallback-196-"));
+  const fakeRunnerPath = join(tempDir, "fake-runner.mjs");
+  try {
+    writeFileSync(fakeRunnerPath, `
+console.log(JSON.stringify({ ok: true, taskId: "task-fixture-1", status: "completed", workDir: "/tmp/work", artifacts: [], prUrl: "https://github.com/owner/repo/pull/1" }));
+`);
+
+    const env = { ...process.env };
+    delete env.A2A_NODE_ID;
+    delete env.NODE_ID;
+    delete env.WORKER_ID;
+    const result = spawnSync(process.execPath, [handlerPath], {
+      input: JSON.stringify(githubTask()),
+      encoding: "utf8",
+      env: {
+        ...env,
+        A2A_EXECUTOR_MODE: "docker",
+        A2A_DOCKER_RUNNER_BIN: process.execPath,
+        A2A_DOCKER_RUNNER_ARGS_JSON: JSON.stringify([fakeRunnerPath]),
+      },
+    });
+
+    assert.equal(result.status, 0, result.stderr);
+    const payload = JSON.parse(result.stdout);
+    assert.equal(payload.result.output.nodeId, "unknown-node", "nodeId should fall back to unknown-node");
+    assert.equal(payload.result.output.taskId, "task-fixture-1", "taskId must be preserved");
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
 });
 
 test("plugin-only scope with unconfigured A2A_DOCKER_RUNNER_BIN does not trigger readiness guard for plugin repo (#189)", () => {
