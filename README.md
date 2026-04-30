@@ -2,6 +2,25 @@
 
 Minimal standalone A2A broker scaffold.
 
+
+## Repository role in the A2A layout
+
+`a2a-broker` is the control-plane repository for the current A2A stack.
+
+It owns:
+
+- broker HTTP/JSON-RPC APIs, task lifecycle, status/read models, SSE streams, cancel/reconcile, stale reaper, and persistence
+- worker registration, heartbeat, queue polling, and task evidence validation
+- the deployable worker handler artifact at `scripts/openclaw-a2a-task-handler.mjs`
+- OpenClaw bridge failure semantics for host fallback paths, including watchdog/final-evidence safeguards
+
+It does **not** own isolated task execution. Generic GitHub patch execution runs through [`jinwon-int/a2a-docker-runner`](https://github.com/jinwon-int/a2a-docker-runner). OpenClaw-facing task request/status/cancel mapping lives in [`jinwon-int/openclaw-plugin-a2a`](https://github.com/jinwon-int/openclaw-plugin-a2a).
+
+Current production baseline as of 2026-04-30:
+
+- active workers: `bangtong`, `sogyo`, `dungae`, `nosuk`
+- worker handler artifact: `0.2.2`
+- GitHub patch tasks: Docker-first via `A2A_EXECUTOR_MODE=auto`, `A2A_DOCKER_RUNNER_SCOPE=all-github`, `A2A_DOCKER_RUNNER_ALL_GITHUB=1`
 This repo is the canonical home for the A2A task protocol. The
 in-process library entrypoints from the archived legacy `a2a` repo
 (`runA2ATaskRequest`, `runA2ABrokerExchange`,
