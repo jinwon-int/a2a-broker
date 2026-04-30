@@ -12,11 +12,14 @@ import type {
   HandoffFailureKind,
   HandoffOutcome,
   HandoffContext,
+  HandoffLoopDecision,
   HandoffRecord,
   RecoveryLedgerEntry,
   RecoveryLedgerSummary,
 } from "./handoff-types.js";
 import { HANDOFF_SCENARIO_LABELS } from "./handoff-types.js";
+
+const DEFAULT_MAX_HANDOFF_HOPS = 8;
 
 // ---------------------------------------------------------------------------
 // Scenario classification
@@ -78,6 +81,7 @@ export function createHandoffRecord(
   scenarioId?: HandoffScenarioId,
 ): HandoffRecord {
   const id = scenarioId ?? classifyHandoff(ctx);
+  const loop = evaluateHandoffLoop(ctx);
   return {
     id: randomUUID(),
     scenarioId: id,
@@ -93,7 +97,66 @@ export function createHandoffRecord(
     idempotencyKey: ctx.idempotencyKey,
     recoveryOf: ctx.recoveryOf,
     partialSnapshot: ctx.senderCrashed ? JSON.stringify({ crashed: true, at: new Date().toISOString() }) : undefined,
+    originNodeId: loop.originNodeId,
+    hopPath: loop.hopPath,
+    hopCount: loop.hopCount,
+    maxHops: loop.maxHops,
+    metadata: {
+      ...(loop.allowed ? {} : { loopGuard: loop }),
+    },
   };
+}
+
+/**
+ * Evaluate whether dispatching sender → receiver would create a handoff loop.
+ *
+ * A single one-way dispatch such as A → B is allowed. Re-delegating the same
+ * logical task back to any node already in the path is rejected, which covers
+ * both direct ping-pong (A → B → A) and indirect loops (A → B → C → A).
+ */
+export function evaluateHandoffLoop(ctx: HandoffContext): HandoffLoopDecision {
+  const originNodeId = ctx.originNodeId ?? ctx.hopPath?.[0] ?? ctx.senderNodeId;
+  const normalizedPath = normalizeHopPath(ctx.hopPath, ctx.senderNodeId, originNodeId);
+  const maxHops = ctx.maxHops ?? DEFAULT_MAX_HANDOFF_HOPS;
+  const nextHopPath = [...normalizedPath, ctx.receiverNodeId];
+  const base = {
+    originNodeId,
+    hopPath: normalizedPath,
+    nextHopPath,
+    hopCount: nextHopPath.length - 1,
+    maxHops,
+  };
+
+  if (ctx.senderNodeId === ctx.receiverNodeId) {
+    return { ...base, allowed: false, reason: "same_sender_receiver" };
+  }
+  if (nextHopPath.length - 1 > maxHops) {
+    return { ...base, allowed: false, reason: "max_hops_exceeded" };
+  }
+  if (normalizedPath.includes(ctx.receiverNodeId)) {
+    const reason = normalizedPath[normalizedPath.length - 2] === ctx.receiverNodeId
+      ? "direct_loop"
+      : "indirect_loop";
+    return { ...base, allowed: false, reason };
+  }
+  return { ...base, allowed: true };
+}
+
+export function applyHandoffLoopGuard(record: HandoffRecord): HandoffRecord {
+  const decision = record.metadata?.loopGuard as HandoffLoopDecision | undefined;
+  if (!decision || decision.allowed) return record;
+  if (record.phase !== "initiated") return record;
+  return transitionPhase(record, "failed", {
+    failureKind: "handoff_loop_guard",
+    failureMessage: `handoff loop guard rejected ${record.senderNodeId} → ${record.receiverNodeId}: ${decision.reason}`,
+  });
+}
+
+function normalizeHopPath(hopPath: string[] | undefined, senderNodeId: string, originNodeId: string): string[] {
+  const path = (hopPath && hopPath.length > 0 ? hopPath : [originNodeId]).filter(Boolean);
+  if (path[0] !== originNodeId) path.unshift(originNodeId);
+  if (path[path.length - 1] !== senderNodeId) path.push(senderNodeId);
+  return path;
 }
 
 // ---------------------------------------------------------------------------
@@ -163,6 +226,7 @@ export class RecoveryLedger {
 
   /** Record a new handoff attempt. */
   record(record: HandoffRecord): void {
+    applyHandoffLoopGuard(record);
     this.handoffs.set(record.id, record);
     let ids = this.idempotencyIndex.get(record.idempotencyKey);
     if (!ids) {
@@ -325,6 +389,7 @@ export type {
   HandoffOutcome,
   HandoffContext,
   HandoffRecord,
+  HandoffLoopDecision,
   RecoveryLedgerEntry,
   RecoveryLedgerSummary,
 } from "./handoff-types.js";

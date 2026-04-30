@@ -114,3 +114,13 @@ The `RecoveryLedger` class tracks:
 | S4 | ✓ | ✓ (completed) | ✓ (deduplicated) | ✓ | — | ✓ |
 | S5 | ✓ | ✓ (completed) | ✓ (retried) | — | ✓ | ✓ |
 | Priority | ✓ | — | — | — | — | — |
+
+## Issue #182 loop guard invariants
+
+Handoff chains now carry `originNodeId`, `hopPath`, `hopCount`, and `maxHops` on each `HandoffRecord` so loop-prevention decisions are visible in task/audit metadata.
+
+- First one-way dispatch is allowed: `A → B`.
+- Forward-only delegation is allowed while the receiver is not already in the path: `A → B → C`.
+- Direct ping-pong is rejected deterministically: `A → B → A` fails with `handoff_loop_guard` and `metadata.loopGuard.reason = "direct_loop"`.
+- Indirect loops are rejected deterministically: `A → B → C → A` fails with `handoff_loop_guard` and `metadata.loopGuard.reason = "indirect_loop"`.
+- Same sender/receiver and max-hop overflow are rejected before dispatch with auditable loop-guard metadata.

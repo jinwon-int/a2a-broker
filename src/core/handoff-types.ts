@@ -57,7 +57,18 @@ export type HandoffFailureKind =
   | "serialization_error"
   | "transport_error"
   | "policy_violation"
-  | "duplicate_suppressed";
+  | "duplicate_suppressed"
+  | "handoff_loop_guard";
+
+export interface HandoffLoopDecision {
+  allowed: boolean;
+  reason?: "direct_loop" | "indirect_loop" | "same_sender_receiver" | "max_hops_exceeded";
+  originNodeId: string;
+  hopPath: string[];
+  nextHopPath: string[];
+  hopCount: number;
+  maxHops: number;
+}
 
 // ---------------------------------------------------------------------------
 // Handoff record (individual attempt)
@@ -98,6 +109,14 @@ export interface HandoffRecord {
   recoveryOf?: string;
   /** Partial payload for crash recovery (S3). */
   partialSnapshot?: string;
+  /** Original node that started this logical handoff chain. */
+  originNodeId: string;
+  /** Node path before this attempt. Last entry is normally senderNodeId. */
+  hopPath: string[];
+  /** Hop count after dispatch to receiver. */
+  hopCount: number;
+  /** Configured maximum dispatch hops for this handoff chain. */
+  maxHops: number;
   /** Arbitrary metadata. */
   metadata?: Record<string, unknown>;
 }
@@ -124,6 +143,12 @@ export interface HandoffContext {
   duplicateOf?: string;
   /** Previous failure kind, if retrying. */
   previousFailureKind?: HandoffFailureKind;
+  /** Original node for loop prevention; defaults to senderNodeId. */
+  originNodeId?: string;
+  /** Existing path for this logical handoff chain. */
+  hopPath?: string[];
+  /** Maximum allowed hops including the next receiver hop. Defaults to 8. */
+  maxHops?: number;
 }
 
 // ---------------------------------------------------------------------------
