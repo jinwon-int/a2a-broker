@@ -1,10 +1,11 @@
 # Phase 8 RFC: `a2a.peer.status` — Read-only peer status RPC
 
-> Status: draft
+> Status: implemented
 > Owner: yukson
-> Tracks: jinon86/a2a-broker#42
+> Tracks: jinon86/a2a-broker#42, jinon86/a2a-broker#180
 > Epic: jinon86/a2a-broker#39
 > Author date: 2026-04-25
+> Last revised: 2026-04-30 (#180: busy health, mobile worker mode, mobile-aware thresholds)
 > Prereq for rollout: Phase 1–5 baseline green + regression lock held
 
 ---
@@ -49,6 +50,7 @@ interface PeerStatusResponse {
   worker: {
     registered: boolean;
     lastHeartbeatAt?: number;
+    workerMode?: "persistent" | "mobile";
     capacity?: {               // optional, may be null if target does not advertise
       slotsTotal: number;
       slotsBusy: number;
@@ -59,7 +61,7 @@ interface PeerStatusResponse {
     queued: number;
     stale: number;             // heartbeat missed past threshold
   };
-  health: "ok" | "degraded" | "stale" | "unreachable";
+  health: "ok" | "busy" | "degraded" | "stale" | "unreachable";
   rateLimit?: {
     remaining: number;
     resetAt: number;
@@ -75,6 +77,31 @@ When `verbose=true` **and** caller has `a2a.peer.status.verbose` scope, addition
 - `backpressure`: latest observed queue wait percentiles.
 
 Session text, tool call detail, transcripts, prompts, memory contents, and user identifiers are **never** returned, regardless of scope. Verbose is additive for coarse operational fields only.
+
+### 2.4 Health priority order
+
+The `health` field follows a strict priority (first match wins):
+
+1. `unreachable` – worker not registered at all
+2. `stale` – worker heartbeat older than the mode-specific threshold
+3. `busy` – all capacity slots occupied (`active + queued >= slotsTotal`)
+4. `degraded` – stale tasks exist (claimed/running tasks with missed task heartbeats)
+5. `ok` – everything nominal
+
+### 2.5 Worker modes and capacity
+
+Workers declare `workerMode` on registration and heartbeat:
+
+| Mode | Stale threshold (default) | Capacity (slotsTotal) | Use case |
+|------|---------------------------|------------------------|----------|
+| `persistent` (default) | 90 s | 10 | Always-on VPS / server |
+| `mobile` | 30 s | 3 | Battery-powered devices (Android/Termux, laptop) |
+
+Mobile workers use shorter stale thresholds because brief offline windows from device sleep (Doze, network suspend, lid-close) are expected and should not trigger false-positive stale alerts. The reduced capacity (3 slots vs 10) reflects battery and CPU constraints of mobile devices.
+
+A worker with no `workerMode` field is treated as `persistent`.
+
+The broker picks the stale threshold per-worker based on its declared mode at query time.
 
 ## 3. Transport
 
@@ -195,4 +222,13 @@ From `jinon86/a2a-broker#42`:
 - [x] Summary response avoids sensitive task/session text → §7
 - [x] Cache age returned to callers → §2.2 (`cacheAgeMs` always present)
 
-Spec-level checklist satisfied by this draft; implementation PRs land after Phase 1–5 green.
+From `jinon86/a2a-broker#180`:
+
+- [x] `busy` health state when all capacity slots occupied → §2.2, §2.4
+- [x] `workerMode` field (`persistent` | `mobile`) in registration/heartbeat/response → §2.2, §2.5
+- [x] Mobile-aware stale threshold (30 s vs 90 s) → §2.5
+- [x] Mobile capacity (3 slots vs 10) → §2.5
+- [x] Stale-over-busy priority documented → §2.4
+- [x] Caller semantics in README → README#peer-status-api
+
+Spec-level checklist satisfied; implementation landed via #182.
