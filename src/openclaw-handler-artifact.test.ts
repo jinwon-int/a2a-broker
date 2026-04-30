@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -228,7 +228,7 @@ console.log(JSON.stringify({ ok: true, taskId: "task-fixture-1", status: "comple
   }
 });
 
-test("A2A_EXECUTOR_MODE=auto keeps plugin-only scope as the default", () => {
+test("A2A_EXECUTOR_MODE=auto keeps plugin-only scope on built-in path without OpenClaw bridge", () => {
   const result = spawnSync(process.execPath, [handlerPath], {
     input: JSON.stringify(githubTask()),
     encoding: "utf8",
@@ -237,6 +237,75 @@ test("A2A_EXECUTOR_MODE=auto keeps plugin-only scope as the default", () => {
       A2A_EXECUTOR_MODE: "auto",
       A2A_DOCKER_RUNNER_SCOPE: "plugin-only",
       A2A_DOCKER_RUNNER_BIN: "/path/that/should/not/run",
+      OPENCLAW_BIN: "",
+    },
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.result.summary, "generic patch proposal task accepted by versioned OpenClaw A2A handler");
+});
+
+test("plugin-only GitHub tasks use host OpenClaw bridge when configured", () => {
+  const tempDir = mkdtempSync(join(tmpdir(), "handler-openclaw-bridge-test-"));
+  const fakeOpenClawPath = join(tempDir, "fake-openclaw.mjs");
+  try {
+    writeFileSync(fakeOpenClawPath, `#!/usr/bin/env node
+if (!process.argv.includes("agent")) throw new Error("expected agent subcommand");
+if (!process.argv.includes("--json")) throw new Error("expected json output flag");
+console.log(JSON.stringify({
+  payloads: [{
+    text: JSON.stringify({
+      status: "pr_opened",
+      summary: "bridge completed",
+      prUrl: "https://github.com/owner/repo/pull/456",
+      branch: "bridge-fixture",
+      tests: ["fake bridge -> pass"],
+      filesChanged: ["src/example.ts"],
+      risks: []
+    })
+  }]
+}));
+`);
+    chmodSync(fakeOpenClawPath, 0o755);
+
+    const result = spawnSync(process.execPath, [handlerPath], {
+      input: JSON.stringify(githubTask()),
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        A2A_EXECUTOR_MODE: "auto",
+        A2A_DOCKER_RUNNER_SCOPE: "plugin-only",
+        OPENCLAW_BIN: fakeOpenClawPath,
+        A2A_NODE_ID: "worker-a",
+      },
+    });
+
+    assert.equal(result.status, 0, result.stderr);
+    const payload = JSON.parse(result.stdout);
+    assert.equal(payload.result.summary, "bridge completed");
+    assert.equal(payload.result.output.github.outcome, "pr_opened");
+    assert.equal(payload.result.output.github.prUrl, "https://github.com/owner/repo/pull/456");
+    assert.equal(payload.result.output.prUrl, "https://github.com/owner/repo/pull/456");
+    assert.equal(payload.result.output.branch, "bridge-fixture");
+    assert.deepEqual(payload.result.output.tests, ["fake bridge -> pass"]);
+    assert.deepEqual(payload.result.output.filesChanged, ["src/example.ts"]);
+    assert.equal(payload.result.output.nodeId, "worker-a");
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("OpenClaw bridge can be disabled explicitly", () => {
+  const result = spawnSync(process.execPath, [handlerPath], {
+    input: JSON.stringify(githubTask()),
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      A2A_EXECUTOR_MODE: "auto",
+      A2A_DOCKER_RUNNER_SCOPE: "plugin-only",
+      OPENCLAW_BIN: "/path/that/should/not/run",
+      A2A_OPENCLAW_BRIDGE_DISABLED: "1",
     },
   });
 

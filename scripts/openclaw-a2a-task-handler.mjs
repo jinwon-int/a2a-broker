@@ -125,6 +125,219 @@ function isGithubEvidenceTask(task) {
   return intent === "propose_patch" && mode === "github-propose-patch";
 }
 
+
+function shouldUseOpenClawBridge(task, env = process.env) {
+  if (!isGithubEvidenceTask(task)) return false;
+  if (normalizedExecutorMode(env) !== "auto") return false;
+  if (isTruthyEnv(env.A2A_OPENCLAW_BRIDGE_DISABLED)) return false;
+  return isTruthyEnv(env.A2A_OPENCLAW_BRIDGE_ENABLED) || Boolean(safeText(env.OPENCLAW_BIN, ""));
+}
+
+function stripCodeFences(text) {
+  const trimmed = safeText(text, "");
+  const match = trimmed.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
+  return match ? match[1].trim() : trimmed;
+}
+
+function parseJsonFromLooseText(text) {
+  const trimmed = stripCodeFences(text);
+  const candidates = [trimmed];
+  const firstBrace = trimmed.indexOf("{");
+  const lastBrace = trimmed.lastIndexOf("}");
+  if (firstBrace >= 0 && lastBrace > firstBrace) {
+    candidates.push(trimmed.slice(firstBrace, lastBrace + 1));
+  }
+
+  for (const candidate of candidates) {
+    try {
+      return JSON.parse(candidate);
+    } catch {
+      // keep trying looser candidates
+    }
+  }
+  throw new Error("OpenClaw bridge response was not valid JSON text");
+}
+
+function parseOpenClawEnvelope(stdout, stderr) {
+  const candidates = [safeText(stdout, ""), safeText(stderr, "")]
+    .filter(Boolean)
+    .flatMap((text) => {
+      const variants = [text];
+      const lastBraceLine = text.lastIndexOf("\n{");
+      if (lastBraceLine >= 0) variants.push(text.slice(lastBraceLine + 1));
+      const firstBrace = text.indexOf("{");
+      if (firstBrace > 0) variants.push(text.slice(firstBrace));
+      return variants;
+    });
+
+  for (const candidate of candidates) {
+    try {
+      return JSON.parse(candidate);
+    } catch {
+      // keep trying
+    }
+  }
+  throw new Error("OpenClaw bridge envelope was not valid JSON");
+}
+
+function extractOpenClawText(parsed) {
+  if (!parsed || typeof parsed !== "object") return "";
+  const payloads = Array.isArray(parsed.payloads) ? parsed.payloads : [];
+  const pieces = payloads
+    .map((item) => item && typeof item === "object" && typeof item.text === "string" ? item.text.trim() : "")
+    .filter(Boolean);
+  if (pieces.length) return pieces.join("\n\n");
+  return typeof parsed.text === "string" ? parsed.text.trim() : "";
+}
+
+function normalizeStringArray(value) {
+  return Array.isArray(value) ? value.map((item) => String(item).trim()).filter(Boolean) : [];
+}
+
+function githubEvidenceFromResponse(response) {
+  const status = safeText(response?.status || response?.outcome, "");
+  const prUrl = safeText(response?.prUrl || response?.pullRequestUrl, "");
+  const doneCommentUrl = safeText(response?.doneCommentUrl || response?.commentUrl, "");
+  const blockCommentUrl = safeText(response?.blockCommentUrl || response?.blockerCommentUrl, "");
+  if (prUrl) return { outcome: "pr_opened", prUrl };
+  if (blockCommentUrl) return { outcome: status || "blocked", blockCommentUrl };
+  if (doneCommentUrl) return { outcome: status || "done", doneCommentUrl };
+  return undefined;
+}
+
+function extractIssueNumber(task) {
+  const payload = taskPayload(task);
+  const raw = safeText(payload.issue, safeText(payload.issueNumber, ""));
+  const match = raw.match(/#?(\d+)/);
+  return match ? match[1] : raw;
+}
+
+function jsonForPrompt(value, limit = 24000) {
+  const text = JSON.stringify(value, null, 2);
+  return text.length <= limit ? text : `${text.slice(0, limit - 40)}\n...\n[truncated ${text.length - limit + 40} chars]`;
+}
+
+function runOpenClawBridge(task, env = process.env) {
+  const payload = taskPayload(task);
+  const repo = safeText(payload.repo, "");
+  const issue = extractIssueNumber(task);
+  const issueUrl = safeText(payload.issueUrl, issue && repo ? `https://github.com/${repo}/issues/${issue}` : "");
+  if (!repo) {
+    return { error: { code: "openclaw_bridge_invalid_task", message: "github-propose-patch requires payload.repo", details: { buildInfo: BUILD_INFO } } };
+  }
+  if (!issue && !issueUrl) {
+    return { error: { code: "openclaw_bridge_invalid_task", message: "github-propose-patch requires payload.issue or payload.issueUrl", details: { buildInfo: BUILD_INFO } } };
+  }
+
+  const nodeId = safeText(env.A2A_NODE_ID || env.NODE_ID || env.WORKER_ID, "unknown-node");
+  const timeoutSec = String(Math.max(1, Number(env.A2A_OPENCLAW_TIMEOUT_SEC || 900)));
+  const sessionId = safeText(env.A2A_OPENCLAW_SESSION_ID, `a2a-${nodeId}-${safeText(task.id, String(Date.now()))}-github`);
+  const prompt = [
+    `You are A2A worker ${nodeId}. Complete this GitHub development assignment end-to-end.`,
+    "Do not report success unless you opened a pull request, posted a Done comment, or posted a Block comment on GitHub.",
+    "Use the local workspace and GitHub tools available in this OpenClaw session. If the repo is not present, clone/fetch it into a temporary or appropriate workspace directory.",
+    "Never commit sensitive data, raw private paths, or session dumps.",
+    "If implementation is unsafe, unclear, or cannot finish within the available time, post a Block comment on the issue with blocker evidence and return its URL.",
+    "Return JSON only, no markdown, with exactly this shape:",
+    '{"status":"pr_opened|blocked|done","summary":"...","prUrl":"https://github.com/.../pull/123 optional","blockCommentUrl":"https://github.com/.../issues/123#issuecomment-... optional","doneCommentUrl":"https://github.com/.../issues/123#issuecomment-... optional","branch":"optional","tests":["cmd -> result"],"filesChanged":["path"],"risks":["..."]}',
+    "At least one of prUrl, blockCommentUrl, or doneCommentUrl is required.",
+    "All human-readable text should be Korean unless quoting code/test output.",
+    `Repository: ${repo}`,
+    `Issue: ${issue ? `#${issue}` : issueUrl}`,
+    `Issue URL: ${issueUrl}`,
+    `Current workspace root: ${env.A2A_HANDLER_CWD || process.cwd()}`,
+    `Task title: ${safeText(payload.title, "")}`,
+    `Task focus: ${safeText(payload.focus, "")}`,
+    `Acceptance: ${safeText(payload.acceptance, "")}`,
+    `Full task message:\n${safeText(task.message, "")}`,
+    `Payload JSON:\n${jsonForPrompt(payload)}`,
+  ].join("\n\n");
+
+  const command = safeText(env.OPENCLAW_BIN, "openclaw");
+  const args = [
+    "agent",
+    "--local",
+    "--agent", safeText(env.A2A_OPENCLAW_AGENT_ID, "main"),
+    "--session-id", sessionId,
+    "--message", prompt,
+    "--thinking", safeText(env.A2A_OPENCLAW_THINKING, "low"),
+    "--timeout", timeoutSec,
+    "--json",
+  ];
+
+  const child = spawnSync(command, args, {
+    cwd: safeText(env.A2A_HANDLER_CWD, process.cwd()),
+    env,
+    encoding: "utf8",
+    maxBuffer: 50 * 1024 * 1024,
+    timeout: (Number(timeoutSec) + 30) * 1000,
+  });
+
+  if (child.error) {
+    return { error: { code: "openclaw_bridge_spawn_failed", message: child.error.message, details: { buildInfo: BUILD_INFO } } };
+  }
+  if (child.status !== 0) {
+    return {
+      error: {
+        code: child.signal ? "openclaw_bridge_timeout" : "openclaw_bridge_failed",
+        message: safeText(child.stderr, safeText(child.stdout, `openclaw exited with ${child.status ?? "unknown"}`)),
+        details: { exitCode: child.status, signal: child.signal ?? undefined, buildInfo: BUILD_INFO },
+      },
+    };
+  }
+
+  try {
+    const envelope = parseOpenClawEnvelope(child.stdout, child.stderr);
+    const text = extractOpenClawText(envelope);
+    if (!text) throw new Error("OpenClaw bridge returned no visible text");
+    const response = parseJsonFromLooseText(text);
+    const evidence = githubEvidenceFromResponse(response);
+    if (!evidence) {
+      throw new Error("OpenClaw bridge response missing prUrl, doneCommentUrl, or blockCommentUrl");
+    }
+
+    const output = {
+      github: evidence,
+      repo,
+      issue: issue ? `#${issue}` : undefined,
+      issueUrl,
+      branch: safeText(response.branch, undefined),
+      tests: normalizeStringArray(response.tests),
+      filesChanged: normalizeStringArray(response.filesChanged),
+      risks: normalizeStringArray(response.risks),
+      nodeId,
+      taskId: safeText(task.id, undefined),
+    };
+    if (safeText(evidence.prUrl, "")) output.prUrl = safeText(evidence.prUrl);
+    if (safeText(evidence.doneCommentUrl, "")) output.doneCommentUrl = safeText(evidence.doneCommentUrl);
+    if (safeText(evidence.blockCommentUrl, "")) output.blockCommentUrl = safeText(evidence.blockCommentUrl);
+
+    return {
+      result: {
+        summary: safeText(response.summary, `GitHub task ${evidence.outcome}`),
+        note: safeText(response.note, safeText(response.summary, "OpenClaw bridge completed GitHub task")),
+        handler: BUILD_INFO,
+        lifecycle: {
+          intent: safeText(task.intent, "unknown"),
+          mode: taskMode(task),
+          taskId: safeText(task.id, "unknown"),
+          proposalId: safeText(task.proposalId, undefined),
+          exchangeId: safeText(task.exchangeId, undefined),
+        },
+        output,
+      },
+    };
+  } catch (error) {
+    return {
+      error: {
+        code: "openclaw_bridge_invalid_response",
+        message: error instanceof Error ? error.message : String(error),
+        details: { buildInfo: BUILD_INFO },
+      },
+    };
+  }
+}
+
 function buildOutputGithub(parsed) {
   const nested = parsed?.github && typeof parsed.github === "object" && !Array.isArray(parsed.github)
     ? parsed.github
@@ -280,6 +493,10 @@ export function handleTask(task, env = process.env) {
 
   if (shouldUseDockerRunner(task, env)) {
     return runDockerRunner(task, env);
+  }
+
+  if (shouldUseOpenClawBridge(task, env)) {
+    return runOpenClawBridge(task, env);
   }
 
   return handleBuiltinTask(task);
