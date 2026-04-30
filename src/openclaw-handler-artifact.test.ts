@@ -59,7 +59,7 @@ test("versioned OpenClaw handler exposes credential-free build metadata", () => 
   assert.equal(result.status, 0, result.stderr);
   const payload = JSON.parse(result.stdout);
   assert.equal(payload.result.handler.name, "openclaw-a2a-task-handler");
-  assert.equal(payload.result.handler.version, "0.2.2");
+  assert.equal(payload.result.handler.version, "0.2.3");
   assert.match(payload.result.handler.sourceSha256, /^[a-f0-9]{64}$/);
   assert.equal(payload.result.handler.credentialFree, true);
   assert.equal(payload.result.handler.hostNeutral, true);
@@ -859,6 +859,83 @@ console.log(JSON.stringify({ payloads: [{ text: JSON.stringify({ status: "done",
     const payload = JSON.parse(result.stdout);
     assert.equal(payload.error.code, "openclaw_bridge_evidence_missing");
     assert.match(payload.error.message, /prUrl|doneCommentUrl|blockCommentUrl/);
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+// ——— docker-first readiness guard (issue #189) ———
+
+test("A2A_EXECUTOR_MODE=docker without A2A_DOCKER_RUNNER_BIN returns docker_runner_not_configured (#189 readiness)", () => {
+  const result = spawnSync(process.execPath, [handlerPath], {
+    input: JSON.stringify(githubTask()),
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      A2A_EXECUTOR_MODE: "docker",
+      A2A_DOCKER_RUNNER_BIN: "",
+    },
+  });
+
+  assert.equal(result.status, 1);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.error.code, "docker_runner_not_configured");
+  assert.equal(payload.error.details.executorMode, "docker");
+  assert.deepEqual(payload.error.details.requiredEnv, ["A2A_DOCKER_RUNNER_BIN"]);
+  assert.match(payload.error.message, /A2A_DOCKER_RUNNER_BIN/);
+});
+
+test("SCOPE=all-github without A2A_DOCKER_RUNNER_BIN returns docker_runner_not_configured (#189 readiness)", () => {
+  const result = spawnSync(process.execPath, [handlerPath], {
+    input: JSON.stringify(githubTask()),
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      A2A_EXECUTOR_MODE: "auto",
+      A2A_DOCKER_RUNNER_SCOPE: "all-github",
+      A2A_DOCKER_RUNNER_BIN: "",
+    },
+  });
+
+  assert.equal(result.status, 1);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.error.code, "docker_runner_not_configured");
+  assert.equal(payload.error.details.executorMode, "auto");
+  assert.equal(payload.error.details.dockerScope, "all-github");
+  assert.deepEqual(payload.error.details.requiredEnv, ["A2A_DOCKER_RUNNER_BIN"]);
+});
+
+test("plugin-only scope with unconfigured A2A_DOCKER_RUNNER_BIN does not trigger readiness guard for plugin repo (#189)", () => {
+  // plugin-only is NOT a docker-first mandate — the guard should not fire;
+  // the runner spawn error (or success) is handled inside runDockerRunner as before.
+  const tempDir = mkdtempSync(join(tmpdir(), "handler-plugin-readiness-189-"));
+  const fakeRunnerPath = join(tempDir, "fake-runner.mjs");
+  try {
+    writeFileSync(fakeRunnerPath, `
+import { readFileSync } from "node:fs";
+const taskPath = process.argv.at(-1);
+const task = JSON.parse(readFileSync(taskPath, "utf8"));
+if (task.preset !== "openclaw-plugin-a2a-dev") throw new Error("expected plugin preset");
+console.log(JSON.stringify({ ok: true, taskId: task.id, status: "completed", workDir: "/tmp/work-fixture", artifacts: [], prUrl: "https://github.com/jinon86/openclaw-plugin-a2a/pull/2" }));
+`);
+
+    const task = githubTask();
+    task.payload.repo = "jinon86/openclaw-plugin-a2a";
+    const result = spawnSync(process.execPath, [handlerPath], {
+      input: JSON.stringify(task),
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        A2A_EXECUTOR_MODE: "auto",
+        A2A_DOCKER_RUNNER_SCOPE: "plugin-only",
+        A2A_DOCKER_RUNNER_BIN: process.execPath,
+        A2A_DOCKER_RUNNER_ARGS_JSON: JSON.stringify([fakeRunnerPath]),
+      },
+    });
+
+    assert.equal(result.status, 0, result.stderr);
+    const payload = JSON.parse(result.stdout);
+    assert.equal(payload.result.output.github.prUrl, "https://github.com/jinon86/openclaw-plugin-a2a/pull/2");
   } finally {
     rmSync(tempDir, { recursive: true, force: true });
   }
