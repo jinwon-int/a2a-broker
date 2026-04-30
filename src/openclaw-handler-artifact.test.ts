@@ -52,18 +52,18 @@ function makeTaskRecord(task: GithubTaskFixture): TaskRecord {
 
 test("versioned OpenClaw handler exposes credential-free build metadata", () => {
   const result = spawnSync(process.execPath, [handlerPath], {
-    input: JSON.stringify(githubTask()),
+    input: JSON.stringify(githubTask({ intent: "analyze", payload: { mode: "analysis" } })),
     encoding: "utf8",
   });
 
   assert.equal(result.status, 0, result.stderr);
   const payload = JSON.parse(result.stdout);
   assert.equal(payload.result.handler.name, "openclaw-a2a-task-handler");
-  assert.equal(payload.result.handler.version, "0.2.0");
+  assert.equal(payload.result.handler.version, "0.2.1");
   assert.match(payload.result.handler.sourceSha256, /^[a-f0-9]{64}$/);
   assert.equal(payload.result.handler.credentialFree, true);
   assert.equal(payload.result.handler.hostNeutral, true);
-  assert.equal(payload.result.lifecycle.mode, "github-propose-patch");
+  assert.equal(payload.result.lifecycle.mode, "analysis");
 });
 
 test("versioned OpenClaw handler source does not embed credentials or host paths", () => {
@@ -117,6 +117,7 @@ console.log(JSON.stringify({
         ...process.env,
         A2A_DOCKER_RUNNER_ENABLED: "1",
         A2A_DOCKER_RUNNER_ALL_GITHUB: "1",
+        A2A_DOCKER_RUNNER_SCOPE: "all-github",
         A2A_DOCKER_RUNNER_BIN: process.execPath,
         A2A_DOCKER_RUNNER_ARGS_JSON: JSON.stringify([fakeRunnerPath]),
       },
@@ -133,7 +134,7 @@ console.log(JSON.stringify({
   }
 });
 
-test("feature flag alone keeps non-plugin GitHub tasks on the built-in path", () => {
+test("feature flag alone rejects non-plugin GitHub tasks when no bridge is configured", () => {
   const result = spawnSync(process.execPath, [handlerPath], {
     input: JSON.stringify(githubTask()),
     encoding: "utf8",
@@ -141,16 +142,18 @@ test("feature flag alone keeps non-plugin GitHub tasks on the built-in path", ()
       ...process.env,
       A2A_DOCKER_RUNNER_ENABLED: "1",
       A2A_DOCKER_RUNNER_BIN: "/path/that/should/not/run",
+      OPENCLAW_BIN: "",
     },
   });
 
-  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.status, 1);
   const payload = JSON.parse(result.stdout);
-  assert.equal(payload.result.summary, "generic patch proposal task accepted by versioned OpenClaw A2A handler");
-  assert.equal(payload.result.lifecycle.mode, "github-propose-patch");
+  assert.equal(payload.error.code, "github_executor_not_configured");
+  assert.equal(payload.error.details.executorMode, "auto");
+  assert.equal(payload.error.details.dockerScope, "plugin-only");
 });
 
-test("A2A_EXECUTOR_MODE=builtin overrides legacy docker-runner flags", () => {
+test("A2A_EXECUTOR_MODE=builtin refuses GitHub no-op success even with legacy docker flags", () => {
   const result = spawnSync(process.execPath, [handlerPath], {
     input: JSON.stringify(githubTask()),
     encoding: "utf8",
@@ -163,10 +166,10 @@ test("A2A_EXECUTOR_MODE=builtin overrides legacy docker-runner flags", () => {
     },
   });
 
-  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.status, 1);
   const payload = JSON.parse(result.stdout);
-  assert.equal(payload.result.summary, "generic patch proposal task accepted by versioned OpenClaw A2A handler");
-  assert.equal(payload.result.output.message, "generic chat/proposal lifecycle fixture");
+  assert.equal(payload.error.code, "github_executor_not_configured");
+  assert.equal(payload.error.details.executorMode, "builtin");
 });
 
 test("A2A_EXECUTOR_MODE=docker routes GitHub propose_patch tasks without legacy gate", () => {
@@ -228,7 +231,7 @@ console.log(JSON.stringify({ ok: true, taskId: "task-fixture-1", status: "comple
   }
 });
 
-test("A2A_EXECUTOR_MODE=auto keeps plugin-only scope on built-in path without OpenClaw bridge", () => {
+test("A2A_EXECUTOR_MODE=auto rejects plugin-only non-plugin GitHub task without OpenClaw bridge", () => {
   const result = spawnSync(process.execPath, [handlerPath], {
     input: JSON.stringify(githubTask()),
     encoding: "utf8",
@@ -241,9 +244,11 @@ test("A2A_EXECUTOR_MODE=auto keeps plugin-only scope on built-in path without Op
     },
   });
 
-  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.status, 1);
   const payload = JSON.parse(result.stdout);
-  assert.equal(payload.result.summary, "generic patch proposal task accepted by versioned OpenClaw A2A handler");
+  assert.equal(payload.error.code, "github_executor_not_configured");
+  assert.equal(payload.error.details.executorMode, "auto");
+  assert.equal(payload.error.details.dockerScope, "plugin-only");
 });
 
 test("plugin-only GitHub tasks use host OpenClaw bridge when configured", () => {
@@ -309,9 +314,10 @@ test("OpenClaw bridge can be disabled explicitly", () => {
     },
   });
 
-  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.status, 1);
   const payload = JSON.parse(result.stdout);
-  assert.equal(payload.result.summary, "generic patch proposal task accepted by versioned OpenClaw A2A handler");
+  assert.equal(payload.error.code, "github_executor_not_configured");
+  assert.equal(payload.error.details.bridgeConfigured, false);
 });
 
 test("docker runner failures surface as handler errors", () => {
@@ -336,6 +342,7 @@ process.exit(1);
         ...process.env,
         A2A_DOCKER_RUNNER_ENABLED: "1",
         A2A_DOCKER_RUNNER_ALL_GITHUB: "1",
+        A2A_DOCKER_RUNNER_SCOPE: "all-github",
         A2A_DOCKER_RUNNER_BIN: process.execPath,
         A2A_DOCKER_RUNNER_ARGS_JSON: JSON.stringify([fakeRunnerPath]),
       },
@@ -408,6 +415,7 @@ process.exit(1);
         ...process.env,
         A2A_DOCKER_RUNNER_ENABLED: "1",
         A2A_DOCKER_RUNNER_ALL_GITHUB: "1",
+        A2A_DOCKER_RUNNER_SCOPE: "all-github",
         A2A_DOCKER_RUNNER_BIN: process.execPath,
         A2A_DOCKER_RUNNER_ARGS_JSON: JSON.stringify([fakeRunnerPath]),
       },
@@ -449,6 +457,7 @@ console.log(JSON.stringify({
         ...process.env,
         A2A_DOCKER_RUNNER_ENABLED: "1",
         A2A_DOCKER_RUNNER_ALL_GITHUB: "1",
+        A2A_DOCKER_RUNNER_SCOPE: "all-github",
         A2A_DOCKER_RUNNER_BIN: process.execPath,
         A2A_DOCKER_RUNNER_ARGS_JSON: JSON.stringify([fakeRunnerPath]),
       },
@@ -514,6 +523,7 @@ console.log(JSON.stringify({
         ...process.env,
         A2A_DOCKER_RUNNER_ENABLED: "1",
         A2A_DOCKER_RUNNER_ALL_GITHUB: "1",
+        A2A_DOCKER_RUNNER_SCOPE: "all-github",
         A2A_DOCKER_RUNNER_BIN: process.execPath,
         A2A_DOCKER_RUNNER_ARGS_JSON: JSON.stringify([fakeRunnerPath]),
       },
@@ -561,6 +571,7 @@ console.log(JSON.stringify({
         ...process.env,
         A2A_DOCKER_RUNNER_ENABLED: "1",
         A2A_DOCKER_RUNNER_ALL_GITHUB: "1",
+        A2A_DOCKER_RUNNER_SCOPE: "all-github",
         A2A_DOCKER_RUNNER_BIN: process.execPath,
         A2A_DOCKER_RUNNER_ARGS_JSON: JSON.stringify([fakeRunnerPath]),
       },
@@ -608,6 +619,7 @@ console.log(JSON.stringify({
         ...process.env,
         A2A_DOCKER_RUNNER_ENABLED: "1",
         A2A_DOCKER_RUNNER_ALL_GITHUB: "1",
+        A2A_DOCKER_RUNNER_SCOPE: "all-github",
         A2A_DOCKER_RUNNER_BIN: process.execPath,
         A2A_DOCKER_RUNNER_ARGS_JSON: JSON.stringify([fakeRunnerPath]),
       },
@@ -635,7 +647,7 @@ test("docker runner evidence-missing fails validateTaskCompletionEvidence (contr
   const task = githubTask();
   const emptyResult = {
     summary: "completed with no evidence",
-    handler: { name: "openclaw-a2a-task-handler", version: "0.2.0" },
+    handler: { name: "openclaw-a2a-task-handler", version: "0.2.1" },
     lifecycle: {
       intent: task.intent,
       mode: task.payload.mode,
@@ -679,6 +691,7 @@ console.log(JSON.stringify({
         ...process.env,
         A2A_DOCKER_RUNNER_ENABLED: "1",
         A2A_DOCKER_RUNNER_ALL_GITHUB: "1",
+        A2A_DOCKER_RUNNER_SCOPE: "all-github",
         A2A_DOCKER_RUNNER_BIN: process.execPath,
         A2A_DOCKER_RUNNER_ARGS_JSON: JSON.stringify([fakeRunnerPath]),
       },
