@@ -14,7 +14,9 @@
     "export:sqlite": "node scripts/export-sqlite-state.mjs",
     "dev": "node --watch --enable-source-maps src/server.ts",
     "dev:worker": "node --watch --enable-source-maps src/worker.ts",
-    "release_gate": "node scripts/release-gate.mjs"
+    "release_gate": "node scripts/release-gate.mjs",
+    "rollout_guard": "node scripts/worker-artifact-rollout-guard.mjs"
+  
   },
   "engines": {
     "node": ">=22"
