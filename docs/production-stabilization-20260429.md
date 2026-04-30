@@ -162,10 +162,17 @@ The `openclaw-a2a-task-handler` enforces a strict result contract for
 
 ### Feature flag scope
 
+- The worker remains one service/artifact. Docker is selected as an executor
+  backend, not as a separate worker identity.
+- Preferred policy knobs:
+  - `A2A_EXECUTOR_MODE=auto|docker|builtin`
+  - `A2A_DOCKER_RUNNER_SCOPE=plugin-only|all-github`
 - `A2A_DOCKER_RUNNER_ENABLED=1` activates the docker runner path **only** for
-  `intent=propose_patch` + `mode=github-propose-patch` tasks.
+  `intent=propose_patch` + `mode=github-propose-patch` tasks. This remains as
+  the legacy-compatible gate when `A2A_EXECUTOR_MODE` is unset.
 - `A2A_DOCKER_RUNNER_ALL_GITHUB=1` is an explicit opt-in that extends routing to
-  **all** GitHub propose_patch tasks (not only plugin repos).
+  **all** GitHub propose_patch tasks (not only plugin repos). This remains as
+  the legacy-compatible alias for `A2A_DOCKER_RUNNER_SCOPE=all-github`.
 - Non-github tasks (`intent=analyze`, `mode=analysis`, etc.) always stay on the
   built-in handler path regardless of env flags.
 

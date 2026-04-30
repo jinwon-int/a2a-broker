@@ -150,6 +150,101 @@ test("feature flag alone keeps non-plugin GitHub tasks on the built-in path", ()
   assert.equal(payload.result.lifecycle.mode, "github-propose-patch");
 });
 
+test("A2A_EXECUTOR_MODE=builtin overrides legacy docker-runner flags", () => {
+  const result = spawnSync(process.execPath, [handlerPath], {
+    input: JSON.stringify(githubTask()),
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      A2A_EXECUTOR_MODE: "builtin",
+      A2A_DOCKER_RUNNER_ENABLED: "1",
+      A2A_DOCKER_RUNNER_ALL_GITHUB: "1",
+      A2A_DOCKER_RUNNER_BIN: "/path/that/should/not/run",
+    },
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.result.summary, "generic patch proposal task accepted by versioned OpenClaw A2A handler");
+  assert.equal(payload.result.output.message, "generic chat/proposal lifecycle fixture");
+});
+
+test("A2A_EXECUTOR_MODE=docker routes GitHub propose_patch tasks without legacy gate", () => {
+  const tempDir = mkdtempSync(join(tmpdir(), "handler-executor-docker-test-"));
+  const fakeRunnerPath = join(tempDir, "fake-runner.mjs");
+  try {
+    writeFileSync(fakeRunnerPath, `
+import { readFileSync } from "node:fs";
+const taskPath = process.argv.at(-1);
+const task = JSON.parse(readFileSync(taskPath, "utf8"));
+if (task.repo !== "owner/repo") throw new Error("expected repo mapping");
+console.log(JSON.stringify({ ok: true, taskId: task.id, status: "completed", workDir: "/tmp/work-fixture", artifacts: [], prUrl: "https://github.com/owner/repo/pull/123" }));
+`);
+
+    const result = spawnSync(process.execPath, [handlerPath], {
+      input: JSON.stringify(githubTask()),
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        A2A_EXECUTOR_MODE: "docker",
+        A2A_DOCKER_RUNNER_BIN: process.execPath,
+        A2A_DOCKER_RUNNER_ARGS_JSON: JSON.stringify([fakeRunnerPath]),
+      },
+    });
+
+    assert.equal(result.status, 0, result.stderr);
+    const payload = JSON.parse(result.stdout);
+    assert.equal(payload.result.output.github.prUrl, "https://github.com/owner/repo/pull/123");
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("A2A_EXECUTOR_MODE=auto respects A2A_DOCKER_RUNNER_SCOPE=all-github", () => {
+  const tempDir = mkdtempSync(join(tmpdir(), "handler-executor-scope-test-"));
+  const fakeRunnerPath = join(tempDir, "fake-runner.mjs");
+  try {
+    writeFileSync(fakeRunnerPath, `
+console.log(JSON.stringify({ ok: true, taskId: "task-fixture-1", status: "completed", workDir: "/tmp/work-fixture", artifacts: [], doneCommentUrl: "https://github.com/owner/repo/issues/1#issuecomment-123" }));
+`);
+
+    const result = spawnSync(process.execPath, [handlerPath], {
+      input: JSON.stringify(githubTask()),
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        A2A_EXECUTOR_MODE: "auto",
+        A2A_DOCKER_RUNNER_SCOPE: "all-github",
+        A2A_DOCKER_RUNNER_BIN: process.execPath,
+        A2A_DOCKER_RUNNER_ARGS_JSON: JSON.stringify([fakeRunnerPath]),
+      },
+    });
+
+    assert.equal(result.status, 0, result.stderr);
+    const payload = JSON.parse(result.stdout);
+    assert.equal(payload.result.output.github.doneCommentUrl, "https://github.com/owner/repo/issues/1#issuecomment-123");
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("A2A_EXECUTOR_MODE=auto keeps plugin-only scope as the default", () => {
+  const result = spawnSync(process.execPath, [handlerPath], {
+    input: JSON.stringify(githubTask()),
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      A2A_EXECUTOR_MODE: "auto",
+      A2A_DOCKER_RUNNER_SCOPE: "plugin-only",
+      A2A_DOCKER_RUNNER_BIN: "/path/that/should/not/run",
+    },
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.result.summary, "generic patch proposal task accepted by versioned OpenClaw A2A handler");
+});
+
 test("docker runner failures surface as handler errors", () => {
   const tempDir = mkdtempSync(join(tmpdir(), "handler-runner-fail-test-"));
   const fakeRunnerPath = join(tempDir, "fake-runner.mjs");
@@ -205,7 +300,8 @@ console.log(JSON.stringify({ ok: true, taskId: task.id, status: "completed", wor
       encoding: "utf8",
       env: {
         ...process.env,
-        A2A_DOCKER_RUNNER_ENABLED: "1",
+        A2A_EXECUTOR_MODE: "auto",
+        A2A_DOCKER_RUNNER_SCOPE: "plugin-only",
         A2A_DOCKER_RUNNER_BIN: process.execPath,
         A2A_DOCKER_RUNNER_ARGS_JSON: JSON.stringify([fakeRunnerPath]),
       },
