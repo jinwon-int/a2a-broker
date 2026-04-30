@@ -18,6 +18,7 @@ import {
   shouldEscalate,
   createHandoffRecord,
   transitionPhase,
+  evaluateHandoffLoop,
   RecoveryLedger,
 } from "./handoff-scenarios.js";
 import type { HandoffContext, HandoffScenarioId, HandoffOutcome } from "./handoff-types.js";
@@ -211,6 +212,81 @@ describe("classification priority", () => {
       classifyHandoff(baseCtx({ receiverReachable: false, senderCrashed: true })),
       "S2_receiver_unavailable",
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Loop guard: one-way dispatch allowed, ping-pong blocked
+// ---------------------------------------------------------------------------
+
+describe("handoff loop guard", () => {
+  it("allows a first one-way dispatch A → B", () => {
+    const decision = evaluateHandoffLoop(baseCtx({
+      senderNodeId: "node-a",
+      receiverNodeId: "node-b",
+      taskId: "task-1",
+    }));
+
+    assert.equal(decision.allowed, true);
+    assert.equal(decision.originNodeId, "node-a");
+    assert.deepEqual(decision.hopPath, ["node-a"]);
+    assert.deepEqual(decision.nextHopPath, ["node-a", "node-b"]);
+    assert.equal(decision.hopCount, 1);
+  });
+
+  it("rejects direct ping-pong A → B → A for the same task", () => {
+    const ctx = baseCtx({
+      senderNodeId: "node-b",
+      receiverNodeId: "node-a",
+      taskId: "task-1",
+      originNodeId: "node-a",
+      hopPath: ["node-a", "node-b"],
+      idempotencyKey: "task-1:handoff:2",
+    });
+    const decision = evaluateHandoffLoop(ctx);
+    const record = createHandoffRecord(ctx);
+    const ledger = new RecoveryLedger();
+
+    ledger.record(record);
+
+    assert.equal(decision.allowed, false);
+    assert.equal(decision.reason, "direct_loop");
+    assert.equal(record.phase, "failed");
+    assert.equal(record.failureKind, "handoff_loop_guard");
+    assert.equal(record.originNodeId, "node-a");
+    assert.deepEqual(record.hopPath, ["node-a", "node-b"]);
+    assert.equal((record.metadata?.loopGuard as { reason?: string }).reason, "direct_loop");
+    assert.equal(ledger.seal(record.id).outcome, "failed");
+  });
+
+  it("rejects indirect loops A → B → C → A deterministically", () => {
+    const decision = evaluateHandoffLoop(baseCtx({
+      senderNodeId: "node-c",
+      receiverNodeId: "node-a",
+      taskId: "task-1",
+      originNodeId: "node-a",
+      hopPath: ["node-a", "node-b", "node-c"],
+      idempotencyKey: "task-1:handoff:3",
+    }));
+
+    assert.equal(decision.allowed, false);
+    assert.equal(decision.reason, "indirect_loop");
+    assert.deepEqual(decision.nextHopPath, ["node-a", "node-b", "node-c", "node-a"]);
+  });
+
+  it("allows forward-only dispatch A → B → C", () => {
+    const decision = evaluateHandoffLoop(baseCtx({
+      senderNodeId: "node-b",
+      receiverNodeId: "node-c",
+      taskId: "task-1",
+      originNodeId: "node-a",
+      hopPath: ["node-a", "node-b"],
+      idempotencyKey: "task-1:handoff:forward",
+    }));
+
+    assert.equal(decision.allowed, true);
+    assert.deepEqual(decision.nextHopPath, ["node-a", "node-b", "node-c"]);
+    assert.equal(decision.hopCount, 2);
   });
 });
 
