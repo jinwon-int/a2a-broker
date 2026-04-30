@@ -72,6 +72,15 @@ export type AuditAction =
   | "worker.heartbeat";
 export type A2AWorkerEnvironment = "research" | "staging" | "live";
 export type WorkerStatus = "online" | "stale";
+
+/**
+ * Declared operating mode of a worker node.
+ * - `persistent`: always-on VPS / server (default if absent).
+ * - `mobile`: battery-powered or sleep-capable device (Android/Termux, laptop).
+ *   Mobile workers use shorter stale thresholds because brief offline
+ *   windows are expected (Doze, network suspend, lid close).
+ */
+export type WorkerMode = "persistent" | "mobile";
 /**
  * Where a task entered the broker. `unknown` is the backward-compatible default
  * for tasks created before this field existed or by callers that don't tag the
@@ -449,6 +458,8 @@ export interface WorkerRecord {
   displayName?: string;
   brokerUrl?: string;
   capabilities: WorkerCapabilities;
+  /** Declared operating mode. Defaults to "persistent" when absent. */
+  workerMode?: WorkerMode;
   metadata?: Record<string, string>;
   createdAt: string;
   updatedAt: string;
@@ -461,6 +472,7 @@ export interface RegisterWorkerRequest {
   displayName?: string;
   brokerUrl?: string;
   capabilities: WorkerCapabilities;
+  workerMode?: WorkerMode;
   metadata?: Record<string, string>;
 }
 
@@ -468,6 +480,7 @@ export interface WorkerHeartbeatRequest {
   displayName?: string;
   brokerUrl?: string;
   capabilities?: WorkerCapabilities;
+  workerMode?: WorkerMode;
   metadata?: Record<string, string>;
 }
 

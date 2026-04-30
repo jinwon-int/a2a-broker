@@ -21,7 +21,7 @@ export interface PeerStatusRequest {
   verbose?: boolean;
 }
 
-export type PeerHealth = "ok" | "degraded" | "stale" | "unreachable";
+export type PeerHealth = "ok" | "busy" | "degraded" | "stale" | "unreachable";
 export type PeerGatewayMode = "internal" | "standalone" | "dual";
 
 export interface PeerStatusResponse {
@@ -37,6 +37,7 @@ export interface PeerStatusResponse {
   worker: {
     registered: boolean;
     lastHeartbeatAt?: number;
+    workerMode?: "persistent" | "mobile";
     capacity?: {
       slotsTotal: number;
       slotsBusy: number;
@@ -115,7 +116,16 @@ export class PeerStatusService {
     private readonly broker: InMemoryA2ABroker,
     private readonly options: {
       cacheTtlMs?: number;
+      /**
+       * Milliseconds after which a persistent worker is considered stale.
+       * Default: 90_000 (90 s).
+       */
       workerOfflineAfterMs?: number;
+      /**
+       * Milliseconds after which a mobile worker is considered stale.
+       * Default: 30_000 (30 s) — mobile nodes may sleep briefly.
+       */
+      mobileOfflineAfterMs?: number;
     } = {},
   ) {}
 
@@ -196,7 +206,10 @@ export class PeerStatusService {
   private computeStatus(target: string, nowMs: number): PeerStatusResponse {
     const worker = this.broker.getWorker(target);
     const allTasks = this.broker.listTasks({ targetNodeId: target });
-    const offlineAfterMs = this.options.workerOfflineAfterMs ?? 90_000;
+    const isMobile = worker?.workerMode === "mobile";
+    const offlineAfterMs = isMobile
+      ? (this.options.mobileOfflineAfterMs ?? 30_000)
+      : (this.options.workerOfflineAfterMs ?? 90_000);
 
     const workerView = this.broker.getWorkerView(target, offlineAfterMs);
 
@@ -221,8 +234,19 @@ export class PeerStatusService {
       return nowMs - lastSignal > 120_000; // 2 min stale threshold
     });
 
+    // Capacity: default 10 slots for persistent workers, 3 for mobile
+    const slotsTotal = isMobile ? 3 : 10;
+    const slotsBusy = activeTasks.length + queuedTasks.length;
+
     // Health determination
-    const health = this.computeHealth(isReachable, isWorkerStale, staleTasks.length, activeTasks.length);
+    const health = this.computeHealth(
+      isReachable,
+      isWorkerStale,
+      staleTasks.length,
+      slotsBusy,
+      slotsTotal,
+      isMobile,
+    );
 
     return {
       schemaVersion: 1,
@@ -237,8 +261,9 @@ export class PeerStatusService {
       worker: {
         registered: isReachable,
         lastHeartbeatAt: worker ? Date.parse(worker.lastSeenAt) : undefined,
+        workerMode: worker?.workerMode,
         capacity: isReachable
-          ? { slotsTotal: 10, slotsBusy: activeTasks.length }
+          ? { slotsTotal, slotsBusy }
           : undefined,
       },
       tasks: {
@@ -250,14 +275,31 @@ export class PeerStatusService {
     };
   }
 
+  /**
+   * Determine peer health from observed signals.
+   *
+   * Priority order (first match wins):
+   * 1. unreachable – worker not registered at all
+   * 2. stale – worker heartbeat too old for its mode
+   * 3. busy – all capacity slots occupied (active + queued >= total)
+   * 4. degraded – stale tasks exist (claim/running tasks with missed heartbeats)
+   * 5. ok – everything nominal
+   *
+   * Mobile workers use a shorter stale window (30 s default vs 90 s)
+   * and a smaller capacity (3 slots vs 10), reflecting the constraints
+   * of battery-powered / sleep-capable devices.
+   */
   private computeHealth(
     reachable: boolean,
     workerStale: boolean,
     staleTaskCount: number,
-    activeTaskCount: number,
+    occupiedSlots: number,
+    totalSlots: number,
+    _isMobile: boolean,
   ): PeerHealth {
     if (!reachable) return "unreachable";
     if (workerStale) return "stale";
+    if (totalSlots > 0 && occupiedSlots >= totalSlots) return "busy";
     if (staleTaskCount > 0) return "degraded";
     return "ok";
   }
@@ -339,6 +381,7 @@ export class PeerStatusService {
       },
       worker: {
         registered: response.worker.registered,
+        ...(response.worker.workerMode !== undefined ? { workerMode: response.worker.workerMode } : {}),
         ...(response.worker.lastHeartbeatAt !== undefined
           ? { lastHeartbeatAt: response.worker.lastHeartbeatAt }
           : {}),

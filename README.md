@@ -28,6 +28,87 @@ map.
 - `docs/durable-persistence-path.md` for the recommended next persistence step beyond the phase-1 JSON snapshot backend
 - `docs/sqlite-persistence.md` and `docs/release-notes-round-34-sqlite.md` for the SQLite schema v8 operator baseline, hot-table coverage, and diagnostics hot-read release notes
 - `docs/production-stabilization-20260429.md` for the live production closeout: SQLite hot-table cutover, stale-reaper threshold, worker session isolation, active-worker scope, and 502 mitigation notes
+- `docs/phase-8-peer-status-rfc.md` for the `a2a.peer.status` RPC design contract: health semantics, mobile-aware thresholding, busy detection, rate limiting, privacy summary-mode output, and caller guidance
+
+## Peer status API (`a2a.peer.status`)
+
+A lightweight JSON-RPC method for cheap, read-only worker health queries. Designed for routing, load-shedding, and operator dashboards.
+
+### Quick reference
+
+**Request**
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "a2a.peer.status",
+  "params": { "target": "<nodeId>", "maxCacheAgeMs": 5000 },
+  "id": 1
+}
+```
+
+**Response** (summary mode, default)
+```json
+{
+  "schemaVersion": 1,
+  "target": "<nodeId>",
+  "observedAt": 1716000000000,
+  "cacheAgeMs": 0,
+  "gateway": { "reachable": true, "version": "...", "mode": "standalone" },
+  "worker": {
+    "registered": true,
+    "lastHeartbeatAt": 1716000000000,
+    "workerMode": "persistent",
+    "capacity": { "slotsTotal": 10, "slotsBusy": 3 }
+  },
+  "tasks": { "active": 2, "queued": 1, "stale": 0 },
+  "health": "ok"
+}
+```
+
+### Health semantics (priority order)
+
+| Health       | Meaning |
+|-------------|---------|
+| `ok`        | Worker registered, heartbeat fresh, free capacity |
+| `busy`      | Worker registered, heartbeat fresh, all capacity slots occupied (`active + queued >= slotsTotal`) |
+| `degraded`  | Worker registered, heartbeat fresh, but has stale tasks (claimed/running tasks with missed task heartbeats) |
+| `stale`     | Worker registered but last heartbeat exceeds the mode-specific threshold |
+| `unreachable` | Worker not registered at all |
+
+### Worker modes
+
+Workers declare `workerMode` on registration/heartbeat:
+
+| Mode         | Stale threshold | Capacity |
+|-------------|----------------|----------|
+| `persistent` (default) | 90 s | 10 slots |
+| `mobile`    | 30 s | 3 slots |
+
+Mobile workers (Android/Termux, laptops) use shorter stale thresholds because brief offline windows from Doze, network suspend, or lid-close are expected. The reduced capacity reflects battery/CPU constraints.
+
+### Caller contract
+
+- **Rate limit**: per `(caller, target)` pair, 20 req/min + 5 burst
+- **Cache**: default TTL 5 s; use `maxCacheAgeMs: 0` to force recompute
+- **Privacy**: summary mode excludes task messages, session transcripts, and sensitive fields. Verbose mode requires explicit scope `"a2a.peer.status.verbose"` in the JSON-RPC `scope` parameter
+- **Authentication**: caller must provide a `caller` identity; unauthenticated queries return `unauthenticated`
+- **Unknown target**: returns `target_unknown` error code (not a peer health)
+
+### Usage patterns
+
+```typescript
+// Hub routing: skip busy workers
+const status = await rpc("a2a.peer.status", { target: "worker-a" });
+if (status.health === "busy" || status.health === "stale") {
+  // Route to next available worker
+}
+
+// Operator dashboard: query all peers
+for (const worker of workers) {
+  const s = await rpc("a2a.peer.status", { target: worker.nodeId });
+  console.log(`${worker.displayName}: ${s.health} (${s.worker.capacity?.slotsBusy}/${s.worker.capacity?.slotsTotal})`);
+}
+```
 
 ## What is included
 

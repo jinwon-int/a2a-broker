@@ -582,6 +582,7 @@ export class InMemoryA2ABroker {
       displayName: request.displayName,
       brokerUrl: request.brokerUrl,
       capabilities: normalizeCapabilities(request.capabilities),
+      workerMode: request.workerMode,
       metadata: request.metadata,
       createdAt: existing?.createdAt ?? now,
       updatedAt: now,
@@ -609,6 +610,7 @@ export class InMemoryA2ABroker {
     worker.capabilities = request?.capabilities
       ? normalizeCapabilities(request.capabilities)
       : worker.capabilities;
+    worker.workerMode = request?.workerMode ?? worker.workerMode;
     worker.metadata = request?.metadata ?? worker.metadata;
     worker.updatedAt = now;
     worker.lastSeenAt = now;

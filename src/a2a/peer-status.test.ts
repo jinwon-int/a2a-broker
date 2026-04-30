@@ -326,7 +326,7 @@ test("default summary response stays allow-listed and contains no sensitive fiel
     "gateway shape should stay within the read-only summary contract",
   );
   assert.ok(
-    Object.keys(response.worker).every((key) => ["registered", "lastHeartbeatAt", "capacity"].includes(key)),
+    Object.keys(response.worker).every((key) => ["registered", "workerMode", "lastHeartbeatAt", "capacity"].includes(key)),
     "worker shape should stay within the read-only summary contract",
   );
   assert.deepEqual(Object.keys(response.tasks).sort(), ["active", "queued", "stale"]);
@@ -402,6 +402,245 @@ test("service handles multiple queries without errors", () => {
       "should return valid result",
     );
   }
+});
+
+// ---------------------------------------------------------------------------
+// Tests: Busy state
+// ---------------------------------------------------------------------------
+
+test("health is busy when all capacity slots are occupied", () => {
+  const broker = createBroker();
+  registerWorker(broker, "worker-a");
+  registerWorker(broker, "hub-a");
+  const service = new PeerStatusService(broker, { cacheTtlMs: 0 });
+
+  // Create 10 tasks (default slot count for persistent worker)
+  for (let i = 0; i < 10; i++) {
+    broker.createTask({
+      intent: "chat",
+      requester: { id: "hub-a", kind: "node", role: "hub" },
+      target: { id: "worker-a", kind: "node", role: "analyst" },
+      assignedWorkerId: "worker-a",
+      message: `test task ${i}`,
+    });
+  }
+
+  const result = service.query({ target: "worker-a", maxCacheAgeMs: 0 }, "caller");
+  assert.ok(isPeerStatusResponse(result));
+  const response = result as PeerStatusResponse;
+  assert.equal(response.health, "busy");
+  assert.equal(response.worker.capacity?.slotsTotal, 10);
+  assert.equal(response.worker.capacity?.slotsBusy, 10);
+});
+
+test("health is ok when some capacity remains", () => {
+  const broker = createBroker();
+  registerWorker(broker, "worker-a");
+  registerWorker(broker, "hub-a");
+  const service = new PeerStatusService(broker, { cacheTtlMs: 0 });
+
+  // Create only 5 tasks (half capacity)
+  for (let i = 0; i < 5; i++) {
+    broker.createTask({
+      intent: "chat",
+      requester: { id: "hub-a", kind: "node", role: "hub" },
+      target: { id: "worker-a", kind: "node", role: "analyst" },
+      assignedWorkerId: "worker-a",
+      message: `test task ${i}`,
+    });
+  }
+
+  const result = service.query({ target: "worker-a", maxCacheAgeMs: 0 }, "caller");
+  assert.ok(isPeerStatusResponse(result));
+  const response = result as PeerStatusResponse;
+  assert.equal(response.health, "ok");
+  assert.equal(response.worker.capacity?.slotsTotal, 10);
+  assert.equal(response.worker.capacity?.slotsBusy, 5);
+});
+
+// ---------------------------------------------------------------------------
+// Tests: Mobile worker mode
+// ---------------------------------------------------------------------------
+
+test("mobile worker has reduced capacity (3 slots)", () => {
+  const broker = createBroker();
+  broker.registerWorker({
+    nodeId: "mobile-node",
+    role: "analyst",
+    workerMode: "mobile",
+    capabilities: {
+      canAnalyze: true,
+      canBackfill: false,
+      canPatchWorkspace: false,
+      canPromoteLive: false,
+      workspaceIds: ["test"],
+      environments: ["research"],
+    },
+  });
+  const service = new PeerStatusService(broker, { cacheTtlMs: 0 });
+
+  const result = service.query({ target: "mobile-node" }, "caller");
+  assert.ok(isPeerStatusResponse(result));
+  const response = result as PeerStatusResponse;
+  assert.equal(response.worker.workerMode, "mobile");
+  assert.equal(response.worker.capacity?.slotsTotal, 3);
+  assert.equal(response.worker.capacity?.slotsBusy, 0);
+});
+
+test("mobile worker becomes busy at 3 tasks instead of 10", () => {
+  const broker = createBroker();
+  broker.registerWorker({
+    nodeId: "mobile-node",
+    role: "analyst",
+    workerMode: "mobile",
+    capabilities: {
+      canAnalyze: true,
+      canBackfill: false,
+      canPatchWorkspace: false,
+      canPromoteLive: false,
+      workspaceIds: ["test"],
+      environments: ["research"],
+    },
+  });
+  broker.registerWorker({
+    nodeId: "hub-a",
+    role: "hub",
+    capabilities: {
+      canAnalyze: false,
+      canBackfill: false,
+      canPatchWorkspace: false,
+      canPromoteLive: false,
+      workspaceIds: ["test"],
+      environments: ["research"],
+    },
+  });
+  const service = new PeerStatusService(broker, { cacheTtlMs: 0 });
+
+  // Create 3 tasks — fills mobile capacity
+  for (let i = 0; i < 3; i++) {
+    broker.createTask({
+      intent: "chat",
+      requester: { id: "hub-a", kind: "node", role: "hub" },
+      target: { id: "mobile-node", kind: "node", role: "analyst" },
+      assignedWorkerId: "mobile-node",
+      message: `test task ${i}`,
+    });
+  }
+
+  const result = service.query({ target: "mobile-node", maxCacheAgeMs: 0 }, "caller");
+  assert.ok(isPeerStatusResponse(result));
+  const response = result as PeerStatusResponse;
+  assert.equal(response.health, "busy");
+  assert.equal(response.worker.capacity?.slotsBusy, 3);
+});
+
+test("mobile worker uses shorter stale threshold (30 s default)", () => {
+  const broker = createBroker();
+  broker.registerWorker({
+    nodeId: "mobile-node",
+    role: "analyst",
+    workerMode: "mobile",
+    capabilities: {
+      canAnalyze: true,
+      canBackfill: false,
+      canPatchWorkspace: false,
+      canPromoteLive: false,
+      workspaceIds: ["test"],
+      environments: ["research"],
+    },
+  });
+  const service = new PeerStatusService(broker, {
+    cacheTtlMs: 0,
+    mobileOfflineAfterMs: 30_000,
+    workerOfflineAfterMs: 90_000,
+  });
+
+  // Mobile worker just registered — should be ok
+  const fresh = service.query({ target: "mobile-node", maxCacheAgeMs: 0 }, "caller");
+  assert.ok(isPeerStatusResponse(fresh));
+  assert.equal((fresh as PeerStatusResponse).health, "ok");
+  assert.equal((fresh as PeerStatusResponse).worker.workerMode, "mobile");
+});
+
+test("persistent worker (default mode) has standard capacity", () => {
+  const broker = createBroker();
+  broker.registerWorker({
+    nodeId: "server-node",
+    role: "analyst",
+    // no workerMode → defaults to persistent
+    capabilities: {
+      canAnalyze: true,
+      canBackfill: false,
+      canPatchWorkspace: false,
+      canPromoteLive: false,
+      workspaceIds: ["test"],
+      environments: ["research"],
+    },
+  });
+  const service = new PeerStatusService(broker, { cacheTtlMs: 0 });
+
+  const result = service.query({ target: "server-node" }, "caller");
+  assert.ok(isPeerStatusResponse(result));
+  const response = result as PeerStatusResponse;
+  assert.equal(response.worker.workerMode, undefined); // absent for default persistent
+  assert.equal(response.worker.capacity?.slotsTotal, 10);
+});
+
+test("health priority: stale beats busy when worker heartbeat is old", () => {
+  const broker = createBroker();
+  broker.registerWorker({
+    nodeId: "busy-node",
+    role: "analyst",
+    capabilities: {
+      canAnalyze: true,
+      canBackfill: false,
+      canPatchWorkspace: false,
+      canPromoteLive: false,
+      workspaceIds: ["test"],
+      environments: ["research"],
+    },
+  });
+  broker.registerWorker({
+    nodeId: "hub-a",
+    role: "hub",
+    capabilities: {
+      canAnalyze: false,
+      canBackfill: false,
+      canPatchWorkspace: false,
+      canPromoteLive: false,
+      workspaceIds: ["test"],
+      environments: ["research"],
+    },
+  });
+
+  // Fill all slots
+  for (let i = 0; i < 10; i++) {
+    broker.createTask({
+      intent: "chat",
+      requester: { id: "hub-a", kind: "node", role: "hub" },
+      target: { id: "busy-node", kind: "node", role: "analyst" },
+      assignedWorkerId: "busy-node",
+      message: `test task ${i}`,
+    });
+  }
+
+  // Without stale worker, it's busy
+  const serviceFresh = new PeerStatusService(broker, { cacheTtlMs: 0, workerOfflineAfterMs: 90_000 });
+  const freshResult = serviceFresh.query({ target: "busy-node", maxCacheAgeMs: 0 }, "caller");
+  assert.ok(isPeerStatusResponse(freshResult));
+  assert.equal((freshResult as PeerStatusResponse).health, "busy");
+
+  // Set the worker's lastSeenAt far in the past to simulate stale heartbeat
+  const busyWorker = broker.getWorker("busy-node");
+  assert.ok(busyWorker !== null);
+  const oneHourAgo = new Date(Date.now() - 3600_000).toISOString();
+  (busyWorker as any).lastSeenAt = oneHourAgo;
+
+  // Now stale beats busy
+  const serviceStale = new PeerStatusService(broker, { cacheTtlMs: 0, workerOfflineAfterMs: 90_000 });
+  const staleResult = serviceStale.query({ target: "busy-node", maxCacheAgeMs: 0 }, "caller");
+  assert.ok(isPeerStatusResponse(staleResult));
+  assert.equal((staleResult as PeerStatusResponse).health, "stale");
 });
 
 // ---------------------------------------------------------------------------
