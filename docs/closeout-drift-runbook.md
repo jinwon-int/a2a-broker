@@ -12,6 +12,12 @@ Reference case: **#189** — PR merged, linked issue never closed by the broker.
 
 ## Quick detection
 
+> **For operator reconciliation with extra guards (missing-link, cross-repo), use the `closeout-reconcile.mjs` script from #202 instead:**
+> ```sh
+> node scripts/closeout-reconcile.mjs <pr-url> <issue-url>
+> ```
+> See **docs/closeout-reconcile-runbook.md** for the full operator workflow.
+
 ```sh
 # Run from the repo root. Requires gh CLI authenticated.
 node scripts/detect-closeout-drift.mjs \
@@ -109,3 +115,12 @@ gh issue create \
 | `src/github/closeout-drift.test.ts` | Unit tests (no I/O, no `gh` calls) |
 | `scripts/detect-closeout-drift.mjs` | CLI diagnostic using `gh` |
 | `docs/closeout-drift-runbook.md` | This document |
+
+**Extended operator loop (#202):**
+
+| File | Purpose |
+|---|---|
+| `src/github/closeout-reconcile-loop.ts` | Reconciliation helpers: cross-repo, missing-link, exit codes, JSON |
+| `src/github/closeout-reconcile-loop.test.ts` | Reconciliation unit tests |
+| `scripts/closeout-reconcile.mjs` | Operator reconcile CLI with JSON output |
+| `docs/closeout-reconcile-runbook.md` | Full operator reconciliation workflow |
