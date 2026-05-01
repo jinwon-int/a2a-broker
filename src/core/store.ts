@@ -101,6 +101,13 @@ export interface BrokerHotEntityMirrorMismatch {
   snapshotCount: number;
 }
 
+export interface BrokerHotAuditDiagnostics {
+  total: number;
+  workerHeartbeat: number;
+  workerHeartbeatRatio: number;
+  warnings: string[];
+}
+
 export interface JsonFileBrokerStateStoreOptions {
   maxBytes?: number;
 }
@@ -111,6 +118,10 @@ export interface SqliteBrokerStateStoreOptions {
   maxBytes?: number;
   importJsonFile?: string;
   loadSource?: SqliteBrokerLoadSource;
+}
+
+export interface SqliteAuditRuntimeRepositoryOptions {
+  maxHotAuditEvents?: number;
 }
 
 export interface SqliteTaskHotTableFilters {
@@ -891,6 +902,25 @@ export class SqliteBrokerStateStore implements BrokerStateStore {
     );
   }
 
+  readHotAuditDiagnostics(): BrokerHotAuditDiagnostics {
+    const total = this.readTableCount("broker_audit_events");
+    const row = this.db.prepare("SELECT COUNT(*) AS count FROM broker_audit_events WHERE action = 'worker.heartbeat'").get() as
+      | { count?: number | bigint }
+      | undefined;
+    const workerHeartbeat = typeof row?.count === "bigint"
+      ? Number(row.count)
+      : typeof row?.count === "number" ? row.count : 0;
+    const workerHeartbeatRatio = total > 0 ? workerHeartbeat / total : 0;
+    const warnings: string[] = [];
+    if (total > 8_000) {
+      warnings.push(`broker_audit_events has ${total} rows; expected SQLite hot-table retention near 5000`);
+    }
+    if (total > 0 && workerHeartbeatRatio > 0.8) {
+      warnings.push(`worker.heartbeat audit events are ${Math.round(workerHeartbeatRatio * 100)}% of broker_audit_events`);
+    }
+    return { total, workerHeartbeat, workerHeartbeatRatio, warnings };
+  }
+
   planHotTaskRetention(options: SqliteTaskHotRetentionPlanOptions): SqliteHotRetentionPlan {
     const records = this.db
       .prepare("SELECT payload FROM broker_tasks")
@@ -973,6 +1003,41 @@ export class SqliteBrokerStateStore implements BrokerStateStore {
     this.runImmediateTransaction(() => {
       this.upsertHotAuditEventsUnsafe(events);
     });
+  }
+
+  pruneHotAuditEventsToMax(maxRecords: number): SqliteHotRetentionApplyResult {
+    const max = Math.max(0, Math.floor(maxRecords));
+    let result: SqliteHotRetentionApplyResult | undefined;
+    this.runImmediateTransaction(() => {
+      const before = this.readTableCount("broker_audit_events");
+      if (before <= max) {
+        result = {
+          table: "broker_audit_events",
+          retainedCount: before,
+          requestedPruneCount: 0,
+          prunedCount: 0,
+          remainingCount: before,
+        };
+        return;
+      }
+      const deleteResult = this.db.prepare(
+        `DELETE FROM broker_audit_events
+         WHERE id IN (
+           SELECT id FROM broker_audit_events
+           ORDER BY created_at DESC, id DESC
+           LIMIT -1 OFFSET ?
+         )`,
+      ).run(max);
+      const remaining = this.readTableCount("broker_audit_events");
+      result = {
+        table: "broker_audit_events",
+        retainedCount: max,
+        requestedPruneCount: before - max,
+        prunedCount: Number(deleteResult.changes ?? 0),
+        remainingCount: remaining,
+      };
+    });
+    return result!;
   }
 
   upsertHotWorkers(workers: WorkerRecord[]): void {
@@ -1775,14 +1840,25 @@ function workerMatchesRuntimeFilters(worker: WorkerRecord, filters: WorkerListFi
 }
 
 export class SqliteAuditRuntimeRepository implements AuditRuntimeRepository {
-  constructor(private readonly store: SqliteBrokerStateStore) {}
+  private readonly maxHotAuditEvents: number;
+
+  constructor(
+    private readonly store: SqliteBrokerStateStore,
+    options: SqliteAuditRuntimeRepositoryOptions = {},
+  ) {
+    this.maxHotAuditEvents = Math.max(0, Math.floor(options.maxHotAuditEvents ?? 5_000));
+  }
 
   listAuditEvents(filters: AuditListFilters = {}): AuditEvent[] {
     return this.store.readHotAuditEvents(filters);
   }
 
   appendAuditEvent(event: AuditEvent): void {
-    this.store.upsertHotAuditEvents([event]);
+    const hotEvent = event.action === "worker.heartbeat" && event.targetType === "worker"
+      ? { ...event, id: `worker-heartbeat:${event.targetId}` }
+      : event;
+    this.store.upsertHotAuditEvents([hotEvent]);
+    this.store.pruneHotAuditEventsToMax(this.maxHotAuditEvents);
   }
 }
 

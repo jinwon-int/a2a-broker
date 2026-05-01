@@ -384,7 +384,7 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
         ? new SqliteTaskRuntimeRepository(stateStore)
         : undefined,
       auditRepository: stateStore instanceof SqliteBrokerStateStore
-        ? new SqliteAuditRuntimeRepository(stateStore)
+        ? new SqliteAuditRuntimeRepository(stateStore, { maxHotAuditEvents: retentionPolicy.maxAuditEvents })
         : undefined,
       tombstoneRepository: stateStore instanceof SqliteBrokerStateStore
         ? new SqliteTombstoneRuntimeRepository(stateStore)
@@ -642,6 +642,9 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
             kind: "custom",
             stateVersion: CURRENT_BROKER_STATE_VERSION,
           },
+          auditDiagnostics: stateStore instanceof SqliteBrokerStateStore
+            ? stateStore.readHotAuditDiagnostics()
+            : undefined,
           workers: {
             offlineAfterSec: workerOfflineAfterSec,
           },
