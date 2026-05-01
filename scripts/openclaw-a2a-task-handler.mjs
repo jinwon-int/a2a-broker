@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
-const HANDLER_VERSION = "0.2.4";
+const HANDLER_VERSION = "0.2.5";
 const SOURCE_PATH = fileURLToPath(import.meta.url);
 const sourceSha256 = createHash("sha256").update(readFileSync(SOURCE_PATH)).digest("hex");
 
@@ -84,12 +84,43 @@ function shouldUseDockerRunner(task, env = process.env) {
   const mode = taskMode(task);
   if (task?.intent !== "propose_patch" && mode !== "github-propose-patch") return false;
   if (executorMode === "docker") return true;
-  if (normalizedDockerScope(env) === "all-github") return true;
+  if (normalizedDockerScope(env) === "all-github") {
+    return !(hasBlockedClaudeDockerConfig(env) && isOpenClawBridgeConfigured(env));
+  }
 
   const payload = taskPayload(task);
   const repo = safeText(payload.repo, "");
   const requestedPreset = safeText(payload.runnerPreset ?? env.A2A_DOCKER_RUNNER_PRESET, "");
   return requestedPreset === "openclaw-plugin-a2a-dev" || /openclaw-plugin-a2a/.test(repo);
+}
+
+function hasBlockedClaudeDockerConfig(env = process.env) {
+  if (isTruthyEnv(env.A2A_ALLOW_CLAUDE_IN_DOCKER) || isTruthyEnv(env.A2A_DOCKER_RUNNER_ALLOW_CLAUDE_IN_DOCKER)) return false;
+
+  const commandValues = [
+    env.A2A_DOCKER_RUNNER_PATCH_COMMAND_SCRIPT,
+    env.A2A_DOCKER_RUNNER_PATCH_COMMAND_JSON,
+    env.A2A_DOCKER_RUNNER_PATCH_COMMAND_TEMPLATE,
+  ];
+  if (commandValues.some((value) => value && referencesClaudeDocker(value))) return true;
+
+  const mounts = safeText(env.A2A_DOCKER_RUNNER_EXTRA_MOUNTS_JSON, "");
+  return Boolean(mounts && referencesClaudeDocker(mounts));
+}
+
+function referencesClaudeDocker(value) {
+  return [
+    /@anthropic-ai\/claude-code/i,
+    /(^|[\s;|&"'`])claude([\s;|&"'`-]|$)/i,
+    /\.claude(?:\.json|\/|$)/i,
+    /claude-(?:install|output|prompt)\.log|claude-prompt\.md/i,
+    /claude(?:\.json|-dir)?/i,
+  ].some((pattern) => pattern.test(String(value ?? "")));
+}
+
+function isOpenClawBridgeConfigured(env = process.env) {
+  if (isTruthyEnv(env.A2A_OPENCLAW_BRIDGE_DISABLED)) return false;
+  return isTruthyEnv(env.A2A_OPENCLAW_BRIDGE_ENABLED) || Boolean(safeText(env.OPENCLAW_BIN, ""));
 }
 
 function buildRunnerTask(task, env = process.env) {
@@ -142,9 +173,9 @@ function isGithubEvidenceTask(task) {
 function shouldUseOpenClawBridge(task, env = process.env) {
   if (!isGithubEvidenceTask(task)) return false;
   if (normalizedExecutorMode(env) !== "auto") return false;
-  if (normalizedDockerScope(env) !== "plugin-only") return false;
-  if (isTruthyEnv(env.A2A_OPENCLAW_BRIDGE_DISABLED)) return false;
-  return isTruthyEnv(env.A2A_OPENCLAW_BRIDGE_ENABLED) || Boolean(safeText(env.OPENCLAW_BIN, ""));
+  const dockerScope = normalizedDockerScope(env);
+  if (dockerScope !== "plugin-only" && !(dockerScope === "all-github" && hasBlockedClaudeDockerConfig(env))) return false;
+  return isOpenClawBridgeConfigured(env);
 }
 
 function githubExecutorNotConfigured(task, env = process.env) {
