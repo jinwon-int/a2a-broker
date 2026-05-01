@@ -8,9 +8,9 @@ Baseline candidate SHAs from the Round 9 closeout:
 
 | Repo | Candidate SHA |
 |---|---|
-| `jinon86/a2a-broker` | `d6661c71b195` |
-| `jinon86/openclaw-plugin-a2a` | `abdb831ab918` |
-| `jinon86/openclaw` | `f13097255ba3` |
+| `jinwon-int/a2a-broker` | `d6661c71b195` |
+| `jinwon-int/openclaw-plugin-a2a` | `abdb831ab918` |
+| `jinwon-int/openclaw` | `f13097255ba3` |
 
 ## 1. Proof standard for #40 closure
 

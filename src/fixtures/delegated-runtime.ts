@@ -11,8 +11,8 @@
  *   const broker = loadBrokerFromFixture(buildWaitingState());
  *   // assert behavioral invariants...
  *
- * @see jinon86/a2a-broker#22
- * @see jinon86/openclaw#15 (dashboard read-surface coverage)
+ * @see jinwon-int/a2a-broker#22
+ * @see jinwon-int/openclaw#15 (dashboard read-surface coverage)
  */
 
 import { randomUUID } from "node:crypto";

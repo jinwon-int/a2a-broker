@@ -2,8 +2,8 @@
 
 > Status: implemented
 > Owner: yukson
-> Tracks: jinon86/a2a-broker#42, jinon86/a2a-broker#180
-> Epic: jinon86/a2a-broker#39
+> Tracks: jinwon-int/a2a-broker#42, jinwon-int/a2a-broker#180
+> Epic: jinwon-int/a2a-broker#39
 > Author date: 2026-04-25
 > Last revised: 2026-04-30 (#180: busy health, mobile worker mode, mobile-aware thresholds)
 > Prereq for rollout: Phase 1–5 baseline green + regression lock held
@@ -215,7 +215,7 @@ Note: target unreachability is a **data condition**, not an error — callers sh
 
 ## 12. Acceptance mapping
 
-From `jinon86/a2a-broker#42`:
+From `jinwon-int/a2a-broker#42`:
 
 - [x] RPC schema documented → §2
 - [x] Auth/rate-limit behavior defined → §4, §6

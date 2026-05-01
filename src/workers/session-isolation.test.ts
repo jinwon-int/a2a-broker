@@ -5,7 +5,7 @@
  * workers MUST dispatch tasks with task-scoped ephemeral session ids,
  * NOT shared/long-lived sessions like `main` or `telegram`.
  *
- * @see jinon86/a2a-broker#164
+ * @see jinwon-int/a2a-broker#164
  */
 
 import test from "node:test";

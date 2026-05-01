@@ -9,7 +9,7 @@
  *
  * Run: node scripts/smoke-sse-reconnect.mjs
  *
- * Issue: jinon86/a2a-broker#10
+ * Issue: jinwon-int/a2a-broker#10
  */
 
 import { createBrokerServer } from "../dist/server.js";
