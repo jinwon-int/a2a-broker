@@ -92,6 +92,7 @@ import {
   TradingDialecticReadModelError,
 } from "./trading-dialectic/read-model.js";
 import { projectAlerts, type Alert, type AlertScanResult } from "./core/alert-projection.js";
+import { buildOperatorTaskReport } from "./core/operator-task-report.js";
 
 interface ThreadedExchangeMessage extends A2AExchangeMessageRecord {
   replies: ThreadedExchangeMessage[];
@@ -1064,6 +1065,19 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
       }
 
       // GET /tasks/diagnostics — bulk diagnostic scan (MUST come before /tasks/:id)
+      if (req.method === "GET" && path === "/operator/task-report") {
+        if (enforceRequesterIdentity) {
+          assertRequesterHasRole(requesterIdentity, ["hub", "operator"], "operator.task-report");
+        }
+        const taskIds = taskIdsFromUrl(url);
+        const staleAfterMs = numberQueryParam(url, "stale_after_ms") ?? 15 * 60 * 1000;
+        const updatedAfter = optionalString(url.searchParams.get("updated_after"));
+        const tasks = taskIds.length
+          ? taskIds.map((id) => getTaskForReadPath(stateStore, broker, id)).filter((task): task is TaskRecord => Boolean(task))
+          : listTasksForReadPath(stateStore, broker, {});
+        return sendJson(res, 200, buildOperatorTaskReport(tasks, { taskIds, staleAfterMs, updatedAfter }));
+      }
+
       if (req.method === "GET" && path === "/tasks/diagnostics") {
         const staleAfterMs = numberQueryParam(url, "stale_after_ms") ?? 120_000;
         const longRunningAfterMs = numberQueryParam(url, "long_running_after_ms") ?? 3_600_000;
@@ -1618,6 +1632,13 @@ function auditFiltersFromUrl(url: URL): {
       "worker.heartbeat",
     ]),
   };
+}
+
+function taskIdsFromUrl(url: URL): string[] {
+  const repeated = url.searchParams.getAll("task_id").flatMap((value) => value.split(","));
+  const csv = optionalString(url.searchParams.get("task_ids"));
+  if (csv) repeated.push(...csv.split(","));
+  return [...new Set(repeated.map((value) => value.trim()).filter(Boolean))];
 }
 
 function listAuditEventsForReadPath(
