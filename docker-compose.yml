@@ -6,8 +6,12 @@ services:
     restart: unless-stopped
     env_file:
       - .env
+    environment:
+      HOST: 0.0.0.0
     ports:
       - "127.0.0.1:8787:8787"
+    volumes:
+      - /var/lib/a2a-broker:/var/lib/a2a-broker
     networks:
       - a2a
     healthcheck:
