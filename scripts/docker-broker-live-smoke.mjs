@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { readFileSync, existsSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import process from 'node:process';
 import { randomUUID } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -16,6 +16,8 @@ function parseArgs(argv) {
     live: false,
     dryRun: false,
     allowedWorkers: [...DEFAULT_WORKERS],
+    requireWorkers: [],
+    fleet: false,
     timeoutMs: DEFAULT_TIMEOUT_MS,
     intervalMs: DEFAULT_INTERVAL_MS,
   };
@@ -37,6 +39,8 @@ function parseArgs(argv) {
     else if (arg === '--edge-secret-file') options.edgeSecretFile = next();
     else if (arg === '--worker') options.worker = next();
     else if (arg === '--allowed-workers') options.allowedWorkers = splitCsv(next());
+    else if (arg === '--require-workers') options.requireWorkers = splitCsv(next());
+    else if (arg === '--fleet') options.fleet = true;
     else if (arg === '--timeout-ms') options.timeoutMs = parsePositiveInt(next(), arg);
     else if (arg === '--interval-ms') options.intervalMs = parsePositiveInt(next(), arg);
     else if (arg === '--help' || arg === '-h') options.help = true;
@@ -47,7 +51,7 @@ function parseArgs(argv) {
 }
 
 function usage() {
-  return `Usage: node scripts/docker-broker-live-smoke.mjs [--dry-run|--live] [options]\n\nCreates a safe generic no-op task on the live A2A broker, waits for claim/start/terminal status,\nand prints compact secret-free evidence. Defaults to --dry-run unless --live is present.\n\nOptions:\n  --live                         Actually create a broker task. Required for live smoke.\n  --dry-run                      Print the task that would be created without contacting broker.\n  --broker-url <url>             Broker URL. Env: A2A_BROKER_URL or BROKER_URL.\n  --edge-secret-file <path>      Local file containing edge secret. Env: A2A_EDGE_SECRET_FILE or BROKER_EDGE_SECRET_FILE.\n  --worker <id>                  Force worker id. Must be online unless --dry-run.\n  --allowed-workers <csv>        Worker preference list. Default: ${DEFAULT_WORKERS.join(',')}.\n  --timeout-ms <ms>              Wait timeout. Default: ${DEFAULT_TIMEOUT_MS}.\n  --interval-ms <ms>             Poll interval. Default: ${DEFAULT_INTERVAL_MS}.\n\nSecret loading order for --live:\n  1. --edge-secret-file / A2A_EDGE_SECRET_FILE / BROKER_EDGE_SECRET_FILE\n  2. A2A_EDGE_SECRET / BROKER_EDGE_SECRET / EDGE_SECRET\n`;
+  return `Usage: node scripts/docker-broker-live-smoke.mjs [--dry-run|--live] [options]\n\nCreates a safe generic no-op task on the live A2A broker, waits for claim/start/terminal status,\nand prints compact secret-free evidence. Defaults to --dry-run unless --live is present.\n\nOptions:\n  --live                         Actually create a broker task. Required for live smoke.\n  --dry-run                      Print the task that would be created without contacting broker.\n  --broker-url <url>             Broker URL. Env: A2A_BROKER_URL or BROKER_URL.\n  --edge-secret-file <path>      Local file containing edge secret. Env: A2A_EDGE_SECRET_FILE or BROKER_EDGE_SECRET_FILE.\n  --worker <id>                  Force worker id. Must be online unless --dry-run.\n  --allowed-workers <csv>        Worker preference list. Default: ${DEFAULT_WORKERS.join(',')}.\n  --fleet                        Smoke every allowed worker and report worker drift.\n  --require-workers <csv>        Workers that must be registered online; implies drift checking.\n  --timeout-ms <ms>              Wait timeout per task. Default: ${DEFAULT_TIMEOUT_MS}.\n  --interval-ms <ms>             Poll interval. Default: ${DEFAULT_INTERVAL_MS}.\n\nSecret loading order for --live:\n  1. --edge-secret-file / A2A_EDGE_SECRET_FILE / BROKER_EDGE_SECRET_FILE\n  2. A2A_EDGE_SECRET / BROKER_EDGE_SECRET / EDGE_SECRET\n`;
 }
 
 function splitCsv(value) {
@@ -156,10 +160,13 @@ function compactWorker(worker) {
   };
 }
 
-async function selectWorker(baseUrl, edgeSecret, options) {
+async function listWorkers(baseUrl, edgeSecret) {
   const requester = makeRequester('operator', 'docker-smoke-worker-select');
   const workers = await requestJson(baseUrl, edgeSecret, requester, 'GET', '/workers');
-  const items = Array.isArray(workers?.items) ? workers.items : [];
+  return Array.isArray(workers?.items) ? workers.items : [];
+}
+
+function selectWorkerFrom(items, options) {
   const allowed = options.worker ? [options.worker] : options.allowedWorkers;
   const selected = allowed.map((id) => items.find((worker) => worker.nodeId === id && worker.status === 'online')).find(Boolean);
 
@@ -168,6 +175,22 @@ async function selectWorker(baseUrl, edgeSecret, options) {
     throw new Error(`no allowed worker is online; allowed=${allowed.join(',')} visible=${JSON.stringify(visible)}`);
   }
   return selected;
+}
+
+function classifyWorkerDrift(items, expectedIds) {
+  const compactById = new Map(items.map((worker) => [worker.nodeId, compactWorker(worker)]));
+  const missing = expectedIds.filter((id) => !compactById.has(id));
+  const offline = expectedIds
+    .map((id) => compactById.get(id))
+    .filter((worker) => worker && worker.status !== 'online');
+
+  return {
+    ok: missing.length === 0 && offline.length === 0,
+    expected: expectedIds,
+    missing,
+    offline,
+    observed: expectedIds.map((id) => compactById.get(id)).filter(Boolean),
+  };
 }
 
 async function getTask(baseUrl, edgeSecret, taskId) {
@@ -209,42 +232,15 @@ async function waitForTerminalEvidence(baseUrl, edgeSecret, taskId, timeoutMs, i
   throw new Error(`task ${taskId} did not reach a terminal status within ${timeoutMs}ms; last=${JSON.stringify(lastTask)}`);
 }
 
-async function main() {
-  const options = parseArgs(process.argv.slice(2));
-  if (options.help) {
-    console.log(usage());
-    return 0;
-  }
-
-  const dryRun = options.dryRun || !options.live;
-  const brokerUrl = normalizeBaseUrl(options.brokerUrl ?? process.env.A2A_BROKER_URL ?? process.env.BROKER_URL);
-  const workerId = options.worker ?? options.allowedWorkers[0];
-  const task = buildNoopTask(workerId);
-
-  if (dryRun) {
-    console.log(JSON.stringify({
-      mode: 'dry-run',
-      brokerUrl: brokerUrl ?? '<set A2A_BROKER_URL>',
-      allowedWorkers: options.allowedWorkers,
-      forcedWorker: options.worker ?? null,
-      wouldCreateTask: task,
-      secretPrinted: false,
-    }, null, 2));
-    return 0;
-  }
-
-  if (!brokerUrl) throw new Error('broker URL is required for --live; provide --broker-url or A2A_BROKER_URL');
-  const edgeSecret = loadEdgeSecret(options);
-  const selectedWorker = await selectWorker(brokerUrl, edgeSecret, options);
+async function runSmokeForWorker(baseUrl, edgeSecret, workerId, options) {
   const createRequester = makeRequester('operator', 'docker-smoke-create');
-  const created = await requestJson(brokerUrl, edgeSecret, createRequester, 'POST', '/tasks', buildNoopTask(selectedWorker.nodeId));
-  const evidence = await waitForTerminalEvidence(brokerUrl, edgeSecret, created.id, options.timeoutMs, options.intervalMs);
+  const created = await requestJson(baseUrl, edgeSecret, createRequester, 'POST', '/tasks', buildNoopTask(workerId));
+  const evidence = await waitForTerminalEvidence(baseUrl, edgeSecret, created.id, options.timeoutMs, options.intervalMs);
 
-  const result = {
-    mode: 'live',
+  return {
     ok: evidence.task.status === 'succeeded' && evidence.sawClaim && evidence.sawStart,
     taskId: created.id,
-    workerId: selectedWorker.nodeId,
+    workerId,
     finalStatus: evidence.task.status,
     observedStatuses: evidence.observedStatuses,
     lifecycle: {
@@ -254,6 +250,80 @@ async function main() {
     },
     completedAt: evidence.task.completedAt ?? null,
     summary: evidence.task.result?.summary ?? null,
+  };
+}
+
+async function main() {
+  const options = parseArgs(process.argv.slice(2));
+  if (options.help) {
+    console.log(usage());
+    return 0;
+  }
+
+  const dryRun = options.dryRun || !options.live;
+  const brokerUrl = normalizeBaseUrl(options.brokerUrl ?? process.env.A2A_BROKER_URL ?? process.env.BROKER_URL);
+  const targetWorkers = options.fleet ? options.allowedWorkers : [options.worker ?? options.allowedWorkers[0]];
+  const expectedWorkers = options.requireWorkers.length ? options.requireWorkers : (options.fleet ? options.allowedWorkers : []);
+
+  if (dryRun) {
+    console.log(JSON.stringify({
+      mode: 'dry-run',
+      brokerUrl: brokerUrl ?? '<set A2A_BROKER_URL>',
+      allowedWorkers: options.allowedWorkers,
+      requiredWorkers: expectedWorkers,
+      fleet: options.fleet,
+      forcedWorker: options.worker ?? null,
+      wouldCreateTasks: targetWorkers.map((workerId) => buildNoopTask(workerId)),
+      secretPrinted: false,
+    }, null, 2));
+    return 0;
+  }
+
+  if (!brokerUrl) throw new Error('broker URL is required for --live; provide --broker-url or A2A_BROKER_URL');
+  const edgeSecret = loadEdgeSecret(options);
+  const workers = await listWorkers(brokerUrl, edgeSecret);
+  const drift = expectedWorkers.length ? classifyWorkerDrift(workers, expectedWorkers) : undefined;
+
+  if (options.fleet) {
+    const visibleById = new Map(workers.map((worker) => [worker.nodeId, worker]));
+    const smokeTargets = targetWorkers
+      .map((id) => visibleById.get(id))
+      .filter((worker) => worker?.status === 'online')
+      .map((worker) => worker.nodeId);
+
+    const smokes = [];
+    for (const workerId of smokeTargets) {
+      try {
+        smokes.push(await runSmokeForWorker(brokerUrl, edgeSecret, workerId, options));
+      } catch (error) {
+        smokes.push({
+          ok: false,
+          workerId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+
+    const result = {
+      mode: 'live-fleet',
+      ok: (!drift || drift.ok) && smokes.length === targetWorkers.length && smokes.every((item) => item.ok),
+      drift: drift ?? classifyWorkerDrift(workers, targetWorkers),
+      smokeTargets,
+      smokes,
+    };
+    console.log(JSON.stringify(result, null, 2));
+    return result.ok ? 0 : 1;
+  }
+
+  if (drift && !drift.ok) {
+    console.log(JSON.stringify({ mode: 'live', ok: false, drift }, null, 2));
+    return 1;
+  }
+
+  const selectedWorker = selectWorkerFrom(workers, options);
+  const result = {
+    mode: 'live',
+    ...(await runSmokeForWorker(brokerUrl, edgeSecret, selectedWorker.nodeId, options)),
   };
 
   console.log(JSON.stringify(result, null, 2));
