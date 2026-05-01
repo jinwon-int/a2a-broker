@@ -2447,6 +2447,102 @@ test("GET /dashboard reflects task lifecycle after create/claim/complete", async
   }
 });
 
+test("GET /operator/task-report summarizes watched task progress and results", async () => {
+  const server = await startTestServer({ edgeSecret: "s" });
+  try {
+    const h = (extra: Record<string, string> = {}) => ({
+      "content-type": "application/json",
+      "x-a2a-edge-secret": "s",
+      ...extra,
+    });
+
+    await fetch(`${server.baseUrl}/workers/register`, {
+      method: "POST",
+      headers: h({ "x-a2a-requester-id": "w1", "x-a2a-requester-role": "analyst" }),
+      body: JSON.stringify({
+        nodeId: "w1",
+        role: "analyst",
+        capabilities: {
+          canAnalyze: true,
+          canBackfill: false,
+          canPatchWorkspace: true,
+          canPromoteLive: false,
+          workspaceIds: ["ws"],
+          environments: ["research"],
+        },
+      }),
+    });
+
+    const create = async (pullRequest: string) => {
+      const res = await fetch(`${server.baseUrl}/tasks`, {
+        method: "POST",
+        headers: h({ "x-a2a-requester-id": "hub-1", "x-a2a-requester-role": "hub" }),
+        body: JSON.stringify({
+          intent: "propose_patch",
+          requester: { id: "hub-1", kind: "node", role: "hub" },
+          target: { id: "w1", kind: "node", role: "analyst" },
+          assignedWorkerId: "w1",
+          message: `fix ${pullRequest}`,
+          taskOrigin: "github",
+          payload: { pullRequest, lane: "operator-report" },
+        }),
+      });
+      const text = await res.text();
+      assert.equal(res.status, 201, text);
+      return JSON.parse(text);
+    };
+
+    const runningTask = await create("#10");
+    const doneTask = await create("#11");
+
+    await fetch(`${server.baseUrl}/tasks/${runningTask.id}/claim`, {
+      method: "POST",
+      headers: h({ "x-a2a-requester-id": "w1", "x-a2a-requester-role": "analyst" }),
+      body: JSON.stringify({ workerId: "w1" }),
+    });
+    await fetch(`${server.baseUrl}/tasks/${runningTask.id}/start`, {
+      method: "POST",
+      headers: h({ "x-a2a-requester-id": "w1", "x-a2a-requester-role": "analyst" }),
+      body: JSON.stringify({ workerId: "w1" }),
+    });
+    await fetch(`${server.baseUrl}/tasks/${doneTask.id}/claim`, {
+      method: "POST",
+      headers: h({ "x-a2a-requester-id": "w1", "x-a2a-requester-role": "analyst" }),
+      body: JSON.stringify({ workerId: "w1" }),
+    });
+    await fetch(`${server.baseUrl}/tasks/${doneTask.id}/complete`, {
+      method: "POST",
+      headers: h({ "x-a2a-requester-id": "w1", "x-a2a-requester-role": "analyst" }),
+      body: JSON.stringify({
+        workerId: "w1",
+        result: { output: { github: { prUrl: "https://github.com/o/r/pull/11" } } },
+      }),
+    });
+
+    const reportRes = await fetch(
+      `${server.baseUrl}/operator/task-report?task_id=${runningTask.id}&task_id=${doneTask.id}&stale_after_ms=1`,
+      { headers: { "x-a2a-edge-secret": "s", "x-a2a-requester-id": "hub-1", "x-a2a-requester-role": "hub" } },
+    );
+    const reportText = await reportRes.text();
+    assert.equal(reportRes.status, 200, reportText);
+    const report = JSON.parse(reportText);
+
+    assert.equal(report.total, 2);
+    assert.equal(report.terminal, 1);
+    assert.equal(report.active, 1);
+    assert.equal(report.allTerminal, false);
+    const running = report.items.find((item: { taskId: string }) => item.taskId === runningTask.id);
+    const done = report.items.find((item: { taskId: string }) => item.taskId === doneTask.id);
+    assert.equal(running.kind, "stale");
+    assert.match(running.reportLine, /중간보고 필요/);
+    assert.equal(done.kind, "result");
+    assert.equal(done.github.prUrl, "https://github.com/o/r/pull/11");
+    assert.match(done.reportLine, /완료/);
+  } finally {
+    await server.close();
+  }
+});
+
 test("GET /dashboard respects query parameters for limits", async () => {
   const server = await startTestServer({ edgeSecret: "s" });
   try {
