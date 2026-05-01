@@ -66,6 +66,191 @@ test("operator task report surfaces terminal GitHub evidence as result report", 
   assert.match(report.items[0].reportLine, /pull\/123/);
 });
 
+test("extracts enriched docker-runner evidence from result output", () => {
+  const report = buildOperatorTaskReport([
+    task({
+      id: "docker-1",
+      status: "succeeded",
+      completedAt: "2026-05-01T00:05:00.000Z",
+      updatedAt: "2026-05-01T00:05:00.000Z",
+      result: {
+        summary: "docker runner completed",
+        output: {
+          repo: "jinwon-int/a2a-broker",
+          issue: "#203",
+          issueUrl: "https://github.com/jinwon-int/a2a-broker/issues/203",
+          nodeId: "dungae",
+          taskId: "task-docker-1",
+          prUrl: "https://github.com/jinwon-int/a2a-broker/pull/100",
+        },
+      },
+    }),
+  ], { nowMs: Date.parse("2026-05-01T00:06:00.000Z") });
+
+  const github = report.items[0].github;
+  assert.ok(github);
+  assert.equal(github?.repo, "jinwon-int/a2a-broker");
+  assert.equal(github?.issue, "#203");
+  assert.equal(github?.issueUrl, "https://github.com/jinwon-int/a2a-broker/issues/203");
+  assert.equal(github?.nodeId, "dungae");
+  assert.equal(github?.taskId, "task-docker-1");
+  assert.equal(github?.prUrl, "https://github.com/jinwon-int/a2a-broker/pull/100");
+  // report line surfaces the scoped repo+issue label
+  assert.match(report.items[0].reportLine, /jinwon-int\/a2a-broker#203/);
+});
+
+test("extracts evidence from top-level output fields (bridge path)", () => {
+  const report = buildOperatorTaskReport([
+    task({
+      id: "bridge-1",
+      status: "succeeded",
+      completedAt: "2026-05-01T00:05:00.000Z",
+      updatedAt: "2026-05-01T00:05:00.000Z",
+      result: {
+        summary: "bridge completed",
+        output: {
+          repo: "acme/platform",
+          issue: "#7",
+          issueUrl: "https://github.com/acme/platform/issues/7",
+          nodeId: "worker-a",
+          taskId: "task-bridge-1",
+          doneCommentUrl: "https://github.com/acme/platform/issues/7#issuecomment-999",
+        },
+      },
+    }),
+  ], { nowMs: Date.parse("2026-05-01T00:06:00.000Z") });
+
+  const github = report.items[0].github;
+  assert.ok(github);
+  assert.equal(github?.repo, "acme/platform");
+  assert.equal(github?.doneCommentUrl, "https://github.com/acme/platform/issues/7#issuecomment-999");
+  assert.match(report.items[0].reportLine, /acme\/platform#7/);
+});
+
+test("extracts evidence from nested github sub-object", () => {
+  const report = buildOperatorTaskReport([
+    task({
+      id: "nested-1",
+      status: "succeeded",
+      completedAt: "2026-05-01T00:05:00.000Z",
+      updatedAt: "2026-05-01T00:05:00.000Z",
+      result: {
+        summary: "done",
+        output: {
+          github: {
+            repo: "acme/platform",
+            issue: "#42",
+            prUrl: "https://github.com/acme/platform/pull/42",
+          },
+        },
+      },
+    }),
+  ], { nowMs: Date.parse("2026-05-01T00:06:00.000Z") });
+
+  const github = report.items[0].github;
+  assert.ok(github);
+  assert.equal(github?.repo, "acme/platform");
+  assert.equal(github?.prUrl, "https://github.com/acme/platform/pull/42");
+  assert.match(report.items[0].reportLine, /acme\/platform#42/);
+});
+
+test("surfaces failed task with block evidence and issue scoping", () => {
+  const report = buildOperatorTaskReport([
+    task({
+      id: "fail-1",
+      status: "failed",
+      completedAt: "2026-05-01T00:05:00.000Z",
+      updatedAt: "2026-05-01T00:05:00.000Z",
+      error: { code: "docker_runner_timeout", message: "runner timed out" },
+      result: {
+        output: {
+          repo: "jinwon-int/a2a-broker",
+          issue: "#203",
+          issueUrl: "https://github.com/jinwon-int/a2a-broker/issues/203",
+          nodeId: "dungae",
+          blockCommentUrl: "https://github.com/jinwon-int/a2a-broker/issues/203#issuecomment-555",
+        },
+      },
+    }),
+  ], { nowMs: Date.parse("2026-05-01T00:06:00.000Z") });
+
+  const github = report.items[0].github;
+  assert.ok(github);
+  assert.equal(github?.blockCommentUrl, "https://github.com/jinwon-int/a2a-broker/issues/203#issuecomment-555");
+  assert.equal(github?.repo, "jinwon-int/a2a-broker");
+  assert.match(report.items[0].reportLine, /실패/);
+  assert.match(report.items[0].reportLine, /jinwon-int\/a2a-broker#203/);
+});
+
+test("returns undefined evidence when output has no GitHub fields", () => {
+  const report = buildOperatorTaskReport([
+    task({
+      id: "no-evidence-1",
+      status: "succeeded",
+      completedAt: "2026-05-01T00:05:00.000Z",
+      updatedAt: "2026-05-01T00:05:00.000Z",
+      result: {
+        summary: "all good but no github evidence",
+        output: { someIrrelevantKey: true },
+      },
+    }),
+  ], { nowMs: Date.parse("2026-05-01T00:06:00.000Z") });
+
+  assert.equal(report.items[0].github, undefined);
+  // report line still renders, just without the evidence label
+  assert.match(report.items[0].reportLine, /완료/);
+  assert.doesNotMatch(report.items[0].reportLine, /\[/);
+});
+
+test("extracts evidence with repo but no issue (graceful degredation)", () => {
+  const report = buildOperatorTaskReport([
+    task({
+      id: "partial-1",
+      status: "succeeded",
+      completedAt: "2026-05-01T00:05:00.000Z",
+      updatedAt: "2026-05-01T00:05:00.000Z",
+      result: {
+        summary: "done",
+        output: {
+          repo: "acme/platform",
+          doneCommentUrl: "https://github.com/acme/platform/issues/7#issuecomment-111",
+        },
+      },
+    }),
+  ], { nowMs: Date.parse("2026-05-01T00:06:00.000Z") });
+
+  assert.ok(report.items[0].github);
+  assert.equal(report.items[0].github?.repo, "acme/platform");
+  assert.equal(report.items[0].github?.issue, undefined);
+  // shows repo label without issue number (graceful fallback)
+  assert.match(report.items[0].reportLine, /\[acme\/platform\]/);
+});
+
+test("extracts issue number from issueUrl when issue field is missing", () => {
+  const report = buildOperatorTaskReport([
+    task({
+      id: "url-1",
+      status: "succeeded",
+      completedAt: "2026-05-01T00:05:00.000Z",
+      updatedAt: "2026-05-01T00:05:00.000Z",
+      result: {
+        summary: "done",
+        output: {
+          repo: "acme/platform",
+          issueUrl: "https://github.com/acme/platform/issues/7",
+          prUrl: "https://github.com/acme/platform/pull/42",
+        },
+      },
+    }),
+  ], { nowMs: Date.parse("2026-05-01T00:06:00.000Z") });
+
+  assert.ok(report.items[0].github);
+  assert.equal(report.items[0].github?.issue, undefined);
+  assert.equal(report.items[0].github?.issueUrl, "https://github.com/acme/platform/issues/7");
+  // parsed #7 from issueUrl
+  assert.match(report.items[0].reportLine, /acme\/platform#7/);
+});
+
 test("operator task report filters watched task ids and updatedAfter reportability", () => {
   const report = buildOperatorTaskReport([
     task({ id: "old", updatedAt: "2026-05-01T00:00:00.000Z" }),
