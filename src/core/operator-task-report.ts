@@ -30,6 +30,11 @@ export interface OperatorTaskReportItem {
   errorMessage?: string;
   resultSummary?: string;
   github?: {
+    repo?: string;
+    issue?: string;
+    issueUrl?: string;
+    nodeId?: string;
+    taskId?: string;
     prUrl?: string;
     doneCommentUrl?: string;
     blockCommentUrl?: string;
@@ -131,32 +136,72 @@ function buildReportLine(
   const pr = safeString(task.payload?.pullRequest ?? task.payload?.issue ?? task.payload?.issueNumber);
   const lane = safeString(task.payload?.lane ?? task.payload?.title);
   const subject = [node, pr, lane].filter(Boolean).join(" / ") || `${node} / ${task.intent}`;
+
+  // Build scoped repo/issue label from evidence metadata when available.
+  const evidenceLabel = buildEvidenceLabel(context.github);
+
   if (context.kind === "result") {
     const evidence = context.github?.prUrl ?? context.github?.doneCommentUrl ?? context.github?.blockCommentUrl;
     if (task.status === "succeeded") {
-      return `완료: ${subject}${evidence ? ` — ${evidence}` : context.resultSummary ? ` — ${context.resultSummary}` : ""}`;
+      const suffix = evidence ? ` — ${evidence}` : context.resultSummary ? ` — ${context.resultSummary}` : "";
+      return `완료: ${subject}${evidenceLabel}${suffix}`;
     }
     if (task.status === "failed") {
-      return `실패: ${subject}${task.error?.code ? ` — ${task.error.code}` : ""}${task.error?.message ? `: ${task.error.message}` : ""}`;
+      return `실패: ${subject}${evidenceLabel}${task.error?.code ? ` — ${task.error.code}` : ""}${task.error?.message ? `: ${task.error.message}` : ""}`;
     }
-    return `종료: ${subject} — ${task.status}`;
+    return `종료: ${subject}${evidenceLabel} — ${task.status}`;
   }
   if (context.kind === "stale") {
-    return `중간보고 필요: ${subject} — ${task.status} 상태 ${formatDuration(context.statusAgeMs)} 동안 갱신 없음`;
+    return `중간보고 필요: ${subject}${evidenceLabel} — ${task.status} 상태 ${formatDuration(context.statusAgeMs)} 동안 갱신 없음`;
   }
-  return `진행중: ${subject} — ${task.status}`;
+  return `진행중: ${subject}${evidenceLabel} — ${task.status}`;
+}
+
+/**
+ * Build a compact `repo#issue` label from evidence metadata so the operator
+ * can identify which task/issue produced each evidence URL at a glance.
+ *
+ * Returns an empty string when no repo or issue/issueUrl is present.
+ */
+function buildEvidenceLabel(evidence?: OperatorTaskReportItem["github"]): string {
+  if (!evidence?.repo) return "";
+  const issueRef = evidence.issue || (evidence.issueUrl ? `#${parseIssueNumberFromUrl(evidence.issueUrl)}` : "");
+  return issueRef ? ` [${evidence.repo}${issueRef}]` : ` [${evidence.repo}]`;
+}
+
+function parseIssueNumberFromUrl(url: string): string | undefined {
+  try {
+    const m = new URL(url).pathname.match(/\/issues\/(\d+)\/?$/);
+    return m ? m[1] : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function extractGithubEvidence(task: TaskRecord): OperatorTaskReportItem["github"] | undefined {
   const output = task.result?.output;
-  const nested = output?.github && typeof output.github === "object" && !Array.isArray(output.github)
+  if (!output) return undefined;
+  const nested = output.github && typeof output.github === "object" && !Array.isArray(output.github)
     ? output.github as Record<string, unknown>
     : {};
-  const prUrl = safeString(output?.prUrl ?? nested.prUrl);
-  const doneCommentUrl = safeString(output?.doneCommentUrl ?? nested.doneCommentUrl);
-  const blockCommentUrl = safeString(output?.blockCommentUrl ?? nested.blockCommentUrl);
-  if (!prUrl && !doneCommentUrl && !blockCommentUrl) return undefined;
-  return { prUrl, doneCommentUrl, blockCommentUrl };
+
+  // Evidence URLs (from top-level output or nested github object)
+  const prUrl = safeString(output.prUrl ?? nested.prUrl);
+  const doneCommentUrl = safeString(output.doneCommentUrl ?? nested.doneCommentUrl);
+  const blockCommentUrl = safeString(output.blockCommentUrl ?? nested.blockCommentUrl);
+
+  // Enriched metadata (docker-runner result output including bridge path)
+  const repo = safeString(output.repo ?? nested.repo);
+  const issue = safeString(output.issue ?? nested.issue);
+  const issueUrl = safeString(output.issueUrl ?? nested.issueUrl);
+  const nodeId = safeString(output.nodeId ?? nested.nodeId);
+  const taskId = safeString(output.taskId ?? nested.taskId);
+
+  // Require at least one evidence URL OR enriched metadata; otherwise
+  // this is not a GitHub-evidence-carrying result.
+  if (!prUrl && !doneCommentUrl && !blockCommentUrl && !repo && !issue && !issueUrl) return undefined;
+
+  return { repo, issue, issueUrl, nodeId, taskId, prUrl, doneCommentUrl, blockCommentUrl };
 }
 
 function safeString(value: unknown): string | undefined {
