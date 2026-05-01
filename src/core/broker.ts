@@ -146,6 +146,11 @@ export interface InMemoryA2ABrokerOptions {
    * Default: 1000.
    */
   maxTaskStatusEvents?: number;
+  /**
+   * Max retained terminal outbox records for external operator notifiers.
+   * Older records are evicted FIFO when exceeded. Default: 1000.
+   */
+  maxTerminalTaskOutboxEvents?: number;
   /** Optional lightweight profiling hook for broker internals. Listener errors are ignored. */
   profilingListener?: BrokerProfilingListener;
 }
@@ -325,7 +330,7 @@ export class InMemoryA2ABroker {
     this.maxRequeueAttempts = normalizeMaxRequeueAttempts(options.maxRequeueAttempts);
     this.maxBufferedEventsPerTask = options.maxBufferedEventsPerTask ?? 100;
     this.taskEventStream = new TaskEventStream({ maxEvents: options.maxTaskStatusEvents });
-    this.terminalTaskEventOutbox = new TerminalTaskEventOutbox();
+    this.terminalTaskEventOutbox = new TerminalTaskEventOutbox({ maxEvents: options.maxTerminalTaskOutboxEvents });
     this.conferenceManager = new ConferenceRoomManager();
     if (snapshot) {
       this.loadSnapshot(snapshot);
