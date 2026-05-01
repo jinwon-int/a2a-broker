@@ -462,7 +462,7 @@ test("server reads /tasks from SQLite hot tables for supported filters", async (
     }
 
     const res = await fetch(
-      `http://127.0.0.1:${address.port}/tasks?status=queued&assignedWorkerId=worker-a&targetNodeId=worker-a&intent=chat&taskOrigin=api`,
+      `http://127.0.0.1:${address.port}/tasks?detail=full&status=queued&assignedWorkerId=worker-a&targetNodeId=worker-a&intent=chat&taskOrigin=api`,
     );
     assert.equal(res.status, 200);
     const body = await res.json();
@@ -472,6 +472,78 @@ test("server reads /tasks from SQLite hot tables for supported filters", async (
     await new Promise<void>((resolve) => runtime.server.close(() => resolve()));
     store.close();
     rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("GET /tasks returns lightweight task summaries and keeps full detail opt-in", async () => {
+  const { baseUrl, close } = await startTestServer({ enforceRequesterIdentity: false });
+  try {
+    const largeOutput = "x".repeat(20_000);
+    await registerTestWorker(baseUrl, "worker-a", "analyst");
+    const createRes = await fetch(`${baseUrl}/tasks`, {
+      method: "POST",
+      headers: jsonHeaders(),
+      body: JSON.stringify({
+        id: "task-list-diet",
+        requester: { id: "requester", kind: "session", role: "hub" },
+        target: { id: "worker-a", kind: "node", role: "analyst" },
+        targetNodeId: "worker-a",
+        intent: "chat",
+        payload: { rawLog: largeOutput },
+      }),
+    });
+    assert.equal(createRes.status, 201);
+
+    const task = await createRes.json();
+    await fetch(`${baseUrl}/tasks/${task.id}/claim`, {
+      method: "POST",
+      headers: jsonHeaders(),
+      body: JSON.stringify({ workerId: "worker-a" }),
+    });
+    await fetch(`${baseUrl}/tasks/${task.id}/start`, {
+      method: "POST",
+      headers: jsonHeaders(),
+      body: JSON.stringify({ workerId: "worker-a" }),
+    });
+    await fetch(`${baseUrl}/tasks/${task.id}/complete`, {
+      method: "POST",
+      headers: jsonHeaders(),
+      body: JSON.stringify({
+        workerId: "worker-a",
+        result: {
+          summary: "short summary",
+          artifactIds: ["artifact-1"],
+          output: { rawLog: largeOutput },
+        },
+      }),
+    });
+
+    const listBody = await (await fetch(`${baseUrl}/tasks`)).json();
+    assert.equal(listBody.items[0].id, "task-list-diet");
+    assert.equal(listBody.items[0].resultSummary, "short summary");
+    assert.deepEqual(listBody.items[0].artifactIds, ["artifact-1"]);
+    assert.equal("payload" in listBody.items[0], false);
+    assert.equal("result" in listBody.items[0], false);
+    assert.ok(JSON.stringify(listBody).length < 2_000);
+
+    const rpcListBody = await (await fetch(`${baseUrl}/a2a/jsonrpc`, {
+      method: "POST",
+      headers: jsonHeaders(),
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "ListTasks", params: {} }),
+    })).json();
+    assert.equal(rpcListBody.result.tasks[0].metadata.resultSummary, "short summary");
+    assert.equal("result" in rpcListBody.result.tasks[0].metadata, false);
+    assert.ok(JSON.stringify(rpcListBody).length < 2_000);
+
+    const detailBody = await (await fetch(`${baseUrl}/tasks/${task.id}`)).json();
+    assert.equal(detailBody.payload.rawLog.length, largeOutput.length);
+    assert.equal(detailBody.result.output.rawLog.length, largeOutput.length);
+
+    const fullListBody = await (await fetch(`${baseUrl}/tasks?detail=full`)).json();
+    assert.equal(fullListBody.items[0].payload.rawLog.length, largeOutput.length);
+    assert.equal(fullListBody.items[0].result.output.rawLog.length, largeOutput.length);
+  } finally {
+    await close();
   }
 });
 

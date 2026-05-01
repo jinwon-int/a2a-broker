@@ -1002,7 +1002,9 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
 
       if (req.method === "GET" && path === "/tasks") {
         const filters = taskFiltersFromUrl(url);
-        return sendJson(res, 200, { items: listTasksForReadPath(stateStore, broker, filters) });
+        const tasks = listTasksForReadPath(stateStore, broker, filters);
+        const includeFullTaskRecords = url.searchParams.get("detail") === "full" || url.searchParams.get("include") === "full";
+        return sendJson(res, 200, { items: includeFullTaskRecords ? tasks : tasks.map(projectTaskListItem) });
       }
 
       if (req.method === "POST" && path === "/tasks") {
@@ -1668,6 +1670,55 @@ function listAuditEventsForReadPath(
     return stateStore.readHotAuditEvents(filters);
   }
   return broker.listAuditEvents(filters);
+}
+
+interface TaskListItem {
+  id: string;
+  intent: TaskKind;
+  status: TaskStatus;
+  targetNodeId: string;
+  requester: TaskRecord["requester"];
+  target: TaskRecord["target"];
+  exchangeId?: string;
+  parentTaskId?: string;
+  proposalId?: string;
+  assignedWorkerId?: string;
+  claimedBy?: string;
+  taskOrigin?: TaskOrigin;
+  artifactIds?: string[];
+  resultSummary?: string;
+  error?: Pick<NonNullable<TaskRecord["error"]>, "code" | "message">;
+  requeueCount?: number;
+  createdAt: string;
+  updatedAt: string;
+  claimedAt?: string;
+  completedAt?: string;
+}
+
+function projectTaskListItem(task: TaskRecord): TaskListItem {
+  const artifactIds = task.result?.artifactIds ?? task.artifactIds;
+  return {
+    id: task.id,
+    intent: task.intent,
+    status: task.status,
+    targetNodeId: task.targetNodeId,
+    requester: task.requester,
+    target: task.target,
+    exchangeId: task.exchangeId,
+    parentTaskId: task.parentTaskId,
+    proposalId: task.proposalId,
+    assignedWorkerId: task.assignedWorkerId,
+    claimedBy: task.claimedBy,
+    taskOrigin: task.taskOrigin,
+    artifactIds,
+    resultSummary: task.result?.summary ?? task.result?.note,
+    error: task.error ? { code: task.error.code, message: task.error.message } : undefined,
+    requeueCount: task.requeueCount,
+    createdAt: task.createdAt,
+    updatedAt: task.updatedAt,
+    claimedAt: task.claimedAt,
+    completedAt: task.completedAt,
+  };
 }
 
 function listTasksForReadPath(

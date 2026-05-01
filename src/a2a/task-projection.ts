@@ -25,6 +25,12 @@ export interface A2ATaskProjection {
   artifacts: Array<{ id: string }>;
 }
 
+export interface A2ATaskListProjection extends A2ATaskProjection {
+  metadata: Omit<A2ATaskProjection["metadata"], "result"> & {
+    resultSummary?: string;
+  };
+}
+
 export function projectBrokerTask(task: TaskRecord): A2ATaskProjection {
   const summary = task.result?.summary ?? task.result?.note ?? task.message;
   return {
@@ -61,6 +67,34 @@ export function projectBrokerTask(task: TaskRecord): A2ATaskProjection {
       approval: task.approval,
     },
     artifacts: (task.result?.artifactIds ?? task.artifactIds ?? []).map((id) => ({ id })),
+  };
+}
+
+export function projectBrokerTaskForList(task: TaskRecord): A2ATaskListProjection {
+  const projected = projectBrokerTask(task);
+  const resultSummary = task.result?.summary ?? task.result?.note;
+  return {
+    ...projected,
+    metadata: {
+      internalStatus: task.status,
+      intent: task.intent,
+      requester: task.requester,
+      target: task.target,
+      exchangeId: task.exchangeId,
+      parentTaskId: task.parentTaskId,
+      proposalId: task.proposalId,
+      targetNodeId: task.targetNodeId,
+      assignedWorkerId: task.assignedWorkerId,
+      claimedBy: task.claimedBy,
+      workspace: task.workspace,
+      createdAt: task.createdAt,
+      updatedAt: task.updatedAt,
+      cancellation: task.cancellation,
+      error: task.error ? { code: task.error.code, message: task.error.message } : undefined,
+      resultSummary,
+      policyContext: task.policyContext,
+      approval: task.approval,
+    },
   };
 }
 
