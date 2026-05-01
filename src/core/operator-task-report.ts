@@ -35,10 +35,14 @@ export interface OperatorTaskReportItem {
     issueUrl?: string;
     nodeId?: string;
     taskId?: string;
+    branch?: string;
+    branchUrl?: string;
     prUrl?: string;
     doneCommentUrl?: string;
     blockCommentUrl?: string;
+    partial?: boolean;
   };
+  nextAction?: string;
   reportLine: string;
 }
 
@@ -98,6 +102,7 @@ function buildOperatorTaskReportItem(
   const reportable = final || stale || (options.updatedAfterMs !== undefined && Number.isFinite(updatedMs) && updatedMs > options.updatedAfterMs);
   const github = extractGithubEvidence(task);
   const resultSummary = task.result?.summary ?? task.result?.note;
+  const nextAction = buildNextAction(task, github);
 
   return {
     taskId: task.id,
@@ -119,6 +124,7 @@ function buildOperatorTaskReportItem(
     errorMessage: task.error?.message,
     resultSummary,
     github,
+    nextAction,
     reportLine: buildReportLine(task, { kind, statusAgeMs, resultSummary, github }),
   };
 }
@@ -180,28 +186,79 @@ function parseIssueNumberFromUrl(url: string): string | undefined {
 
 function extractGithubEvidence(task: TaskRecord): OperatorTaskReportItem["github"] | undefined {
   const output = task.result?.output;
-  if (!output) return undefined;
-  const nested = output.github && typeof output.github === "object" && !Array.isArray(output.github)
-    ? output.github as Record<string, unknown>
-    : {};
+  const failedRunnerResult = task.status === "failed" ? asRecord(task.error?.details?.runnerResult) : undefined;
+  const failedRunnerTask = task.status === "failed" ? asRecord(task.error?.details?.runnerTask) : undefined;
+  if (!output && !failedRunnerResult && !failedRunnerTask) return undefined;
 
-  // Evidence URLs (from top-level output or nested github object)
-  const prUrl = safeString(output.prUrl ?? nested.prUrl);
-  const doneCommentUrl = safeString(output.doneCommentUrl ?? nested.doneCommentUrl);
-  const blockCommentUrl = safeString(output.blockCommentUrl ?? nested.blockCommentUrl);
+  const primary = asRecord(output);
+  const nested = asRecord(primary?.github) ?? asRecord(failedRunnerResult?.github) ?? {};
+  const scanned = scanGithubEvidenceText(
+    [failedRunnerResult?.stdout, failedRunnerResult?.stderr, failedRunnerResult?.finalAssistantEvidence, failedRunnerResult?.summary]
+      .map((value) => safeString(value))
+      .filter((value): value is string => Boolean(value))
+      .join("\n"),
+  );
+
+  // Evidence URLs (from normal output, failed runner JSON, or sanitized GitHub URL scan)
+  const prUrl = safeString(primary?.prUrl ?? nested.prUrl ?? failedRunnerResult?.prUrl ?? scanned.prUrl);
+  const doneCommentUrl = safeString(primary?.doneCommentUrl ?? nested.doneCommentUrl ?? failedRunnerResult?.doneCommentUrl ?? scanned.doneCommentUrl);
+  const blockCommentUrl = safeString(primary?.blockCommentUrl ?? nested.blockCommentUrl ?? failedRunnerResult?.blockCommentUrl ?? scanned.blockCommentUrl);
+  const branchUrl = safeString(primary?.branchUrl ?? nested.branchUrl ?? failedRunnerResult?.branchUrl ?? scanned.branchUrl);
 
   // Enriched metadata (docker-runner result output including bridge path)
-  const repo = safeString(output.repo ?? nested.repo);
-  const issue = safeString(output.issue ?? nested.issue);
-  const issueUrl = safeString(output.issueUrl ?? nested.issueUrl);
-  const nodeId = safeString(output.nodeId ?? nested.nodeId);
-  const taskId = safeString(output.taskId ?? nested.taskId);
+  const repo = safeString(primary?.repo ?? nested.repo ?? failedRunnerTask?.repo ?? failedRunnerResult?.repo ?? parseRepoFromGithubUrl(prUrl ?? doneCommentUrl ?? blockCommentUrl ?? branchUrl));
+  const issue = safeString(primary?.issue ?? nested.issue ?? failedRunnerTask?.issue ?? failedRunnerResult?.issue);
+  const issueUrl = safeString(primary?.issueUrl ?? nested.issueUrl ?? failedRunnerTask?.issueUrl ?? failedRunnerResult?.issueUrl ?? scanned.issueUrl);
+  const nodeId = safeString(primary?.nodeId ?? nested.nodeId ?? failedRunnerResult?.nodeId);
+  const taskId = safeString(primary?.taskId ?? nested.taskId ?? failedRunnerResult?.taskId);
+  const branch = safeString(primary?.branch ?? nested.branch ?? failedRunnerResult?.branch);
+  const partial = Boolean(!output && (failedRunnerResult || failedRunnerTask));
 
   // Require at least one evidence URL OR enriched metadata; otherwise
   // this is not a GitHub-evidence-carrying result.
-  if (!prUrl && !doneCommentUrl && !blockCommentUrl && !repo && !issue && !issueUrl) return undefined;
+  if (!prUrl && !doneCommentUrl && !blockCommentUrl && !branchUrl && !repo && !issue && !issueUrl) return undefined;
 
-  return { repo, issue, issueUrl, nodeId, taskId, prUrl, doneCommentUrl, blockCommentUrl };
+  return { repo, issue, issueUrl, nodeId, taskId, branch, branchUrl, prUrl, doneCommentUrl, blockCommentUrl, partial };
+}
+
+function buildNextAction(task: TaskRecord, github?: OperatorTaskReportItem["github"]): string | undefined {
+  if (task.status !== "failed" || !github) return undefined;
+  const evidence = github.prUrl ?? github.doneCommentUrl ?? github.blockCommentUrl ?? github.branchUrl;
+  if (!evidence) return undefined;
+  if (github.prUrl) return `review recovered PR evidence before retrying or reassigning: ${github.prUrl}`;
+  if (github.doneCommentUrl) return `verify recovered Done evidence, then mark/reconcile the task instead of rerunning blindly: ${github.doneCommentUrl}`;
+  if (github.blockCommentUrl) return `inspect recovered Block evidence and resolve the blocker before rerunning: ${github.blockCommentUrl}`;
+  return `inspect recovered branch evidence before rerunning or replacing the worker: ${evidence}`;
+}
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
+}
+
+function scanGithubEvidenceText(text: string): Partial<NonNullable<OperatorTaskReportItem["github"]>> {
+  if (!text) return {};
+  const urls = [...text.matchAll(/https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/(?:pull|issues|tree)\/[^\s)\]}>"']+/g)]
+    .map((match) => match[0].replace(/[.,;:]+$/, ""));
+  const prUrl = urls.find((url) => /\/pull\/\d+(?:$|[?#])/.test(url));
+  const issueCommentUrl = urls.find((url) => /\/issues\/\d+#issuecomment-\d+/.test(url));
+  const issueUrl = urls.find((url) => /\/issues\/\d+(?:$|[?#])/.test(url));
+  const branchUrl = urls.find((url) => /\/tree\//.test(url));
+  return {
+    prUrl,
+    doneCommentUrl: issueCommentUrl,
+    issueUrl,
+    branchUrl,
+  };
+}
+
+function parseRepoFromGithubUrl(url?: string): string | undefined {
+  if (!url) return undefined;
+  try {
+    const [, owner, repo] = new URL(url).pathname.split("/");
+    return owner && repo ? `${owner}/${repo}` : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function safeString(value: unknown): string | undefined {
