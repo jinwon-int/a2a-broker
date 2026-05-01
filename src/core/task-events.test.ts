@@ -2,7 +2,8 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
 import { InMemoryA2ABroker } from "./broker.js";
-import type { TaskStatusEvent } from "./task-events.js";
+import type { TaskStatusEvent, TerminalTaskEvent } from "./task-events.js";
+import type { TerminalTaskOutboxEvent } from "./terminal-event-outbox.js";
 
 function registerWorker(broker: InMemoryA2ABroker, nodeId = "worker-1"): void {
   broker.registerWorker({
@@ -21,7 +22,13 @@ function registerWorker(broker: InMemoryA2ABroker, nodeId = "worker-1"): void {
 
 function createTask(
   broker: InMemoryA2ABroker,
-  overrides: { id?: string; parentTaskId?: string; targetNodeId?: string; payload?: Record<string, unknown> } = {},
+  overrides: {
+    id?: string;
+    parentTaskId?: string;
+    targetNodeId?: string;
+    payload?: Record<string, unknown>;
+    policyContext?: { requiresApproval?: boolean };
+  } = {},
 ) {
   return broker.createTask({
     id: overrides.id,
@@ -29,6 +36,7 @@ function createTask(
     intent: "analyze",
     requester: { id: "hub", kind: "node", role: "hub" },
     target: { id: overrides.targetNodeId ?? "worker-1", kind: "node", role: "operator" },
+    policyContext: overrides.policyContext,
     payload: overrides.payload ?? {},
   });
 }
@@ -309,4 +317,120 @@ describe("TerminalTaskEventOutbox", () => {
     assert.equal(replay[0]!.payload.taskId, "task-two");
     assert.equal(replay[0]!.payload.status, "succeeded");
   });
+
+  it("proves operator terminal push envelopes without direct Telegram delivery", () => {
+    const broker = new InMemoryA2ABroker();
+    registerWorker(broker);
+    const sseEvents: TerminalTaskEvent[] = [];
+    broker.getTaskEventStream().onTerminal((event) => sseEvents.push(event));
+
+    const succeeded = createTask(broker, {
+      id: "proof-succeeded",
+      payload: { githubRepo: "jinwon-int/a2a-broker", githubIssueNumber: 229 },
+    });
+    broker.claimTask(succeeded.id, "worker-1");
+    broker.completeTask(succeeded.id, "worker-1", { summary: "npm test passed" });
+    broker.completeTask(succeeded.id, "worker-1", { summary: "duplicate terminal update ignored" });
+
+    const failed = createTask(broker, {
+      id: "proof-failed",
+      payload: { githubRepo: "jinwon-int/a2a-broker", githubIssueNumber: 229 },
+    });
+    broker.claimTask(failed.id, "worker-1");
+    broker.failTask(failed.id, "worker-1", {
+      message: "tests failed token=ghp_secretvalue at /work/private/raw-session.log",
+    });
+    broker.failTask(failed.id, "worker-1", { message: "duplicate failure ignored" });
+
+    createTask(broker, {
+      id: "proof-blocked",
+      policyContext: { requiresApproval: true },
+      payload: {
+        githubRepo: "jinwon-int/a2a-broker",
+        githubIssueNumber: 229,
+        blockUrl: "https://github.com/jinwon-int/a2a-broker/issues/229#issuecomment-block",
+        rawTranscript: "do-not-leak",
+      },
+    });
+
+    const prOpened = createTask(broker, {
+      id: "proof-pr-opened",
+      payload: { githubRepo: "jinwon-int/a2a-broker", githubIssueNumber: 229 },
+    });
+    broker.claimTask(prOpened.id, "worker-1");
+    broker.startTask(prOpened.id, "worker-1");
+    broker.completeTask(prOpened.id, "worker-1", {
+      summary: "PR opened and Done evidence posted from /work/repo/dist/core/task-events.test.js",
+      output: {
+        prUrl: "https://github.com/jinwon-int/a2a-broker/pull/230",
+        doneUrl: "https://github.com/jinwon-int/a2a-broker/issues/229#issuecomment-done",
+        testSummary: {
+          status: "passed",
+          total: 1,
+          passed: 1,
+          summary: "operator push proof ok password=hunter2 /home/operator/session.txt",
+        },
+        rawLog: "do-not-leak",
+      },
+    });
+
+    const outbox = broker.getTerminalTaskEventOutbox();
+    const webhookEvents = outbox.subscribe();
+    assert.deepEqual(
+      webhookEvents.map((event) => event.payload.status),
+      ["succeeded", "failed", "blocked", "succeeded"],
+    );
+    assert.equal(outbox.size, 4);
+    assert.deepEqual(
+      sseEvents.map((event) => event.status),
+      ["succeeded", "failed", "blocked", "succeeded"],
+    );
+    assert.equal(
+      sseEvents.find((event) => event.taskId === "proof-blocked")?.blockUrl,
+      "https://github.com/jinwon-int/a2a-broker/issues/229#issuecomment-block",
+    );
+
+    const replay = outbox.subscribe({ afterId: webhookEvents[1]!.id });
+    assert.deepEqual(
+      replay.map((event) => event.payload.taskId),
+      ["proof-blocked", "proof-pr-opened"],
+    );
+
+    const envelopes = webhookEvents.map(toFakeOperatorEnvelope);
+    assert.deepEqual(envelopes.map((envelope) => envelope.transportOwner), [
+      "seoseo/OpenClaw plugin-notifier",
+      "seoseo/OpenClaw plugin-notifier",
+      "seoseo/OpenClaw plugin-notifier",
+      "seoseo/OpenClaw plugin-notifier",
+    ]);
+    assert.equal(envelopes[2]!.body.blockUrl, "https://github.com/jinwon-int/a2a-broker/issues/229#issuecomment-block");
+    assert.equal(envelopes[3]!.body.prUrl, "https://github.com/jinwon-int/a2a-broker/pull/230");
+    assert.equal(envelopes[3]!.body.doneUrl, "https://github.com/jinwon-int/a2a-broker/issues/229#issuecomment-done");
+
+    const serialized = JSON.stringify({ envelopes, sseEvents });
+    for (const forbidden of [
+      "telegram",
+      "rawLog",
+      "rawTranscript",
+      "do-not-leak",
+      "ghp_secretvalue",
+      "hunter2",
+      "/work/private",
+      "/work/repo",
+      "/home/operator",
+    ]) {
+      assert.ok(!serialized.toLowerCase().includes(forbidden.toLowerCase()), forbidden);
+    }
+  });
 });
+
+function toFakeOperatorEnvelope(event: TerminalTaskOutboxEvent) {
+  return {
+    envelopeVersion: 1,
+    delivery: "operator-terminal-push-proof",
+    transportOwner: "seoseo/OpenClaw plugin-notifier",
+    brokerTransport: "webhook-or-sse",
+    cursor: event.id,
+    body: event.payload,
+  };
+}
