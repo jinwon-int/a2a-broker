@@ -127,6 +127,30 @@ test("server requires a real PUBLIC_BASE_URL", () => {
   );
 });
 
+test("server surfaces release revision on health and dashboard status", async () => {
+  const server = await startTestServer({ releaseRevision: " release-2026.05.01+abc123 " });
+  try {
+    assert.equal(server.runtime.config.releaseRevision, "release-2026.05.01+abc123");
+
+    const healthRes = await fetch(`${server.baseUrl}/health`);
+    assert.equal(healthRes.status, 200);
+    const health = await healthRes.json();
+    assert.deepEqual(health.release, { revision: "release-2026.05.01+abc123" });
+
+    const dashboardRes = await fetch(`${server.baseUrl}/dashboard`, {
+      headers: {
+        "x-a2a-requester-id": "operator-a",
+        "x-a2a-requester-role": "operator",
+      },
+    });
+    assert.equal(dashboardRes.status, 200);
+    const dashboard = await dashboardRes.json();
+    assert.deepEqual(dashboard.release, health.release);
+  } finally {
+    await server.close();
+  }
+});
+
 test("server rejects invalid requester identity headers with 400", async () => {
   const server = await startTestServer();
   try {

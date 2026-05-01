@@ -190,6 +190,9 @@ Response:
 {
   "ok": true,
   "service": "a2a-broker",
+  "release": {
+    "revision": "release-2026.05.01+abc123"
+  },
   "publicBaseUrl": "http://<masked-host>:8787",
   "uptimeSec": 123,
   "persistence": {
@@ -207,6 +210,9 @@ Response:
   }
 }
 ```
+
+`release.revision` is `null` when `BROKER_RELEASE_REVISION` / `RELEASE_REVISION` is unset.
+The same `release` object is also included in `GET /dashboard` for operator status views.
 
 ### `GET /exchanges`
 

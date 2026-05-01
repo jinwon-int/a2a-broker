@@ -110,6 +110,11 @@ interface DashboardAttentionSummary {
   items: DashboardAttentionItem[];
 }
 
+export interface BrokerReleaseStatus {
+  /** Deployment/build revision advertised by the broker process, or null when unset. */
+  revision: string | null;
+}
+
 interface OperatorTaskStatusSummary {
   total: number;
   active: number;
@@ -162,6 +167,7 @@ interface OperatorDashboardSnapshot {
 }
 
 type OperatorSummary = BrokerDashboard & {
+  release: BrokerReleaseStatus;
   staleReaper: BrokerStaleReaperStatus;
   requestPressure: {
     general: RateLimitPressureSnapshot;
@@ -256,6 +262,11 @@ export interface BrokerServerOptions {
    * canary proof validates the Round 7 wake-layer rollout. Env: `A2A_PEER_STATUS_ENABLED`.
    */
   peerStatusEnabled?: boolean;
+  /**
+   * Optional deployment/build revision to expose on health and operator status surfaces.
+   * Env: `BROKER_RELEASE_REVISION` or `RELEASE_REVISION`.
+   */
+  releaseRevision?: string;
 }
 
 export interface BrokerStaleReaperStatus {
@@ -306,6 +317,7 @@ export interface BrokerServerRuntime {
     maxRequeueAttempts: number;
     taskSubscribeHeartbeatSec: number;
     peerStatusEnabled: boolean;
+    releaseRevision: string | null;
   };
 }
 
@@ -367,6 +379,11 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
   );
   const peerStatusEnabled =
     options.peerStatusEnabled ?? resolveBooleanEnv(process.env.A2A_PEER_STATUS_ENABLED, false);
+  const release: BrokerReleaseStatus = {
+    revision: resolveReleaseRevision(
+      options.releaseRevision ?? process.env.BROKER_RELEASE_REVISION ?? process.env.RELEASE_REVISION,
+    ),
+  };
 
   const stateStore =
     options.stateStore ??
@@ -519,6 +536,7 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
       getStaleReaperStatus,
       rateLimiter,
       workerRateLimiter,
+      release,
     }),
     alerts: buildAlertScan({
       broker,
@@ -636,6 +654,7 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
         return sendJson(res, 200, {
           ok: true,
           service: serviceName,
+          release,
           publicBaseUrl,
           uptimeSec: Math.round(process.uptime()),
           persistence: stateStore.getPersistenceInfo?.() ?? {
@@ -754,6 +773,7 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
           getStaleReaperStatus,
           rateLimiter,
           workerRateLimiter,
+          release,
           recentHistoryLimit: recentLimit,
           oldestPendingLimit,
           pendingActionLimit,
@@ -1334,6 +1354,7 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
       maxRequeueAttempts,
       taskSubscribeHeartbeatSec,
       peerStatusEnabled,
+      releaseRevision: release.revision,
     },
   };
 }
@@ -1414,6 +1435,15 @@ function resolveBooleanEnv(value: string | undefined, fallback: boolean): boolea
     return false;
   }
   return fallback;
+}
+
+function resolveReleaseRevision(value: string | undefined): string | null {
+  const revision = value?.trim();
+  if (!revision) {
+    return null;
+  }
+  // Keep this field safe for logs/UIs even if an operator accidentally passes a long value.
+  return revision.slice(0, 256);
 }
 
 function normalizePersistenceBackend(value: string | undefined): "json-file" | "sqlite" {
@@ -2299,6 +2329,7 @@ function buildDashboardResponse(input: {
   getStaleReaperStatus: () => BrokerStaleReaperStatus;
   rateLimiter: InMemoryRateLimiter;
   workerRateLimiter: InMemoryRateLimiter;
+  release: BrokerReleaseStatus;
   recentHistoryLimit?: number;
   oldestPendingLimit?: number;
   pendingActionLimit?: number;
@@ -2316,6 +2347,7 @@ function buildDashboardResponse(input: {
   };
   return {
     ...dashboard,
+    release: input.release,
     staleReaper,
     requestPressure,
     attention: buildDashboardAttention({
