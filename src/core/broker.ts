@@ -16,6 +16,7 @@ import {
   type BrokerStateStore,
 } from "./store.js";
 import { TaskEventStream } from "./task-event-stream.js";
+import { TerminalTaskEventOutbox } from "./terminal-event-outbox.js";
 import { ConferenceRoomManager } from "./conference-room.js";
 import type { ArtifactRuntimeRepository } from "./artifact-repository.js";
 import type { AuditRuntimeRepository } from "./audit-repository.js";
@@ -236,6 +237,7 @@ export class InMemoryA2ABroker {
   private readonly stateListeners = new Set<BrokerStateListener>();
   private readonly maxBufferedEventsPerTask: number;
   private readonly taskEventStream: TaskEventStream;
+  private readonly terminalTaskEventOutbox: TerminalTaskEventOutbox;
   private readonly conferenceManager: ConferenceRoomManager;
   private readonly taskRepository?: TaskRuntimeRepository;
   private readonly auditRepository?: AuditRuntimeRepository;
@@ -265,6 +267,7 @@ export class InMemoryA2ABroker {
     this.maxRequeueAttempts = normalizeMaxRequeueAttempts(options.maxRequeueAttempts);
     this.maxBufferedEventsPerTask = options.maxBufferedEventsPerTask ?? 100;
     this.taskEventStream = new TaskEventStream({ maxEvents: options.maxTaskStatusEvents });
+    this.terminalTaskEventOutbox = new TerminalTaskEventOutbox();
     this.conferenceManager = new ConferenceRoomManager();
     if (snapshot) {
       this.loadSnapshot(snapshot);
@@ -279,6 +282,11 @@ export class InMemoryA2ABroker {
    */
   getTaskEventStream(): TaskEventStream {
     return this.taskEventStream;
+  }
+
+  /** Compact terminal task event outbox for durable webhook/SSE delivery. */
+  getTerminalTaskEventOutbox(): TerminalTaskEventOutbox {
+    return this.terminalTaskEventOutbox;
   }
 
   /**
@@ -2286,7 +2294,10 @@ export class InMemoryA2ABroker {
     if (event.targetType === "task") {
       const task = this.tasks.get(event.targetId);
       if (task) {
-        this.taskEventStream.push(event, task);
+        const taskEvent = this.taskEventStream.push(event, task);
+        if (taskEvent) {
+          this.terminalTaskEventOutbox.enqueue(taskEvent, task);
+        }
       }
     }
     return event;
