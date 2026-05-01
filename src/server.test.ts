@@ -3076,6 +3076,99 @@ async function readSseEventsUntil(
   throw new Error(`timed out waiting for SSE events; received ${events.length}`);
 }
 
+test("SSE /a2a/tasks/terminal-events streams compact terminal events with replay ids", async () => {
+  const server = await startTestServer({ edgeSecret: "test-edge-secret" });
+  try {
+    await registerTestWorker(server.baseUrl, "worker-a", "analyst", "test-edge-secret");
+
+    const hubHeaders = jsonHeaders({
+      "x-a2a-edge-secret": "test-edge-secret",
+      "x-a2a-requester-id": "hub-a",
+      "x-a2a-requester-role": "hub",
+    });
+    const taskRes = await fetch(`${server.baseUrl}/tasks`, {
+      method: "POST",
+      headers: hubHeaders,
+      body: JSON.stringify({
+        intent: "analyze",
+        requester: { id: "hub-a", kind: "node", role: "hub" },
+        target: { id: "worker-a", kind: "node", role: "analyst" },
+        assignedWorkerId: "worker-a",
+        payload: { githubRepo: "acme/example", githubIssueNumber: 217, secret: "nope" },
+        message: "do not leak this prompt",
+      }),
+    });
+    const task = await taskRes.json();
+
+    const sseRes = await fetch(`${server.baseUrl}/a2a/tasks/terminal-events`, {
+      headers: {
+        "x-a2a-edge-secret": "test-edge-secret",
+        "x-a2a-requester-id": "hub-a",
+        "x-a2a-requester-role": "hub",
+        accept: "text/event-stream",
+      },
+    });
+    assert.equal(sseRes.status, 200);
+    assert.match(sseRes.headers.get("content-type") ?? "", /text\/event-stream/);
+
+    const workerHeaders = jsonHeaders({
+      "x-a2a-edge-secret": "test-edge-secret",
+      "x-a2a-requester-id": "worker-a",
+      "x-a2a-requester-role": "analyst",
+    });
+    await fetch(`${server.baseUrl}/tasks/${task.id}/claim`, {
+      method: "POST",
+      headers: workerHeaders,
+      body: JSON.stringify({ workerId: "worker-a" }),
+    });
+    await fetch(`${server.baseUrl}/tasks/${task.id}/complete`, {
+      method: "POST",
+      headers: workerHeaders,
+      body: JSON.stringify({
+        workerId: "worker-a",
+        result: {
+          output: {
+            prUrl: "https://github.com/acme/example/pull/9",
+            doneUrl: "https://github.com/acme/example/issues/217#issuecomment-2",
+            testSummary: { status: "passed", total: 1, passed: 1 },
+          },
+        },
+      }),
+    });
+
+    const events = await readSseEventsUntil(sseRes, (seen) => seen.some((e) => e.event === "task-terminal"));
+    const terminal = events.find((e) => e.event === "task-terminal");
+    assert.ok(terminal);
+    assert.equal(terminal.id, "1");
+    const payload = JSON.parse(terminal.data);
+    assert.equal(payload.taskId, task.id);
+    assert.equal(payload.status, "succeeded");
+    assert.equal(payload.worker, "worker-a");
+    assert.equal(payload.repo, "acme/example");
+    assert.equal(payload.issue, 217);
+    assert.equal(payload.prUrl, "https://github.com/acme/example/pull/9");
+    assert.equal(payload.doneUrl, "https://github.com/acme/example/issues/217#issuecomment-2");
+    assert.deepEqual(payload.testSummary, { status: "passed", total: 1, passed: 1 });
+    const serialized = JSON.stringify(payload);
+    assert.ok(!serialized.includes("do not leak"));
+    assert.ok(!serialized.includes("secret"));
+
+    const replayRes = await fetch(`${server.baseUrl}/a2a/tasks/terminal-events`, {
+      headers: {
+        "x-a2a-edge-secret": "test-edge-secret",
+        "x-a2a-requester-id": "hub-a",
+        "x-a2a-requester-role": "hub",
+        "last-event-id": "0",
+        accept: "text/event-stream",
+      },
+    });
+    const replayed = await readSseEventsUntil(replayRes, (seen) => seen.some((e) => e.event === "task-terminal"));
+    assert.equal(replayed.find((e) => e.event === "task-terminal")?.id, "1");
+  } finally {
+    await server.close();
+  }
+});
+
 test("SSE /a2a/tasks/:id/events streams snapshot plus lifecycle updates and closes on terminal", async () => {
   const server = await startTestServer({ edgeSecret: "test-edge-secret" });
   try {

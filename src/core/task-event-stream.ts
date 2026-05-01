@@ -4,6 +4,8 @@ import type {
   TaskStatusEvent,
   TaskStatusEventKind,
   TaskStatusEventMetadata,
+  TerminalTaskEvent,
+  TerminalTaskTestSummary,
 } from "./task-events.js";
 
 /** Default cap on retained events. Older events are evicted FIFO when exceeded. */
@@ -44,6 +46,14 @@ const ACTION_TO_KIND: Partial<Record<AuditAction, TaskStatusEventKind>> = {
   "task.reassigned": "reassigned",
 };
 
+const TERMINAL_ACTIONS = new Set<AuditAction>([
+  "task.succeeded",
+  "task.failed",
+  "task.canceled",
+]);
+
+export type TerminalTaskEventListener = (event: TerminalTaskEvent) => void;
+
 /**
  * In-memory stream of {@link TaskStatusEvent}s with cursor-based replay and a
  * bounded FIFO retention buffer. The stream is fed from the broker's audit-event
@@ -53,12 +63,15 @@ const ACTION_TO_KIND: Partial<Record<AuditAction, TaskStatusEventKind>> = {
  */
 export class TaskEventStream {
   private readonly buffer: CursorEventBuffer<TaskStatusEvent>;
+  private readonly terminalBuffer: CursorEventBuffer<TerminalTaskEvent>;
+  private readonly terminalListeners = new Set<TerminalTaskEventListener>();
 
   constructor(options: TaskEventStreamOptions = {}) {
     const requested = options.maxEvents;
     const maxEvents =
       requested !== undefined && requested > 0 ? requested : DEFAULT_TASK_EVENT_RETENTION;
     this.buffer = new CursorEventBuffer<TaskStatusEvent>(maxEvents);
+    this.terminalBuffer = new CursorEventBuffer<TerminalTaskEvent>(maxEvents);
   }
 
   /**
@@ -75,7 +88,22 @@ export class TaskEventStream {
     if (!kind) return null;
 
     const event = this.buildEvent(kind, audit, task);
-    return this.buffer.push(event);
+    const pushed = this.buffer.push(event);
+    if (TERMINAL_ACTIONS.has(audit.action)) {
+      const terminalEvent = this.terminalBuffer.push(this.buildTerminalEvent(task));
+      for (const listener of [...this.terminalListeners]) {
+        try {
+          listener(terminalEvent);
+        } catch (error) {
+          console.error(
+            `[a2a-broker] terminal task event listener threw: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          );
+        }
+      }
+    }
+    return pushed;
   }
 
   /**
@@ -94,9 +122,30 @@ export class TaskEventStream {
     });
   }
 
+  /** Replay compact terminal task events with `id > afterId`. */
+  subscribeTerminal(options: { afterId?: number; limit?: number } = {}): TerminalTaskEvent[] {
+    return this.terminalBuffer.subscribe({
+      afterId: options.afterId,
+      limit: options.limit,
+    });
+  }
+
+  /** Subscribe to new terminal task events. Returns an unsubscribe function. */
+  onTerminal(listener: TerminalTaskEventListener): () => void {
+    this.terminalListeners.add(listener);
+    return () => {
+      this.terminalListeners.delete(listener);
+    };
+  }
+
   /** Largest event id ever assigned. Useful as the initial cursor. */
   get latestId(): number {
     return this.buffer.latestId;
+  }
+
+  /** Largest compact terminal event id ever assigned. Useful as the initial cursor. */
+  get latestTerminalId(): number {
+    return this.terminalBuffer.latestId;
   }
 
   /** Number of events currently retained (post FIFO eviction). */
@@ -131,4 +180,87 @@ export class TaskEventStream {
     if (task.parentTaskId) event.parentTaskId = task.parentTaskId;
     return event;
   }
+
+  private buildTerminalEvent(task: TaskRecord): TerminalTaskEvent {
+    const output = isRecord(task.result?.output) ? task.result.output : {};
+    const event: TerminalTaskEvent = {
+      id: this.terminalBuffer.allocateId(),
+      taskId: task.id,
+      status: task.status === "canceled" ? "canceled" : task.status === "failed" ? "failed" : "succeeded",
+      createdAt: task.createdAt,
+      updatedAt: task.updatedAt,
+    };
+    if (task.completedAt) event.completedAt = task.completedAt;
+    if (task.claimedBy) event.worker = task.claimedBy;
+    else if (task.assignedWorkerId) event.worker = task.assignedWorkerId;
+
+    const repo = firstString(task.payload?.["githubRepo"], task.payload?.["repo"], output["repo"]);
+    if (repo) event.repo = repo;
+    const issue = firstFiniteNumber(task.payload?.["githubIssueNumber"], task.payload?.["issue"], output["issue"]);
+    if (issue !== undefined) event.issue = issue;
+
+    const prUrl = firstHttpUrl(output["prUrl"], output["pullRequestUrl"], task.payload?.["prUrl"]);
+    if (prUrl) event.prUrl = prUrl;
+    const doneUrl = firstHttpUrl(output["doneUrl"], task.payload?.["doneUrl"]);
+    if (doneUrl) event.doneUrl = doneUrl;
+    const blockUrl = firstHttpUrl(output["blockUrl"], task.payload?.["blockUrl"]);
+    if (blockUrl) event.blockUrl = blockUrl;
+
+    const testSummary = normalizeTestSummary(output["testSummary"]);
+    if (testSummary) event.testSummary = testSummary;
+    return event;
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function firstString(...values: unknown[]): string | undefined {
+  for (const value of values) {
+    if (typeof value === "string" && value.length > 0 && value.length <= 200) {
+      return value;
+    }
+  }
+  return undefined;
+}
+
+function firstFiniteNumber(...values: unknown[]): number | undefined {
+  for (const value of values) {
+    if (typeof value === "number" && Number.isFinite(value)) return value;
+  }
+  return undefined;
+}
+
+function firstHttpUrl(...values: unknown[]): string | undefined {
+  for (const value of values) {
+    if (typeof value !== "string" || value.length > 500) continue;
+    try {
+      const url = new URL(value);
+      if (url.protocol === "https:" || url.protocol === "http:") return url.toString();
+    } catch {
+      // Ignore malformed or non-URL strings.
+    }
+  }
+  return undefined;
+}
+
+function normalizeTestSummary(value: unknown): TerminalTaskTestSummary | undefined {
+  if (!isRecord(value)) return undefined;
+  const summary: TerminalTaskTestSummary = {};
+  const status = value["status"];
+  if (status === "passed" || status === "failed" || status === "skipped" || status === "unknown") {
+    summary.status = status;
+  }
+  for (const key of ["total", "passed", "failed", "skipped"] as const) {
+    const count = value[key];
+    if (typeof count === "number" && Number.isInteger(count) && count >= 0) {
+      summary[key] = count;
+    }
+  }
+  const text = value["summary"];
+  if (typeof text === "string" && text.length > 0) {
+    summary.summary = text.replace(/[\r\n]+/g, " ").slice(0, 300);
+  }
+  return Object.keys(summary).length > 0 ? summary : undefined;
 }

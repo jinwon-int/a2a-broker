@@ -57,3 +57,36 @@ export interface TaskStatusEvent {
   /** Operator-safe metadata. Never contains raw prompts or session text. */
   metadata: TaskStatusEventMetadata;
 }
+
+export type TerminalTaskEventStatus = "succeeded" | "failed" | "canceled" | "blocked";
+
+export interface TerminalTaskTestSummary {
+  status?: "passed" | "failed" | "skipped" | "unknown";
+  total?: number;
+  passed?: number;
+  failed?: number;
+  skipped?: number;
+  summary?: string;
+}
+
+/**
+ * Compact, operator-safe event emitted only when a task reaches a terminal state.
+ * This is intentionally not a TaskRecord dump: no prompt/message, raw payload,
+ * raw logs, local paths, or arbitrary worker output are included.
+ */
+export interface TerminalTaskEvent {
+  /** Monotonically increasing broker-local event id for SSE replay/deduplication. */
+  id: number;
+  taskId: string;
+  status: TerminalTaskEventStatus;
+  worker?: string;
+  repo?: string;
+  issue?: number;
+  prUrl?: string;
+  doneUrl?: string;
+  blockUrl?: string;
+  testSummary?: TerminalTaskTestSummary;
+  createdAt: string;
+  updatedAt: string;
+  completedAt?: string;
+}
