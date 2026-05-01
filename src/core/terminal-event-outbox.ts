@@ -2,8 +2,11 @@ import type { TaskRecord, TaskStatus } from "./types.js";
 import type { TaskStatusEvent } from "./task-events.js";
 
 const TERMINAL_TASK_STATUSES = new Set<TaskStatus>(["succeeded", "failed", "canceled", "blocked"]);
+const TERMINAL_TASK_EVENT_KINDS = new Set<TaskStatusEvent["kind"]>(["succeeded", "failed", "canceled"]);
 const URL_KEYS = ["prUrl", "doneUrl", "blockUrl"] as const;
 const MAX_SUMMARY_CHARS = 500;
+
+export const DEFAULT_TERMINAL_TASK_OUTBOX_RETENTION = 1000;
 
 export type TerminalTaskEventKind = "task.terminal";
 export type TerminalTaskStatus = Extract<TaskStatus, "succeeded" | "failed" | "canceled" | "blocked">;
@@ -24,7 +27,7 @@ export interface TerminalTaskEventPayload {
 }
 
 export interface TerminalTaskOutboxEvent {
-  /** Stable id for webhook delivery dedupe/replay. */
+  /** Stable id for external notifier dedupe/replay. */
   id: string;
   kind: TerminalTaskEventKind;
   taskEventId: number;
@@ -39,17 +42,36 @@ export interface TerminalTaskOutboxSubscribeOptions {
   limit?: number;
 }
 
+export interface TerminalTaskEventOutboxOptions {
+  /** Maximum retained outbox records. Older records are evicted FIFO. */
+  maxEvents?: number;
+}
+
 /**
  * Durable-delivery projection for terminal task events. The class owns the
  * compact, operator-safe payload that future webhook/SSE dispatchers should use;
  * callers can replay by stable event id and repeated enqueue is idempotent.
+ *
+ * This outbox only stores broker-local records. It never calls Telegram (or any
+ * other external transport); seoseo/OpenClaw plugin-notifier owns delivery to
+ * operator Telegram/main-session surfaces.
  */
 export class TerminalTaskEventOutbox {
   private readonly events: TerminalTaskOutboxEvent[] = [];
   private readonly seen = new Set<string>();
+  private readonly seenOrder: string[] = [];
+  private readonly maxEvents: number;
+  private readonly maxSeen: number;
+
+  constructor(options: TerminalTaskEventOutboxOptions = {}) {
+    this.maxEvents = normalizePositiveInt(options.maxEvents, DEFAULT_TERMINAL_TASK_OUTBOX_RETENTION);
+    this.maxSeen = this.maxEvents * 2;
+  }
 
   enqueue(taskEvent: TaskStatusEvent, task: TaskRecord): TerminalTaskOutboxEvent | null {
+    if (!TERMINAL_TASK_EVENT_KINDS.has(taskEvent.kind)) return null;
     if (!isTerminalStatus(task.status)) return null;
+    if (taskEvent.status !== task.status) return null;
     if (taskEvent.taskId !== task.id) return null;
 
     const id = formatTerminalTaskEventId(task.id, task.status, task.completedAt ?? task.updatedAt);
@@ -66,7 +88,8 @@ export class TerminalTaskEventOutbox {
       attempts: 0,
     };
     this.events.push(event);
-    this.seen.add(id);
+    this.markSeen(id);
+    this.enforceRetention();
     return event;
   }
 
@@ -82,8 +105,36 @@ export class TerminalTaskEventOutbox {
       : events;
   }
 
+  /**
+   * Mark an outbox record as acknowledged by an external notifier. The record
+   * remains replayable until normal retention evicts it, and the stable id keeps
+   * repeated enqueue/ack operations idempotent.
+   */
+  acknowledge(id: string, deliveredAt = new Date().toISOString()): TerminalTaskOutboxEvent | null {
+    const event = this.events.find((candidate) => candidate.id === id);
+    if (!event) return null;
+    event.deliveredAt = deliveredAt;
+    event.attempts += 1;
+    return event;
+  }
+
   get size(): number {
     return this.events.length;
+  }
+
+  private markSeen(id: string): void {
+    this.seen.add(id);
+    this.seenOrder.push(id);
+    while (this.seenOrder.length > this.maxSeen) {
+      const evicted = this.seenOrder.shift();
+      if (evicted) this.seen.delete(evicted);
+    }
+  }
+
+  private enforceRetention(): void {
+    if (this.events.length > this.maxEvents) {
+      this.events.splice(0, this.events.length - this.maxEvents);
+    }
   }
 }
 
@@ -137,4 +188,8 @@ function sanitizeSummary(value: unknown): string | undefined {
     .replace(/(^|\s)(?:[A-Za-z]:)?\/[\w./-]+/g, "$1[path]")
     .replace(/\s+/g, " ")
     .slice(0, MAX_SUMMARY_CHARS);
+}
+
+function normalizePositiveInt(value: number | undefined, fallback: number): number {
+  return typeof value === "number" && Number.isInteger(value) && value > 0 ? value : fallback;
 }

@@ -309,4 +309,64 @@ describe("TerminalTaskEventOutbox", () => {
     assert.equal(replay[0]!.payload.taskId, "task-two");
     assert.equal(replay[0]!.payload.status, "succeeded");
   });
+
+  it("acknowledges delivered terminal records without removing replay state", () => {
+    const broker = new InMemoryA2ABroker();
+    registerWorker(broker);
+    const task = createTask(broker, { id: "ack-task" });
+
+    broker.claimTask(task.id, "worker-1");
+    broker.completeTask(task.id, "worker-1", { summary: "done" });
+
+    const outbox = broker.getTerminalTaskEventOutbox();
+    const [event] = outbox.subscribe();
+    assert.ok(event);
+
+    const deliveredAt = "2026-05-01T00:00:00.000Z";
+    const acked = outbox.acknowledge(event.id, deliveredAt);
+    assert.ok(acked);
+    assert.equal(acked.deliveredAt, deliveredAt);
+    assert.equal(acked.attempts, 1);
+    assert.equal(outbox.acknowledge("missing"), null);
+
+    const replayed = outbox.subscribe()[0];
+    assert.equal(replayed!.id, event.id);
+    assert.equal(replayed!.deliveredAt, deliveredAt);
+    assert.equal(replayed!.attempts, 1);
+  });
+
+  it("keeps terminal outbox retention bounded", () => {
+    const broker = new InMemoryA2ABroker(undefined, undefined, { maxTerminalTaskOutboxEvents: 2 });
+    registerWorker(broker);
+
+    for (const id of ["retain-1", "retain-2", "retain-3"]) {
+      const task = createTask(broker, { id });
+      broker.claimTask(task.id, "worker-1");
+      broker.completeTask(task.id, "worker-1", { summary: `done ${id}` });
+    }
+
+    const retained = broker.getTerminalTaskEventOutbox().subscribe();
+    assert.equal(retained.length, 2);
+    assert.deepEqual(
+      retained.map((event) => event.payload.taskId),
+      ["retain-2", "retain-3"],
+    );
+  });
+
+  it("excludes worker heartbeats and approval-blocked creation noise from the terminal outbox", () => {
+    const broker = new InMemoryA2ABroker();
+    registerWorker(broker, "worker-a");
+
+    broker.heartbeatWorker("worker-a", { metadata: { check: "alive" } });
+    const blocked = broker.createTask({
+      intent: "apply_local_change",
+      requester: { id: "analyst-a", kind: "node", role: "analyst" },
+      target: { id: "worker-a", kind: "node", role: "live-trader" },
+      workspace: { nodeId: "worker-a", workspaceId: "test" },
+      message: "apply live patch",
+    });
+
+    assert.equal(blocked.status, "blocked");
+    assert.equal(broker.getTerminalTaskEventOutbox().subscribe().length, 0);
+  });
 });
