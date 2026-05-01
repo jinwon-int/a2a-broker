@@ -161,8 +161,8 @@ function buildTerminalTaskPayload(task: TaskRecord): TerminalTaskEventPayload {
   const issue = task.payload["githubIssueNumber"];
   if (typeof issue === "number" && Number.isFinite(issue)) payload.issue = issue;
   for (const key of URL_KEYS) {
-    const value = output[key];
-    if (typeof value === "string" && isSafeHttpUrl(value)) payload[key] = value;
+    const value = firstSafeHttpUrl(output[key], task.payload[key]);
+    if (value) payload[key] = value;
   }
   const summary = task.result?.summary ?? task.result?.note ?? task.error?.message;
   const safeSummary = sanitizeSummary(summary);
@@ -171,13 +171,17 @@ function buildTerminalTaskPayload(task: TaskRecord): TerminalTaskEventPayload {
   return payload;
 }
 
-function isSafeHttpUrl(value: string): boolean {
-  try {
-    const url = new URL(value);
-    return url.protocol === "https:" || url.protocol === "http:";
-  } catch {
-    return false;
+function firstSafeHttpUrl(...values: unknown[]): string | undefined {
+  for (const value of values) {
+    if (typeof value !== "string") continue;
+    try {
+      const url = new URL(value);
+      if (url.protocol === "https:" || url.protocol === "http:") return value;
+    } catch {
+      // Ignore malformed or local path evidence.
+    }
   }
+  return undefined;
 }
 
 function sanitizeSummary(value: unknown): string | undefined {
@@ -185,6 +189,8 @@ function sanitizeSummary(value: unknown): string | undefined {
   const trimmed = value.trim();
   if (!trimmed) return undefined;
   return trimmed
+    .replace(/\b(?:ghp|gho|ghu|ghs|github_pat|sk|xox[abp])-[-_A-Za-z0-9]+\b/g, "[redacted]")
+    .replace(/\b(token|secret|password|api[_-]?key)\s*[:=]\s*\S+/gi, "$1=[redacted]")
     .replace(/(^|\s)(?:[A-Za-z]:)?\/[\w./-]+/g, "$1[path]")
     .replace(/\s+/g, " ")
     .slice(0, MAX_SUMMARY_CHARS);

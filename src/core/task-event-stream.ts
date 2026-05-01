@@ -5,6 +5,7 @@ import type {
   TaskStatusEventKind,
   TaskStatusEventMetadata,
   TerminalTaskEvent,
+  TerminalTaskEventStatus,
   TerminalTaskTestSummary,
 } from "./task-events.js";
 
@@ -51,6 +52,12 @@ const TERMINAL_ACTIONS = new Set<AuditAction>([
   "task.failed",
   "task.canceled",
 ]);
+const NOTIFIABLE_TERMINAL_STATUSES = new Set<TerminalTaskEventStatus>([
+  "succeeded",
+  "failed",
+  "canceled",
+  "blocked",
+]);
 
 export type TerminalTaskEventListener = (event: TerminalTaskEvent) => void;
 
@@ -89,7 +96,7 @@ export class TaskEventStream {
 
     const event = this.buildEvent(kind, audit, task);
     const pushed = this.buffer.push(event);
-    if (TERMINAL_ACTIONS.has(audit.action)) {
+    if (TERMINAL_ACTIONS.has(audit.action) || isNotifiableTerminalStatus(task.status)) {
       const terminalEvent = this.terminalBuffer.push(this.buildTerminalEvent(task));
       for (const listener of [...this.terminalListeners]) {
         try {
@@ -186,7 +193,7 @@ export class TaskEventStream {
     const event: TerminalTaskEvent = {
       id: this.terminalBuffer.allocateId(),
       taskId: task.id,
-      status: task.status === "canceled" ? "canceled" : task.status === "failed" ? "failed" : "succeeded",
+      status: isNotifiableTerminalStatus(task.status) ? task.status : "succeeded",
       createdAt: task.createdAt,
       updatedAt: task.updatedAt,
     };
@@ -245,6 +252,10 @@ function firstHttpUrl(...values: unknown[]): string | undefined {
   return undefined;
 }
 
+function isNotifiableTerminalStatus(status: unknown): status is TerminalTaskEventStatus {
+  return typeof status === "string" && NOTIFIABLE_TERMINAL_STATUSES.has(status as TerminalTaskEventStatus);
+}
+
 function normalizeTestSummary(value: unknown): TerminalTaskTestSummary | undefined {
   if (!isRecord(value)) return undefined;
   const summary: TerminalTaskTestSummary = {};
@@ -260,7 +271,17 @@ function normalizeTestSummary(value: unknown): TerminalTaskTestSummary | undefin
   }
   const text = value["summary"];
   if (typeof text === "string" && text.length > 0) {
-    summary.summary = text.replace(/[\r\n]+/g, " ").slice(0, 300);
+    summary.summary = sanitizeOperatorText(text).slice(0, 300);
   }
   return Object.keys(summary).length > 0 ? summary : undefined;
+}
+
+function sanitizeOperatorText(value: string): string {
+  return value
+    .replace(/\b(?:ghp|gho|ghu|ghs|github_pat|sk|xox[abp])-[-_A-Za-z0-9]+\b/g, "[redacted]")
+    .replace(/\b(token|secret|password|api[_-]?key)\s*[:=]\s*\S+/gi, "$1=[redacted]")
+    .replace(/(^|\s)(?:[A-Za-z]:)?\/[\w./-]+/g, "$1[path]")
+    .replace(/[\r\n]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 }
