@@ -197,4 +197,51 @@ describe("TaskEventStream", () => {
       [2, 3],
     );
   });
+
+  it("emits compact terminal events with safe evidence fields and replay ids", () => {
+    const broker = new InMemoryA2ABroker();
+    registerWorker(broker);
+    const task = createTask(broker, {
+      payload: {
+        githubRepo: "acme/example",
+        githubIssueNumber: 217,
+        sessionPrompt: "do-not-leak",
+      },
+    });
+    broker.claimTask(task.id, "worker-1");
+    broker.startTask(task.id, "worker-1");
+    broker.completeTask(task.id, "worker-1", {
+      summary: "raw summary should not be used as logs",
+      output: {
+        prUrl: "https://github.com/acme/example/pull/9",
+        doneUrl: "https://github.com/acme/example/issues/217#issuecomment-1",
+        privatePath: "/home/alice/secret",
+        testSummary: { status: "passed", total: 3, passed: 3, summary: "npm test ok\nno raw logs" },
+      },
+    });
+
+    const stream = broker.getTaskEventStream();
+    const terminalEvents = stream.subscribeTerminal();
+    assert.equal(terminalEvents.length, 1);
+    assert.deepEqual(terminalEvents[0], {
+      id: 1,
+      taskId: task.id,
+      status: "succeeded",
+      worker: "worker-1",
+      repo: "acme/example",
+      issue: 217,
+      prUrl: "https://github.com/acme/example/pull/9",
+      doneUrl: "https://github.com/acme/example/issues/217#issuecomment-1",
+      testSummary: { status: "passed", total: 3, passed: 3, summary: "npm test ok no raw logs" },
+      createdAt: terminalEvents[0]!.createdAt,
+      updatedAt: terminalEvents[0]!.updatedAt,
+      completedAt: terminalEvents[0]!.completedAt,
+    });
+    assert.deepEqual(stream.subscribeTerminal({ afterId: 1 }), []);
+    const serialized = JSON.stringify(terminalEvents[0]);
+    assert.ok(!serialized.includes("sessionPrompt"));
+    assert.ok(!serialized.includes("do-not-leak"));
+    assert.ok(!serialized.includes("privatePath"));
+    assert.ok(!serialized.includes("/home/alice"));
+  });
 });

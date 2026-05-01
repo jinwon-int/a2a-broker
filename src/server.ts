@@ -710,6 +710,21 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
 
       if (
         req.method === "GET" &&
+        path === "/a2a/tasks/terminal-events"
+      ) {
+        if (enforceRequesterIdentity) {
+          assertRequesterHasRole(requesterIdentity, ["hub", "operator"], "task-terminal.subscribe");
+        }
+
+        handleTerminalTaskEventStream(req, res, {
+          broker,
+          heartbeatMs: taskSubscribeHeartbeatSec * 1000,
+        });
+        return;
+      }
+
+      if (
+        req.method === "GET" &&
         path === "/a2a/operator/events"
       ) {
         if (enforceRequesterIdentity) {
@@ -2398,6 +2413,61 @@ function writeSseEvent(
   }
   res.write(`event: ${event}\n`);
   res.write(`data: ${JSON.stringify(data)}\n\n`);
+}
+
+function handleTerminalTaskEventStream(
+  req: IncomingMessage,
+  res: ServerResponse<IncomingMessage>,
+  params: {
+    broker: InMemoryA2ABroker;
+    heartbeatMs: number;
+  },
+): void {
+  const { broker, heartbeatMs } = params;
+  const stream = broker.getTaskEventStream();
+
+  writeSseResponseHeaders(res);
+
+  const lastEventIdHeader = req.headers["last-event-id"] as string | undefined;
+  const replayAfterId = lastEventIdHeader ? Number(lastEventIdHeader) : -1;
+  const afterId = Number.isFinite(replayAfterId) && replayAfterId >= 0 ? replayAfterId : -1;
+
+  for (const event of stream.subscribeTerminal({ afterId })) {
+    writeSseEvent(res, "task-terminal", event, String(event.id));
+  }
+
+  let heartbeatTimer: NodeJS.Timeout | null = null;
+  let unsubscribe: (() => void) | null = null;
+
+  const cleanup = (): void => {
+    if (heartbeatTimer) {
+      clearInterval(heartbeatTimer);
+      heartbeatTimer = null;
+    }
+    if (unsubscribe) {
+      unsubscribe();
+      unsubscribe = null;
+    }
+  };
+
+  unsubscribe = stream.onTerminal((event) => {
+    writeSseEvent(res, "task-terminal", event, String(event.id));
+  });
+
+  req.on("close", () => {
+    cleanup();
+    if (!res.writableEnded) {
+      res.end();
+    }
+  });
+
+  heartbeatTimer = setInterval(() => {
+    if (res.writableEnded) {
+      cleanup();
+      return;
+    }
+    res.write(`: heartbeat ${new Date().toISOString()}\n\n`);
+  }, heartbeatMs);
 }
 
 function handleTaskEventStream(
