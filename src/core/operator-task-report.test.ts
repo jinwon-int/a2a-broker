@@ -182,6 +182,45 @@ test("surfaces failed task with block evidence and issue scoping", () => {
   assert.match(report.items[0].reportLine, /jinwon-int\/a2a-broker#203/);
 });
 
+test("projects partial GitHub evidence from failed docker runner details without raw stdout", () => {
+  const report = buildOperatorTaskReport([
+    task({
+      id: "fail-partial-1",
+      status: "failed",
+      completedAt: "2026-05-01T00:05:00.000Z",
+      updatedAt: "2026-05-01T00:05:00.000Z",
+      error: {
+        code: "docker_runner_failed",
+        message: "runner evidence upload failed after agent completed",
+        details: {
+          runnerTask: {
+            repo: "jinwon-int/a2a-broker",
+            issue: "#208",
+            issueUrl: "https://github.com/jinwon-int/a2a-broker/issues/208",
+          },
+          runnerResult: {
+            ok: false,
+            status: "failed",
+            error: "github evidence step failed",
+            stdout: "opened https://github.com/jinwon-int/a2a-broker/pull/321 from /work/repo and token ghp_should_not_leak",
+            branchUrl: "https://github.com/jinwon-int/a2a-broker/tree/a2a-patch-208",
+          },
+        },
+      },
+    }),
+  ], { nowMs: Date.parse("2026-05-01T00:06:00.000Z") });
+
+  const item = report.items[0];
+  assert.equal(item.status, "failed");
+  assert.equal(item.github?.partial, true);
+  assert.equal(item.github?.repo, "jinwon-int/a2a-broker");
+  assert.equal(item.github?.issue, "#208");
+  assert.equal(item.github?.prUrl, "https://github.com/jinwon-int/a2a-broker/pull/321");
+  assert.equal(item.github?.branchUrl, "https://github.com/jinwon-int/a2a-broker/tree/a2a-patch-208");
+  assert.match(item.nextAction ?? "", /review recovered PR evidence/);
+  assert.doesNotMatch(JSON.stringify(item), /ghp_should_not_leak|\/work\/repo/);
+});
+
 test("returns undefined evidence when output has no GitHub fields", () => {
   const report = buildOperatorTaskReport([
     task({
