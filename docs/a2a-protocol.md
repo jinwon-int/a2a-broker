@@ -296,12 +296,16 @@ Authorization:
 ## Status read behavior
 
 - HTTP: `GET /tasks/:id` returns the full `TaskRecord`. `GET /tasks`
-  with the filters in `TaskListFilters` returns a list (intended for
-  operator and hub callers, not high-fan-out plugin polling — see
-  rate-limit notes in `docs/v1-acceptance-handoff.md`).
+  with the filters in `TaskListFilters` returns lightweight task summaries
+  for operator and hub list views; large `payload`, `result.output`, and
+  `error.details` fields stay on the detail endpoint. Operators that need the
+  legacy full list shape can request `GET /tasks?detail=full`, but high-fan-out
+  plugin polling should prefer filters and task detail reads (see rate-limit notes
+  in `docs/v1-acceptance-handoff.md`).
 - JSON-RPC: `GetTask { taskId }` returns
   `{ task: A2ATaskProjection }`. `ListTasks` accepts the same
-  filters.
+  filters and returns lightweight projections with `metadata.resultSummary`
+  instead of the full `metadata.result` payload.
 - Live: `GET /a2a/tasks/:id/events` (SSE) and the JSON-RPC
   `SubscribeToTask` advisory call, plus `GET /a2a/operator/events`
   for operator summary subscribers. See "Event model" and

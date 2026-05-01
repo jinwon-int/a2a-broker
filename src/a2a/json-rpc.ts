@@ -3,7 +3,7 @@ import type { RequesterIdentity } from "../core/request-security.js";
 import type { A2AExchangeVia, TaskListFilters } from "../core/types.js";
 import type { AgentCard } from "./agent-card.js";
 import { PEER_STATUS_VERBOSE_SCOPE, PeerStatusService, type PeerStatusRequest } from "./peer-status.js";
-import { projectBrokerTask } from "./task-projection.js";
+import { projectBrokerTask, projectBrokerTaskForList } from "./task-projection.js";
 
 export type JsonRpcId = string | number | null;
 
@@ -76,7 +76,7 @@ export function executeA2AJsonRpc(
 
       case "ListTasks": {
         const filters = parseListTaskFilters(params);
-        const tasks = options.broker.listTasks(filters).map(projectBrokerTask);
+        const tasks = options.broker.listTasks(filters).map(projectBrokerTaskForList);
         return success(id, { tasks });
       }
 
