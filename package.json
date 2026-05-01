@@ -16,6 +16,7 @@
     "dev": "node --watch --enable-source-maps src/server.ts",
     "dev:worker": "node --watch --enable-source-maps src/worker.ts",
     "release_gate": "node scripts/release-gate.mjs",
+    "docker_runtime_preflight": "node scripts/docker-runtime-preflight.mjs",
     "rollout_guard": "node scripts/worker-artifact-rollout-guard.mjs"
   
   },
