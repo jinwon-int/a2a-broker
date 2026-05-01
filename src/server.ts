@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type RequestListener, type Server, type ServerResponse } from "node:http";
 
 import { createBrokerAgentCard, type AgentCard } from "./a2a/agent-card.js";
@@ -110,6 +111,18 @@ interface DashboardAttentionSummary {
   items: DashboardAttentionItem[];
 }
 
+export interface BrokerBuildInfo {
+  component: string;
+  revision: string;
+  source: string;
+  builtAt?: string;
+  runtime?: string;
+  image?: {
+    tag?: string;
+    digest?: string;
+  };
+}
+
 interface OperatorTaskStatusSummary {
   total: number;
   active: number;
@@ -162,6 +175,8 @@ interface OperatorDashboardSnapshot {
 }
 
 type OperatorSummary = BrokerDashboard & {
+  version: string;
+  build: BrokerBuildInfo;
   staleReaper: BrokerStaleReaperStatus;
   requestPressure: {
     general: RateLimitPressureSnapshot;
@@ -256,6 +271,17 @@ export interface BrokerServerOptions {
    * canary proof validates the Round 7 wake-layer rollout. Env: `A2A_PEER_STATUS_ENABLED`.
    */
   peerStatusEnabled?: boolean;
+  /**
+   * Optional deployment/build revision to expose on health and operator status surfaces.
+   * Env priority: `A2A_BROKER_REVISION`, `BROKER_RELEASE_REVISION`, `RELEASE_REVISION`.
+   */
+  buildRevision?: string;
+  /** Backward-compatible alias for older draft callers. Prefer `buildRevision`. */
+  releaseRevision?: string;
+  /** Optional broker version override. Defaults to package metadata. Env: `A2A_BROKER_VERSION`. */
+  version?: string;
+  /** Optional generated build-info JSON path. Defaults to bundled `dist/build-info.json` when present. */
+  buildInfoFile?: string;
 }
 
 export interface BrokerStaleReaperStatus {
@@ -306,6 +332,8 @@ export interface BrokerServerRuntime {
     maxRequeueAttempts: number;
     taskSubscribeHeartbeatSec: number;
     peerStatusEnabled: boolean;
+    version: string;
+    build: BrokerBuildInfo;
   };
 }
 
@@ -367,6 +395,7 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
   );
   const peerStatusEnabled =
     options.peerStatusEnabled ?? resolveBooleanEnv(process.env.A2A_PEER_STATUS_ENABLED, false);
+  const buildInfo = resolveBrokerBuildInfo(options, serviceName);
 
   const stateStore =
     options.stateStore ??
@@ -519,6 +548,8 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
       getStaleReaperStatus,
       rateLimiter,
       workerRateLimiter,
+      version: buildInfo.version,
+      build: buildInfo.build,
     }),
     alerts: buildAlertScan({
       broker,
@@ -636,6 +667,8 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
         return sendJson(res, 200, {
           ok: true,
           service: serviceName,
+          version: buildInfo.version,
+          build: buildInfo.build,
           publicBaseUrl,
           uptimeSec: Math.round(process.uptime()),
           persistence: stateStore.getPersistenceInfo?.() ?? {
@@ -754,6 +787,8 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
           getStaleReaperStatus,
           rateLimiter,
           workerRateLimiter,
+          version: buildInfo.version,
+          build: buildInfo.build,
           recentHistoryLimit: recentLimit,
           oldestPendingLimit,
           pendingActionLimit,
@@ -1334,6 +1369,8 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
       maxRequeueAttempts,
       taskSubscribeHeartbeatSec,
       peerStatusEnabled,
+      version: buildInfo.version,
+      build: buildInfo.build,
     },
   };
 }
@@ -1414,6 +1451,110 @@ function resolveBooleanEnv(value: string | undefined, fallback: boolean): boolea
     return false;
   }
   return fallback;
+}
+
+function resolveBrokerBuildInfo(options: BrokerServerOptions, serviceName: string): { version: string; build: BrokerBuildInfo } {
+  const generated = readGeneratedBuildInfo(options.buildInfoFile);
+  const version = sanitizeBuildToken(options.version ?? process.env.A2A_BROKER_VERSION ?? generated.version ?? readPackageVersion(), {
+    fallback: "0.0.0",
+    unsafeFallback: "0.0.0",
+  }) ?? "0.0.0";
+  const revision = sanitizeBuildToken(
+    options.buildRevision ??
+      options.releaseRevision ??
+      process.env.A2A_BROKER_REVISION ??
+      process.env.BROKER_RELEASE_REVISION ??
+      process.env.RELEASE_REVISION ??
+      generated.revision,
+    { fallback: "unknown", unsafeFallback: "redacted" },
+  ) ?? "unknown";
+  const source = sanitizeBuildSource(process.env.A2A_BROKER_SOURCE ?? generated.source ?? "github.com/jinwon-int/a2a-broker");
+  const builtAt = sanitizeIsoTimestamp(process.env.A2A_BROKER_BUILT_AT ?? generated.builtAt);
+  const runtime = sanitizeBuildToken(process.env.A2A_BROKER_RUNTIME ?? generated.runtime, {
+    fallback: undefined,
+    unsafeFallback: undefined,
+  });
+  const imageTag = sanitizeBuildToken(process.env.A2A_BROKER_IMAGE_TAG ?? generated.image?.tag, {
+    fallback: undefined,
+    unsafeFallback: undefined,
+  });
+  const imageDigest = sanitizeImageDigest(process.env.A2A_BROKER_IMAGE_DIGEST ?? generated.image?.digest);
+
+  const image = imageTag || imageDigest ? { ...(imageTag ? { tag: imageTag } : {}), ...(imageDigest ? { digest: imageDigest } : {}) } : undefined;
+
+  return {
+    version,
+    build: {
+      component: serviceName,
+      revision,
+      source,
+      ...(builtAt ? { builtAt } : {}),
+      ...(runtime ? { runtime } : {}),
+      ...(image ? { image } : {}),
+    },
+  };
+}
+
+function readGeneratedBuildInfo(path?: string): Partial<BrokerBuildInfo & { version: string }> {
+  const candidates = path ? [path] : [new URL("./build-info.json", import.meta.url)];
+  for (const candidate of candidates) {
+    try {
+      const parsed = JSON.parse(readFileSync(candidate, "utf8")) as Partial<BrokerBuildInfo & { version: string }>;
+      if (parsed && typeof parsed === "object") {
+        return parsed;
+      }
+    } catch {
+      // Generated build-info is optional in local/dev runs.
+    }
+  }
+  return {};
+}
+
+function readPackageVersion(): string | undefined {
+  try {
+    const parsed = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { version?: string };
+    return parsed.version;
+  } catch {
+    return undefined;
+  }
+}
+
+function sanitizeBuildToken(value: string | undefined, options: { fallback: string | undefined; unsafeFallback: string | undefined }): string | undefined {
+  const normalized = value?.trim();
+  if (!normalized) {
+    return options.fallback;
+  }
+  if (!/^[A-Za-z0-9][A-Za-z0-9._:+-]{0,127}$/.test(normalized)) {
+    return options.unsafeFallback;
+  }
+  return normalized;
+}
+
+function sanitizeBuildSource(value: string | undefined): string {
+  const normalized = value?.trim();
+  if (!normalized || normalized.length > 128) {
+    return "github.com/jinwon-int/a2a-broker";
+  }
+  if (!/^(https:\/\/github\.com\/jinwon-int\/a2a-broker|github\.com\/jinwon-int\/a2a-broker)$/.test(normalized)) {
+    return "github.com/jinwon-int/a2a-broker";
+  }
+  return normalized.replace(/^https:\/\//, "");
+}
+
+function sanitizeIsoTimestamp(value: string | undefined): string | undefined {
+  const normalized = value?.trim();
+  if (!normalized || normalized.length > 32) {
+    return undefined;
+  }
+  return /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/.test(normalized) ? normalized : undefined;
+}
+
+function sanitizeImageDigest(value: string | undefined): string | undefined {
+  const normalized = value?.trim();
+  if (!normalized) {
+    return undefined;
+  }
+  return /^sha256:[a-fA-F0-9]{64}$/.test(normalized) ? normalized.toLowerCase() : undefined;
 }
 
 function normalizePersistenceBackend(value: string | undefined): "json-file" | "sqlite" {
@@ -2299,6 +2440,8 @@ function buildDashboardResponse(input: {
   getStaleReaperStatus: () => BrokerStaleReaperStatus;
   rateLimiter: InMemoryRateLimiter;
   workerRateLimiter: InMemoryRateLimiter;
+  version: string;
+  build: BrokerBuildInfo;
   recentHistoryLimit?: number;
   oldestPendingLimit?: number;
   pendingActionLimit?: number;
@@ -2316,6 +2459,8 @@ function buildDashboardResponse(input: {
   };
   return {
     ...dashboard,
+    version: input.version,
+    build: input.build,
     staleReaper,
     requestPressure,
     attention: buildDashboardAttention({

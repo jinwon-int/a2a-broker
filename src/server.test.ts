@@ -67,6 +67,28 @@ function jsonHeaders(headers: Record<string, string> = {}): Record<string, strin
   };
 }
 
+async function withEnv<T>(patch: Record<string, string | undefined>, run: () => Promise<T>): Promise<T> {
+  const previous = new Map(Object.keys(patch).map((key) => [key, process.env[key]]));
+  for (const [key, value] of Object.entries(patch)) {
+    if (value === undefined) {
+      delete process.env[key];
+    } else {
+      process.env[key] = value;
+    }
+  }
+  try {
+    return await run();
+  } finally {
+    for (const [key, value] of previous) {
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+  }
+}
+
 async function registerTestWorker(
   baseUrl: string,
   nodeId: string,
@@ -125,6 +147,87 @@ test("server requires a real PUBLIC_BASE_URL", () => {
       }),
     /PUBLIC_BASE_URL is required/,
   );
+});
+
+test("server surfaces env-injected broker version/build revision on health and dashboard status", async () => {
+  await withEnv({
+    A2A_BROKER_REVISION: "78b2b42fca6e",
+    A2A_BROKER_VERSION: "0.2.3",
+    A2A_BROKER_SOURCE: undefined,
+    A2A_BROKER_BUILT_AT: undefined,
+    A2A_BROKER_RUNTIME: undefined,
+    A2A_BROKER_IMAGE_TAG: undefined,
+    A2A_BROKER_IMAGE_DIGEST: undefined,
+  }, async () => {
+    const server = await startTestServer({ buildInfoFile: "/dev/null" });
+    try {
+      assert.equal(server.runtime.config.version, "0.2.3");
+      assert.equal(server.runtime.config.build.revision, "78b2b42fca6e");
+
+      const healthRes = await fetch(`${server.baseUrl}/health`);
+      assert.equal(healthRes.status, 200);
+      const health = await healthRes.json();
+      assert.equal(health.version, "0.2.3");
+      assert.deepEqual(health.build, {
+        component: "a2a-broker",
+        revision: "78b2b42fca6e",
+        source: "github.com/jinwon-int/a2a-broker",
+      });
+
+      const dashboardRes = await fetch(`${server.baseUrl}/dashboard`, {
+        headers: {
+          "x-a2a-requester-id": "operator-a",
+          "x-a2a-requester-role": "operator",
+        },
+      });
+      assert.equal(dashboardRes.status, 200);
+      const dashboard = await dashboardRes.json();
+      assert.equal(dashboard.version, health.version);
+      assert.deepEqual(dashboard.build, health.build);
+    } finally {
+      await server.close();
+    }
+  });
+});
+
+test("server uses unknown build revision fallback instead of null", async () => {
+  await withEnv({ A2A_BROKER_REVISION: undefined, BROKER_RELEASE_REVISION: undefined, RELEASE_REVISION: undefined }, async () => {
+    const server = await startTestServer({ buildInfoFile: "/dev/null" });
+    try {
+      const healthRes = await fetch(`${server.baseUrl}/health`);
+      assert.equal(healthRes.status, 200);
+      const health = await healthRes.json();
+      assert.equal(typeof health.version, "string");
+      assert.notEqual(health.version, "");
+      assert.equal(health.build.revision, "unknown");
+      assert.notEqual(health.build.revision, null);
+    } finally {
+      await server.close();
+    }
+  });
+});
+
+test("server redacts unsafe build metadata from health", async () => {
+  await withEnv({
+    A2A_BROKER_REVISION: "https://credential.example.invalid/unsafe-revision",
+    A2A_BROKER_SOURCE: "https://credential.example.invalid/private/repo.git",
+    A2A_BROKER_IMAGE_TAG: "private.registry.local/team/image:tag with secret",
+    A2A_BROKER_IMAGE_DIGEST: "not-a-valid-digest-with-secret-path",
+  }, async () => {
+    const server = await startTestServer();
+    try {
+      const healthRes = await fetch(`${server.baseUrl}/health`);
+      assert.equal(healthRes.status, 200);
+      const healthText = await healthRes.text();
+      assert.doesNotMatch(healthText, /credential\.example\.invalid|unsafe-revision|secret-path|private\.registry/);
+      const health = JSON.parse(healthText);
+      assert.equal(health.build.revision, "redacted");
+      assert.equal(health.build.source, "github.com/jinwon-int/a2a-broker");
+      assert.equal(health.build.image, undefined);
+    } finally {
+      await server.close();
+    }
+  });
 });
 
 test("server rejects invalid requester identity headers with 400", async () => {

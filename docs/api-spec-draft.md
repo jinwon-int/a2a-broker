@@ -190,6 +190,15 @@ Response:
 {
   "ok": true,
   "service": "a2a-broker",
+  "version": "0.2.3",
+  "build": {
+    "component": "a2a-broker",
+    "revision": "78b2b42fca6e",
+    "source": "github.com/jinwon-int/a2a-broker",
+    "builtAt": "2026-05-01T15:03:42Z",
+    "runtime": "docker",
+    "image": { "tag": "broker:0.2.3", "digest": "sha256:..." }
+  },
   "publicBaseUrl": "http://<masked-host>:8787",
   "uptimeSec": 123,
   "persistence": {
@@ -207,6 +216,9 @@ Response:
   }
 }
 ```
+
+`version` is always a non-empty package/release version fallback. `build.revision` is sourced from `A2A_BROKER_REVISION`, legacy `BROKER_RELEASE_REVISION` / `RELEASE_REVISION`, or generated build-info metadata; it falls back to `"unknown"` rather than `null`. Unsafe values such as tokenized remotes, host paths, or oversized strings are redacted/omitted before they reach health or dashboard JSON.
+The same `version` and `build` fields are also included in `GET /dashboard` for operator status views.
 
 ### `GET /exchanges`
 
