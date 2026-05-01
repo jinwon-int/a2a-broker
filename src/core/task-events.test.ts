@@ -198,3 +198,68 @@ describe("TaskEventStream", () => {
     );
   });
 });
+
+describe("TerminalTaskEventOutbox", () => {
+  it("enqueues compact idempotent terminal events for webhook replay", () => {
+    const broker = new InMemoryA2ABroker();
+    registerWorker(broker);
+    const task = createTask(broker, {
+      payload: { githubRepo: "jinwon-int/a2a-broker", githubIssueNumber: 218 },
+    });
+
+    broker.claimTask(task.id, "worker-1");
+    broker.startTask(task.id, "worker-1");
+    broker.completeTask(task.id, "worker-1", {
+      summary: "tests passed from /work/repo/dist/core/task-events.test.js",
+      output: {
+        prUrl: "https://github.com/jinwon-int/a2a-broker/pull/999",
+        doneUrl: "https://github.com/jinwon-int/a2a-broker/issues/218#issuecomment-1",
+        blockUrl: "/work/private/block.md",
+        rawLog: "secret token should not appear",
+      },
+    });
+    broker.completeTask(task.id, "worker-1");
+
+    const outbox = broker.getTerminalTaskEventOutbox();
+    const events = outbox.subscribe();
+    assert.equal(events.length, 1);
+    const [event] = events;
+    assert.ok(event);
+    assert.match(event.id, /^terminal:/);
+    assert.equal(event.kind, "task.terminal");
+    assert.equal(event.payload.taskId, task.id);
+    assert.equal(event.payload.status, "succeeded");
+    assert.equal(event.payload.worker, "worker-1");
+    assert.equal(event.payload.repo, "jinwon-int/a2a-broker");
+    assert.equal(event.payload.issue, 218);
+    assert.equal(event.payload.prUrl, "https://github.com/jinwon-int/a2a-broker/pull/999");
+    assert.equal(event.payload.doneUrl, "https://github.com/jinwon-int/a2a-broker/issues/218#issuecomment-1");
+    assert.equal(event.payload.blockUrl, undefined);
+    assert.match(event.payload.testSummary ?? "", /tests passed from \[path\]/);
+
+    const serialized = JSON.stringify(event);
+    assert.ok(!serialized.includes("rawLog"));
+    assert.ok(!serialized.includes("secret token"));
+    assert.ok(!serialized.includes("/work/repo"));
+    assert.ok(!serialized.includes("sessionPrompt"));
+  });
+
+  it("replays terminal outbox events after a stable event id", () => {
+    const broker = new InMemoryA2ABroker();
+    registerWorker(broker);
+    const first = createTask(broker, { id: "task-one" });
+    const second = createTask(broker, { id: "task-two" });
+
+    broker.claimTask(first.id, "worker-1");
+    broker.failTask(first.id, "worker-1", { message: "tests failed" });
+    broker.claimTask(second.id, "worker-1");
+    broker.completeTask(second.id, "worker-1", { summary: "tests passed" });
+
+    const all = broker.getTerminalTaskEventOutbox().subscribe();
+    assert.equal(all.length, 2);
+    const replay = broker.getTerminalTaskEventOutbox().subscribe({ afterId: all[0]!.id });
+    assert.equal(replay.length, 1);
+    assert.equal(replay[0]!.payload.taskId, "task-two");
+    assert.equal(replay[0]!.payload.status, "succeeded");
+  });
+});
