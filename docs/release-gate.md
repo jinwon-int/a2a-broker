@@ -7,6 +7,12 @@ One command to prove the broker is ready for the next release cut.
 ```bash
 cd a2a-broker
 
+# CI-safe check of production Docker Compose runtime invariants (no Docker daemon required)
+npm run docker_runtime_preflight -- --dry-run
+
+# Live host preflight for the Compose-managed broker runtime
+npm run docker_runtime_preflight
+
 # Run the default gate (compose smoke; recovery is marked non-blocking unless BROKER_URL is set)
 npm run release_gate
 
@@ -25,6 +31,18 @@ BROKER_PERSISTENCE_BACKEND=sqlite npm run release_gate -- --skip-recovery
 ```
 
 ## What the Gate Covers
+
+### Docker Runtime Preflight
+
+`npm run docker_runtime_preflight -- --dry-run` validates the repo-local Compose file before a release. It fails if the production service no longer defines:
+
+1. `services.a2a-broker`
+2. a default container name that resolves to `a2a-broker`
+3. loopback-only publish `127.0.0.1:8787:8787`
+4. container `HOST=0.0.0.0`
+5. bind mount `/var/lib/a2a-broker:/var/lib/a2a-broker`
+
+On a live VPS, run `npm run docker_runtime_preflight` from the Compose project directory. The live check also verifies the `a2a-broker` container is healthy with the expected env, port binding, and state bind mount, and confirms the legacy `a2a-broker.service` is inactive/disabled or absent. The check prints only invariant names and sanitized states; it does not dump environment secrets or session data.
 
 ### Phase 1 — Compose Smoke (happy path)
 
