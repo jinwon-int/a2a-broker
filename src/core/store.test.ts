@@ -1216,13 +1216,13 @@ test("SqliteBrokerStateStore plans audit hot-table retention with protected targ
   const temp = withTempFile("state.sqlite");
   try {
     const oldPruned = makeAuditEvent("audit-old-pruned", "task.failed", "task-pruned", "2026-04-27T00:00:00.000Z");
-    const oldKeptByCap = makeAuditEvent("audit-old-kept", "task.succeeded", "task-kept", "2026-04-27T00:01:00.000Z");
+    const oldPrunedByAge = makeAuditEvent("audit-old-by-age", "task.succeeded", "task-kept", "2026-04-27T00:01:00.000Z");
     const oldProtected = makeAuditEvent("audit-old-protected", "task.created", "task-protected", "2026-04-27T00:02:00.000Z");
     const recent = makeAuditEvent("audit-recent", "task.claimed", "task-recent", "2026-04-27T00:45:00.000Z");
     const store = new SqliteBrokerStateStore(temp.filePath);
     store.save({
       ...emptySnapshot(),
-      auditEvents: [oldPruned, oldKeptByCap, oldProtected, recent],
+      auditEvents: [oldPruned, oldPrunedByAge, oldProtected, recent],
     });
 
     const plan = store.planHotAuditRetention({
@@ -1233,12 +1233,45 @@ test("SqliteBrokerStateStore plans audit hot-table retention with protected targ
     });
 
     assert.equal(plan.table, "broker_audit_events");
-    assert.deepEqual(plan.pruneIds, ["audit-old-pruned"]);
+    assert.deepEqual(plan.pruneIds, ["audit-old-by-age", "audit-old-pruned"]);
     assert.deepEqual(plan.retainedIds, [
-      "audit-old-kept",
       "audit-old-protected",
       "audit-recent",
     ]);
+    store.close();
+  } finally {
+    temp.cleanup();
+  }
+});
+
+test("SqliteBrokerStateStore caps recent worker heartbeat audit rows even when worker is protected", () => {
+  const temp = withTempFile("state.sqlite");
+  try {
+    const workerId = "worker-hot";
+    const heartbeats = [
+      makeAuditEvent("heartbeat-1", "worker.heartbeat", workerId, "2026-04-27T00:00:01.000Z"),
+      makeAuditEvent("heartbeat-2", "worker.heartbeat", workerId, "2026-04-27T00:00:02.000Z"),
+      makeAuditEvent("heartbeat-3", "worker.heartbeat", workerId, "2026-04-27T00:00:03.000Z"),
+    ].map((event) => ({ ...event, targetType: "worker" as const }));
+    const registered = {
+      ...makeAuditEvent("worker-registered", "worker.registered", workerId, "2026-04-27T00:00:00.000Z"),
+      targetType: "worker" as const,
+    };
+    const store = new SqliteBrokerStateStore(temp.filePath);
+    store.save({
+      ...emptySnapshot(),
+      auditEvents: [registered, ...heartbeats],
+    });
+
+    const plan = store.planHotAuditRetention({
+      nowMs: Date.parse("2026-04-27T00:01:00.000Z"),
+      retentionMs: 60 * 60 * 1000,
+      maxRecords: 2,
+      protectedIds: { workerIds: [workerId] },
+    });
+
+    assert.deepEqual(plan.pruneIds, ["heartbeat-1"]);
+    assert.deepEqual(plan.retainedIds, ["heartbeat-2", "heartbeat-3", "worker-registered"]);
     store.close();
   } finally {
     temp.cleanup();

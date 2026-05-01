@@ -1761,6 +1761,25 @@ test("retention prunes stale terminal state but preserves the newest referenced 
   assert.deepEqual(retained.workers.map((worker) => worker.nodeId), [retainedWorker.id]);
 });
 
+test("broker retention caps worker heartbeat audit rows without pruning worker registration proof", () => {
+  const broker = new InMemoryA2ABroker(undefined, undefined, {
+    retention: {
+      auditRetentionMs: 60 * 60 * 1000,
+      maxAuditEvents: 2,
+    },
+  });
+
+  registerWorker(broker, "worker-heartbeat-cap");
+  broker.heartbeatWorker("worker-heartbeat-cap");
+  broker.heartbeatWorker("worker-heartbeat-cap");
+  broker.heartbeatWorker("worker-heartbeat-cap");
+
+  const auditActions = broker.exportSnapshot().auditEvents.map((event) => event.action);
+
+  assert.equal(auditActions.filter((action) => action === "worker.registered").length, 1);
+  assert.equal(auditActions.filter((action) => action === "worker.heartbeat").length, 2);
+});
+
 test("subscribeToTask streams lifecycle updates and marks terminal events final", () => {
   const broker = new InMemoryA2ABroker();
   registerWorker(broker, "worker-a");

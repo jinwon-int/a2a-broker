@@ -3610,26 +3610,23 @@ function selectRetainedAuditEventIds(params: {
   retainedWorkerIds: Set<string>;
 }): Set<string> {
   const retainedIds = new Set<string>();
-  const olderCandidates: Array<{ id: string; timestampMs: number }> = [];
+  const retentionCandidates: Array<{ id: string; timestampMs: number }> = [];
   const cutoffMs = params.nowMs - params.auditRetentionMs;
 
   for (const event of params.auditEvents) {
     const timestampMs = parseRetentionTimestamp(event.createdAt);
-    if (
-      isAuditEventRetained(event, params) ||
-      timestampMs === null ||
-      timestampMs >= cutoffMs
-    ) {
+    if (isAuditEventRetained(event, params) || timestampMs === null) {
       retainedIds.add(event.id);
       continue;
     }
-    olderCandidates.push({ id: event.id, timestampMs });
+    retentionCandidates.push({ id: event.id, timestampMs });
   }
 
   sortedCopy(
-    olderCandidates,
+    retentionCandidates,
     (a, b) => b.timestampMs - a.timestampMs || a.id.localeCompare(b.id),
   )
+    .filter((entry) => entry.timestampMs >= cutoffMs)
     .slice(0, params.maxAuditEvents)
     .forEach((entry) => retainedIds.add(entry.id));
 
@@ -3660,6 +3657,9 @@ function isAuditEventRetained(
     case "validation":
       return params.retainedValidationIds.has(event.targetId);
     case "worker":
+      if (event.action === "worker.heartbeat") {
+        return false;
+      }
       return params.retainedWorkerIds.has(event.targetId);
     case "task":
       return params.retainedTaskIds.has(event.targetId);

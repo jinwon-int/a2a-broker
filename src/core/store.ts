@@ -1939,24 +1939,21 @@ function planAuditRetentionFromRecords(
   const nowMs = options.nowMs ?? Date.now();
   const cutoffMs = nowMs - options.retentionMs;
   const retainedIds = new Set<string>();
-  const olderCandidates: Array<{ id: string; timestampMs: number }> = [];
+  const retentionCandidates: Array<{ id: string; timestampMs: number }> = [];
   const protectedIds = normalizeAuditRetentionProtection(options.protectedIds);
 
   for (const event of records) {
     const timestampMs = parseRetentionTimestamp(event.createdAt);
-    if (
-      isAuditEventProtected(event, protectedIds) ||
-      timestampMs === null ||
-      timestampMs >= cutoffMs
-    ) {
+    if (isAuditEventProtected(event, protectedIds) || timestampMs === null) {
       retainedIds.add(event.id);
       continue;
     }
-    olderCandidates.push({ id: event.id, timestampMs });
+    retentionCandidates.push({ id: event.id, timestampMs });
   }
 
-  [...olderCandidates]
+  [...retentionCandidates]
     .sort((a, b) => b.timestampMs - a.timestampMs || a.id.localeCompare(b.id))
+    .filter((entry) => entry.timestampMs >= cutoffMs)
     .slice(0, options.maxRecords)
     .forEach((entry) => retainedIds.add(entry.id));
 
@@ -2051,6 +2048,9 @@ function isAuditEventProtected(
     case "validation":
       return protectedIds.validationIds.has(event.targetId);
     case "worker":
+      if (event.action === "worker.heartbeat") {
+        return false;
+      }
       return protectedIds.workerIds.has(event.targetId);
     case "task":
       return protectedIds.taskIds.has(event.targetId);
