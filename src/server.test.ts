@@ -356,6 +356,12 @@ test("server reports SQLite persistence metadata when SQLite backend is enabled"
       supportedCount: 9,
       totalCount: 9,
     });
+    assert.deepEqual(health.auditDiagnostics, {
+      total: 0,
+      workerHeartbeat: 0,
+      workerHeartbeatRatio: 0,
+      warnings: [],
+    });
   } finally {
     runtime.stopStaleReaper();
     await new Promise<void>((resolve) => runtime.server.close(() => resolve()));

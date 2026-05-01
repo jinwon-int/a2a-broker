@@ -998,6 +998,51 @@ test("SqliteAuditRuntimeRepository writes audit events directly to broker_audit_
   }
 });
 
+test("SqliteAuditRuntimeRepository coalesces worker heartbeats and enforces hot-table max", () => {
+  const temp = withTempFile("state.sqlite");
+  try {
+    const store = new SqliteBrokerStateStore(temp.filePath);
+    const repository = new SqliteAuditRuntimeRepository(store, { maxHotAuditEvents: 3 });
+
+    repository.appendAuditEvent({
+      ...makeAuditEvent("heartbeat-1", "worker.heartbeat", "worker-runtime", "2026-04-27T00:00:00.000Z"),
+      actorId: "worker-runtime",
+      targetType: "worker",
+    });
+    repository.appendAuditEvent({
+      ...makeAuditEvent("heartbeat-2", "worker.heartbeat", "worker-runtime", "2026-04-27T00:01:00.000Z"),
+      actorId: "worker-runtime",
+      targetType: "worker",
+    });
+    assert.deepEqual(
+      repository.listAuditEvents({ action: "worker.heartbeat" }).map((event) => [event.id, event.createdAt]),
+      [["worker-heartbeat:worker-runtime", "2026-04-27T00:01:00.000Z"]],
+    );
+
+    repository.appendAuditEvent(makeAuditEvent("audit-runtime-created", "task.created", "task-runtime", "2026-04-27T00:02:00.000Z"));
+    repository.appendAuditEvent(makeAuditEvent("audit-runtime-started", "task.started", "task-runtime", "2026-04-27T00:03:00.000Z"));
+    repository.appendAuditEvent(makeAuditEvent("audit-runtime-succeeded", "task.succeeded", "task-runtime", "2026-04-27T00:04:00.000Z"));
+
+    assert.deepEqual(
+      repository.listAuditEvents().map((event) => event.id),
+      ["audit-runtime-succeeded", "audit-runtime-started", "audit-runtime-created"],
+    );
+    assert.deepEqual(
+      repository.listAuditEvents({ action: "worker.heartbeat" }).map((event) => [event.id, event.createdAt]),
+      [],
+    );
+    assert.deepEqual(store.readHotAuditDiagnostics(), {
+      total: 3,
+      workerHeartbeat: 0,
+      workerHeartbeatRatio: 0,
+      warnings: [],
+    });
+    store.close();
+  } finally {
+    temp.cleanup();
+  }
+});
+
 test("SqliteTombstoneRuntimeRepository writes tombstones directly to broker_tombstones", () => {
   const temp = withTempFile("state.sqlite");
   try {

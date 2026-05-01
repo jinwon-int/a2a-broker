@@ -2266,8 +2266,11 @@ export class InMemoryA2ABroker {
     proposalId?: string;
     note?: string;
   }): AuditEvent {
+    const eventId = input.action === "worker.heartbeat" && input.targetType === "worker"
+      ? `worker-heartbeat:${input.targetId}`
+      : randomUUID();
     const event: AuditEvent = {
-      id: randomUUID(),
+      id: eventId,
       actorId: input.actorId,
       action: input.action,
       targetType: input.targetType,
