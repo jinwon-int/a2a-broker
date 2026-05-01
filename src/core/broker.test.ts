@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { InMemoryA2ABroker, type TaskUpdate, type BufferedTaskEvent } from "./broker.js";
+import { InMemoryA2ABroker, type BrokerProfilingSample, type TaskUpdate, type BufferedTaskEvent } from "./broker.js";
 import {
   CURRENT_BROKER_STATE_VERSION,
   SqliteArtifactRuntimeRepository,
@@ -38,6 +38,74 @@ function registerWorker(broker: InMemoryA2ABroker, nodeId: string): void {
     },
   });
 }
+
+test("broker exposes compact diagnostics without task payload expansion", () => {
+  const broker = new InMemoryA2ABroker();
+  registerWorker(broker, "worker-diag");
+  const task = broker.createTask({
+    id: "task-compact-diag",
+    intent: "chat",
+    requester: { id: "hub-a", kind: "node", role: "hub" },
+    target: { id: "worker-diag", kind: "node", role: "analyst" },
+    assignedWorkerId: "worker-diag",
+    message: "compact diagnostic payload should stay small",
+  });
+  broker.claimTask(task.id, "worker-diag");
+
+  const diagnostics = broker.getCompactDiagnostics({
+    staleAfterMs: 120_000,
+    workerOfflineAfterMs: 60_000,
+    nowMs: Date.now() + 300_000,
+  });
+
+  assert.equal(diagnostics.tasks.total, 1);
+  assert.equal(diagnostics.tasks.byStatus.claimed, 1);
+  assert.equal(diagnostics.tasks.stale, 1);
+  assert.equal(diagnostics.workers.total, 1);
+  assert.equal(diagnostics.workers.stale, 1);
+  assert.equal(diagnostics.audit.total, 3);
+  assert.equal(diagnostics.runtimeRepositories.tasks, false);
+  assert.equal(Object.hasOwn(diagnostics, "task"), false);
+  assert.equal(Object.hasOwn(diagnostics, "tasksById"), false);
+});
+
+test("broker profiling hooks receive compact persistence samples", () => {
+  const samples: BrokerProfilingSample[] = [];
+  const broker = new InMemoryA2ABroker(undefined, undefined, {
+    profilingListener: (sample) => samples.push(sample),
+  });
+  registerWorker(broker, "worker-profile");
+  samples.length = 0;
+
+  const unsubscribe = broker.subscribeToProfiling((sample) => samples.push(sample));
+  broker.createTask({
+    id: "task-profile-hook",
+    intent: "chat",
+    requester: { id: "hub-a", kind: "node", role: "hub" },
+    target: { id: "worker-profile", kind: "node", role: "analyst" },
+    assignedWorkerId: "worker-profile",
+    message: "profile compact persistence hooks",
+  });
+  unsubscribe();
+
+  assert.equal(samples.length, 2);
+  for (const sample of samples) {
+    assert.equal(sample.operation, "persistState");
+    assert.ok(sample.durationMs >= 0);
+    assert.match(sample.startedAt, /^\d{4}-\d{2}-\d{2}T/);
+    assert.deepEqual(sample.saveHints, {
+      hotExchanges: 0,
+      hotExchangeMessages: 0,
+      hotProposals: 0,
+      hotArtifacts: 0,
+      hotValidations: 0,
+      hotTasks: 1,
+      hotTombstones: 0,
+      hotAuditEvents: 1,
+      hotWorkers: 0,
+    });
+  }
+});
 
 test("broker passes dirty task, audit, and worker hints to state store saves", () => {
   const saveHints: Array<BrokerStateSaveHints | undefined> = [];

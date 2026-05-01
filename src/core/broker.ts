@@ -146,6 +146,8 @@ export interface InMemoryA2ABrokerOptions {
    * Default: 1000.
    */
   maxTaskStatusEvents?: number;
+  /** Optional lightweight profiling hook for broker internals. Listener errors are ignored. */
+  profilingListener?: BrokerProfilingListener;
 }
 
 export interface TaskDiagnosticsOptions {
@@ -212,6 +214,59 @@ export interface BufferedTaskEvent {
 export type TaskUpdateListener = (update: TaskUpdate) => void;
 export type BrokerStateListener = () => void;
 
+export type BrokerProfilingOperation = "persistState";
+
+export interface BrokerProfilingSample {
+  operation: BrokerProfilingOperation;
+  startedAt: string;
+  durationMs: number;
+  saveHints?: {
+    hotExchanges: number;
+    hotExchangeMessages: number;
+    hotProposals: number;
+    hotArtifacts: number;
+    hotValidations: number;
+    hotTasks: number;
+    hotTombstones: number;
+    hotAuditEvents: number;
+    hotWorkers: number;
+  };
+}
+
+export type BrokerProfilingListener = (sample: BrokerProfilingSample) => void;
+
+export interface BrokerCompactDiagnostics {
+  generatedAt: string;
+  tasks: {
+    total: number;
+    byStatus: Record<TaskStatus, number>;
+    stale: number;
+    longRunning: number;
+    bufferedEventStreams: number;
+  };
+  workers: {
+    total: number;
+    stale: number;
+  };
+  audit: {
+    total: number;
+    requeued: number;
+    deadLettered: number;
+  };
+  retention: BrokerRetentionPolicy;
+  runtimeRepositories: {
+    tasks: boolean;
+    audit: boolean;
+    tombstones: boolean;
+    workers: boolean;
+    exchanges: boolean;
+    exchangeMessages: boolean;
+    proposals: boolean;
+    artifacts: boolean;
+    validations: boolean;
+  };
+}
+
 export class InMemoryA2ABroker {
   private readonly exchanges = new Map<string, A2AExchangeState>();
   private readonly exchangeMessages = new Map<string, A2AExchangeMessageRecord>();
@@ -235,6 +290,7 @@ export class InMemoryA2ABroker {
   private readonly pendingHotArtifacts = new Map<string, ArtifactRecord>();
   private readonly pendingHotValidations = new Map<string, ValidationResult>();
   private readonly stateListeners = new Set<BrokerStateListener>();
+  private readonly profilingListeners = new Set<BrokerProfilingListener>();
   private readonly maxBufferedEventsPerTask: number;
   private readonly taskEventStream: TaskEventStream;
   private readonly terminalTaskEventOutbox: TerminalTaskEventOutbox;
@@ -248,6 +304,7 @@ export class InMemoryA2ABroker {
   private readonly proposalRepository?: ProposalRuntimeRepository;
   private readonly artifactRepository?: ArtifactRuntimeRepository;
   private readonly validationRepository?: ValidationRuntimeRepository;
+  private readonly optionProfilingListener?: BrokerProfilingListener;
 
   constructor(
     private readonly stateStore?: BrokerStateStore,
@@ -263,6 +320,7 @@ export class InMemoryA2ABroker {
     this.proposalRepository = options.proposalRepository;
     this.artifactRepository = options.artifactRepository;
     this.validationRepository = options.validationRepository;
+    this.optionProfilingListener = options.profilingListener;
     this.retentionPolicy = normalizeBrokerRetentionPolicy(options.retention);
     this.maxRequeueAttempts = normalizeMaxRequeueAttempts(options.maxRequeueAttempts);
     this.maxBufferedEventsPerTask = options.maxBufferedEventsPerTask ?? 100;
@@ -338,6 +396,64 @@ export class InMemoryA2ABroker {
     this.stateListeners.add(listener);
     return () => {
       this.stateListeners.delete(listener);
+    };
+  }
+
+  /** Subscribe to compact broker profiling samples. Listener errors are ignored. */
+  subscribeToProfiling(listener: BrokerProfilingListener): () => void {
+    this.profilingListeners.add(listener);
+    return () => {
+      this.profilingListeners.delete(listener);
+    };
+  }
+
+  getCompactDiagnostics(options?: {
+    nowMs?: number;
+    staleAfterMs?: number;
+    longRunningAfterMs?: number;
+    workerOfflineAfterMs?: number;
+  }): BrokerCompactDiagnostics {
+    const nowMs = options?.nowMs ?? Date.now();
+    const staleAfterMs = options?.staleAfterMs ?? 120_000;
+    const longRunningAfterMs = options?.longRunningAfterMs ?? 3_600_000;
+    const workerOfflineAfterMs = options?.workerOfflineAfterMs ?? 90_000;
+    const tasks = this.listTasks();
+    const workers = this.listWorkers();
+    const staleTasks = tasks.filter((task) => computeTaskDiagnosticStatus(task, staleAfterMs, longRunningAfterMs, nowMs) === "stale");
+    const longRunningTasks = tasks.filter((task) => computeTaskDiagnosticStatus(task, staleAfterMs, longRunningAfterMs, nowMs) === "long_running");
+    const staleWorkers = workers.filter((worker) => isWorkerStale(worker.lastSeenAt, workerOfflineAfterMs, nowMs));
+    const audits = this.listAuditEvents();
+
+    return {
+      generatedAt: new Date(nowMs).toISOString(),
+      tasks: {
+        total: tasks.length,
+        byStatus: this.countBy(tasks, (task) => task.status) as Record<TaskStatus, number>,
+        stale: staleTasks.length,
+        longRunning: longRunningTasks.length,
+        bufferedEventStreams: this.taskEventBuffers.size,
+      },
+      workers: {
+        total: workers.length,
+        stale: staleWorkers.length,
+      },
+      audit: {
+        total: audits.length,
+        requeued: audits.filter((event) => event.action === "task.requeued").length,
+        deadLettered: tasks.filter((task) => task.error?.code === REQUEUE_EXHAUSTED_ERROR_CODE).length,
+      },
+      retention: { ...this.retentionPolicy },
+      runtimeRepositories: {
+        tasks: Boolean(this.taskRepository),
+        audit: Boolean(this.auditRepository),
+        tombstones: Boolean(this.tombstoneRepository),
+        workers: Boolean(this.workerRepository),
+        exchanges: Boolean(this.exchangeRepository),
+        exchangeMessages: Boolean(this.exchangeMessageRepository),
+        proposals: Boolean(this.proposalRepository),
+        artifacts: Boolean(this.artifactRepository),
+        validations: Boolean(this.validationRepository),
+      },
     };
   }
 
@@ -2146,11 +2262,19 @@ export class InMemoryA2ABroker {
   }
 
   private persistState(): void {
+    const startedAtMs = Date.now();
+    const startedAt = new Date(startedAtMs).toISOString();
     this.applyRetentionPolicy();
     const snapshot = this.exportSnapshot();
     const hints = this.consumeStateSaveHints(snapshot);
     this.stateStore?.save(snapshot, hints);
     this.emitStateChange();
+    this.emitProfilingSample({
+      operation: "persistState",
+      startedAt,
+      durationMs: Date.now() - startedAtMs,
+      saveHints: hints ? countStateSaveHints(hints) : undefined,
+    });
   }
 
   private setTaskRecord(task: TaskRecord): void {
@@ -2259,6 +2383,23 @@ export class InMemoryA2ABroker {
       } catch (error) {
         console.error(
           `[a2a-broker] broker state listener threw: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      }
+    }
+  }
+
+  private emitProfilingSample(sample: BrokerProfilingSample): void {
+    const listeners = this.optionProfilingListener
+      ? [this.optionProfilingListener, ...this.profilingListeners]
+      : [...this.profilingListeners];
+    for (const listener of listeners) {
+      try {
+        listener({ ...sample, saveHints: sample.saveHints ? { ...sample.saveHints } : undefined });
+      } catch (error) {
+        console.error(
+          `[a2a-broker] broker profiling listener threw: ${
             error instanceof Error ? error.message : String(error)
           }`,
         );
@@ -3049,6 +3190,20 @@ function ageSecFromIso(iso: string, nowMs: number): number {
 
 function sortNewestFirst<T extends { createdAt: string }>(a: T, b: T): number {
   return a.createdAt < b.createdAt ? 1 : -1;
+}
+
+function countStateSaveHints(hints: BrokerStateSaveHints): NonNullable<BrokerProfilingSample["saveHints"]> {
+  return {
+    hotExchanges: hints.hotExchanges?.length ?? 0,
+    hotExchangeMessages: hints.hotExchangeMessages?.length ?? 0,
+    hotProposals: hints.hotProposals?.length ?? 0,
+    hotArtifacts: hints.hotArtifacts?.length ?? 0,
+    hotValidations: hints.hotValidations?.length ?? 0,
+    hotTasks: hints.hotTasks?.length ?? 0,
+    hotTombstones: hints.hotTombstones?.length ?? 0,
+    hotAuditEvents: hints.hotAuditEvents?.length ?? 0,
+    hotWorkers: hints.hotWorkers?.length ?? 0,
+  };
 }
 
 function sortWorkersNewestFirst(a: WorkerRecord, b: WorkerRecord): number {
