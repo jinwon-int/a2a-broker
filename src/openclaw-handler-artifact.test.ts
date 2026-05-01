@@ -59,7 +59,7 @@ test("versioned OpenClaw handler exposes credential-free build metadata", () => 
   assert.equal(result.status, 0, result.stderr);
   const payload = JSON.parse(result.stdout);
   assert.equal(payload.result.handler.name, "openclaw-a2a-task-handler");
-  assert.equal(payload.result.handler.version, "0.2.4");
+  assert.equal(payload.result.handler.version, "0.2.5");
   assert.match(payload.result.handler.sourceSha256, /^[a-f0-9]{64}$/);
   assert.equal(payload.result.handler.credentialFree, true);
   assert.equal(payload.result.handler.hostNeutral, true);
@@ -226,6 +226,95 @@ console.log(JSON.stringify({ ok: true, taskId: "task-fixture-1", status: "comple
     assert.equal(result.status, 0, result.stderr);
     const payload = JSON.parse(result.stdout);
     assert.equal(payload.result.output.github.doneCommentUrl, "https://github.com/owner/repo/issues/1#issuecomment-123");
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("all-github auto falls back to host OpenClaw bridge when Claude Docker config is blocked", () => {
+  const tempDir = mkdtempSync(join(tmpdir(), "handler-blocked-claude-bridge-test-"));
+  const fakeRunnerPath = join(tempDir, "fake-runner.mjs");
+  const fakeOpenClawPath = join(tempDir, "fake-openclaw.mjs");
+  try {
+    writeFileSync(fakeRunnerPath, `
+throw new Error("docker runner should not run when Claude Docker config is blocked and bridge is configured");
+`);
+    writeFileSync(fakeOpenClawPath, `#!/usr/bin/env node
+console.log(JSON.stringify({
+  payloads: [{
+    text: JSON.stringify({
+      status: "blocked",
+      summary: "bridge handled blocked Claude Docker config",
+      blockCommentUrl: "https://github.com/owner/repo/issues/1#issuecomment-456",
+      tests: ["bridge fallback fixture -> pass"],
+      risks: []
+    })
+  }]
+}));
+`);
+    chmodSync(fakeOpenClawPath, 0o755);
+
+    const result = spawnSync(process.execPath, [handlerPath], {
+      input: JSON.stringify(githubTask()),
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        A2A_EXECUTOR_MODE: "auto",
+        A2A_DOCKER_RUNNER_SCOPE: "all-github",
+        A2A_DOCKER_RUNNER_BIN: process.execPath,
+        A2A_DOCKER_RUNNER_ARGS_JSON: JSON.stringify([fakeRunnerPath]),
+        A2A_DOCKER_RUNNER_PATCH_COMMAND_JSON: JSON.stringify({ argv: ["claude", "--print", "hello"] }),
+        A2A_DOCKER_RUNNER_EXTRA_MOUNTS_JSON: JSON.stringify([
+          { source: "/tmp/.claude", target: "/run/secrets/claude-dir", readOnly: true },
+        ]),
+        OPENCLAW_BIN: fakeOpenClawPath,
+        A2A_NODE_ID: "worker-bridge-fallback",
+      },
+    });
+
+    assert.equal(result.status, 0, result.stderr);
+    const payload = JSON.parse(result.stdout);
+    assert.equal(payload.result.summary, "bridge handled blocked Claude Docker config");
+    assert.equal(payload.result.output.github.outcome, "blocked");
+    assert.equal(payload.result.output.github.blockCommentUrl, "https://github.com/owner/repo/issues/1#issuecomment-456");
+    assert.equal(payload.result.output.nodeId, "worker-bridge-fallback");
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("explicit Claude-in-Docker opt-in keeps all-github tasks on docker runner", () => {
+  const tempDir = mkdtempSync(join(tmpdir(), "handler-claude-opt-in-docker-test-"));
+  const fakeRunnerPath = join(tempDir, "fake-runner.mjs");
+  const fakeOpenClawPath = join(tempDir, "fake-openclaw.mjs");
+  try {
+    writeFileSync(fakeRunnerPath, `
+console.log(JSON.stringify({ ok: true, taskId: "task-fixture-1", status: "completed", workDir: "/tmp/work-fixture", artifacts: [], prUrl: "https://github.com/owner/repo/pull/789" }));
+`);
+    writeFileSync(fakeOpenClawPath, `#!/usr/bin/env node
+throw new Error("bridge should not run when Claude-in-Docker is explicitly allowed");
+`);
+    chmodSync(fakeOpenClawPath, 0o755);
+
+    const result = spawnSync(process.execPath, [handlerPath], {
+      input: JSON.stringify(githubTask()),
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        A2A_EXECUTOR_MODE: "auto",
+        A2A_DOCKER_RUNNER_SCOPE: "all-github",
+        A2A_ALLOW_CLAUDE_IN_DOCKER: "1",
+        A2A_DOCKER_RUNNER_BIN: process.execPath,
+        A2A_DOCKER_RUNNER_ARGS_JSON: JSON.stringify([fakeRunnerPath]),
+        A2A_DOCKER_RUNNER_PATCH_COMMAND_JSON: JSON.stringify({ argv: ["claude", "--print", "hello"] }),
+        OPENCLAW_BIN: fakeOpenClawPath,
+      },
+    });
+
+    assert.equal(result.status, 0, result.stderr);
+    const payload = JSON.parse(result.stdout);
+    assert.equal(payload.result.summary, "docker runner completed task-fixture-1");
+    assert.equal(payload.result.output.github.prUrl, "https://github.com/owner/repo/pull/789");
   } finally {
     rmSync(tempDir, { recursive: true, force: true });
   }
