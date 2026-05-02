@@ -22,7 +22,7 @@ A notifier can consume the broker-owned outbox without subscribing to raw task s
 
 - `GET /a2a/tasks/terminal-outbox?after_id=<cursor>&limit=<n>` returns `{ kind, count, cursor, events }`.
 - Save the response `cursor` (or the last event `id`) and pass it as `after_id` on the next poll.
-- `POST /a2a/tasks/terminal-outbox/ack` with `{ "id": "...", "deliveredAt": "..." }` marks a record delivered without removing replay state.
+- `POST /a2a/tasks/terminal-outbox/ack` with `{ "id": "...", "receipt": { "kind": "operator_visible", "source": "main-session", "receivedAt": "..." } }` marks a record `receipt_confirmed` without removing replay state. `operator_receipt` is also accepted for notifier surfaces that expose a durable operator-visible receipt.
 - Both routes require an authenticated hub/operator requester when edge identity enforcement is enabled.
 
 ## Release/deploy readiness smoke
@@ -37,10 +37,13 @@ For a post-approval live validation, operators can use `npm run smoke:docker-bro
 
 ## Replay, ack, and retention
 
+- New records start with `ackState: "pending"`, `attempts: 0`, and no `receipt`.
+- A terminal ack is only valid after receipt/operator-visible evidence. Broker/Gateway/provider send success is not enough and must not advance `ackState`, `deliveredAt`, or the replay cursor.
+- Valid ack receipts are compact and safe: `kind` (`operator_visible` or `operator_receipt`), `source`, `receivedAt`, optional opaque `evidenceId`, and optional safe HTTP(S) `evidenceUrl`.
 - Consumers replay with `subscribe({ afterId })`; HTTP consumers pass the same stable cursor as `after_id`.
 - Records after the stable cursor are returned in insertion order; unknown/stale cursors replay retained records from the beginning.
 - Retained outbox records are included in broker state version 8 snapshots as `terminalOutbox`, so replay cursors, acknowledgements, and dedupe IDs survive JSON/SQLite snapshot restart.
-- `acknowledge(id, deliveredAt)` marks delivery metadata without removing the record, so a notifier can recover after a crash until normal retention evicts it.
+- `acknowledge(id, receipt)` stores receipt metadata, sets `ackState: "receipt_confirmed"`, mirrors `receipt.receivedAt` into legacy `deliveredAt`, and leaves the record replayable until retention evicts it.
 - Duplicate enqueue of the same terminal task state returns the retained record or is suppressed if recently seen.
 - Retention is bounded by `maxTerminalTaskOutboxEvents` (default `1000`), evicting oldest records FIFO.
 

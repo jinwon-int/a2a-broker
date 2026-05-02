@@ -437,7 +437,12 @@ describe("TerminalTaskEventOutbox", () => {
 
     const [before] = broker.getTerminalTaskEventOutbox().subscribe();
     assert.ok(before);
-    broker.getTerminalTaskEventOutbox().acknowledge(before.id, "2026-05-02T00:00:00.000Z");
+    broker.getTerminalTaskEventOutbox().acknowledge(before.id, {
+      kind: "operator_visible",
+      source: "main-session",
+      receivedAt: "2026-05-02T00:00:00.000Z",
+      evidenceId: "receipt-247",
+    });
 
     const restarted = new InMemoryA2ABroker(undefined, broker.exportSnapshot(), {
       maxTerminalTaskOutboxEvents: 10,
@@ -445,7 +450,9 @@ describe("TerminalTaskEventOutbox", () => {
     const replayed = restarted.getTerminalTaskEventOutbox().subscribe();
     assert.equal(replayed.length, 1);
     assert.equal(replayed[0]!.id, before.id);
+    assert.equal(replayed[0]!.ackState, "receipt_confirmed");
     assert.equal(replayed[0]!.deliveredAt, "2026-05-02T00:00:00.000Z");
+    assert.equal(replayed[0]!.receipt?.source, "main-session");
     assert.equal(replayed[0]!.attempts, 1);
     assert.equal(
       restarted.getTerminalTaskEventOutbox().subscribe({ afterId: before.id }).length,
@@ -458,7 +465,7 @@ describe("TerminalTaskEventOutbox", () => {
     assert.equal(restarted.getTerminalTaskEventOutbox().subscribe().length, 1);
   });
 
-  it("acknowledges delivered terminal records without removing replay state", () => {
+  it("acknowledges terminal records only with receipt-visible evidence", () => {
     const broker = new InMemoryA2ABroker();
     registerWorker(broker);
     const task = createTask(broker, { id: "ack-task" });
@@ -470,16 +477,33 @@ describe("TerminalTaskEventOutbox", () => {
     const [event] = outbox.subscribe();
     assert.ok(event);
 
+    assert.equal(outbox.acknowledge(event.id, { kind: "provider_send_success" as unknown as "operator_visible", source: "gateway" }), null);
+    assert.equal(outbox.acknowledge(event.id, { kind: "operator_visible", source: "" }), null);
+    assert.equal(outbox.subscribe()[0]!.ackState, "pending");
+    assert.equal(outbox.subscribe()[0]!.attempts, 0);
+
     const deliveredAt = "2026-05-01T00:00:00.000Z";
-    const acked = outbox.acknowledge(event.id, deliveredAt);
+    const acked = outbox.acknowledge(event.id, {
+      kind: "operator_visible",
+      source: "main-session",
+      receivedAt: deliveredAt,
+      evidenceId: "operator-message-1 token=ghp_secretvalue",
+      evidenceUrl: "https://github.com/jinwon-int/a2a-broker/issues/255#issuecomment-receipt",
+    });
     assert.ok(acked);
+    assert.equal(acked.ackState, "receipt_confirmed");
     assert.equal(acked.deliveredAt, deliveredAt);
+    assert.equal(acked.receipt?.kind, "operator_visible");
+    assert.equal(acked.receipt?.source, "main-session");
+    assert.equal(acked.receipt?.evidenceId, "operator-message-1 token=[redacted]");
     assert.equal(acked.attempts, 1);
-    assert.equal(outbox.acknowledge("missing"), null);
+    assert.equal(outbox.acknowledge("missing", { kind: "operator_visible", source: "main-session" }), null);
 
     const replayed = outbox.subscribe()[0];
     assert.equal(replayed!.id, event.id);
+    assert.equal(replayed!.ackState, "receipt_confirmed");
     assert.equal(replayed!.deliveredAt, deliveredAt);
+    assert.equal(replayed!.receipt?.evidenceUrl, "https://github.com/jinwon-int/a2a-broker/issues/255#issuecomment-receipt");
     assert.equal(replayed!.attempts, 1);
   });
 

@@ -374,6 +374,7 @@ test("E2E: terminal notification outbox enforces auth and replays compact ack-sa
     const [outboxEvent] = outbox.events;
     assert.equal(outbox.cursor, outboxEvent.id);
     assert.equal(outboxEvent.kind, "task.terminal");
+    assert.equal(outboxEvent.ackState, "pending");
     assert.equal(outboxEvent.attempts, 0);
     assert.equal(outboxEvent.payload.taskId, task.id);
     assert.equal(outboxEvent.payload.status, "succeeded");
@@ -397,15 +398,24 @@ test("E2E: terminal notification outbox enforces auth and replays compact ack-sa
     assert.equal(terminalPayload.prUrl, "https://github.com/jinwon-int/a2a-broker/pull/251");
     assert.deepEqual(terminalPayload.testSummary, { status: "passed", total: 2, passed: 2 });
 
+    const falseAckRes = await fetch(`${server.baseUrl}/a2a/tasks/terminal-outbox/ack`, {
+      method: "POST",
+      headers: hubHeaders,
+      body: JSON.stringify({ id: outboxEvent.id, deliveredAt: "2026-05-02T01:00:00.000Z" }),
+    });
+    assert.equal(falseAckRes.status, 400);
+
     const deliveredAt = "2026-05-02T01:23:45.000Z";
     const ackRes = await fetch(`${server.baseUrl}/a2a/tasks/terminal-outbox/ack`, {
       method: "POST",
       headers: hubHeaders,
-      body: JSON.stringify({ id: outboxEvent.id, deliveredAt }),
+      body: JSON.stringify({ id: outboxEvent.id, receipt: { kind: "operator_visible", source: "main-session", receivedAt: deliveredAt, evidenceId: "operator-receipt-1" } }),
     });
     assert.equal(ackRes.status, 200);
     const ack = await ackRes.json();
+    assert.equal(ack.event.ackState, "receipt_confirmed");
     assert.equal(ack.event.deliveredAt, deliveredAt);
+    assert.equal(ack.event.receipt.source, "main-session");
     assert.equal(ack.event.attempts, 1);
 
     const noDuplicateRes = await fetch(

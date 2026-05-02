@@ -94,6 +94,7 @@ import {
 } from "./trading-dialectic/read-model.js";
 import { projectAlerts, type Alert, type AlertScanResult } from "./core/alert-projection.js";
 import { buildOperatorTaskReport } from "./core/operator-task-report.js";
+import { normalizeTerminalTaskReceipt } from "./core/terminal-event-outbox.js";
 
 interface ThreadedExchangeMessage extends A2AExchangeMessageRecord {
   replies: ThreadedExchangeMessage[];
@@ -771,13 +772,19 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
           assertRequesterHasRole(requesterIdentity, ["hub", "operator"], "task-terminal-outbox.ack");
         }
 
-        const body = await readJson<{ id?: unknown; deliveredAt?: unknown }>(req);
+        const body = await readJson<{ id?: unknown; receipt?: unknown }>(req);
         const id = body?.id;
         if (typeof id !== "string" || id.length === 0) {
           throw new BrokerError("bad_request", "terminal outbox ack requires a non-empty id");
         }
-        const deliveredAt = typeof body?.deliveredAt === "string" ? body.deliveredAt : undefined;
-        const event = broker.getTerminalTaskEventOutbox().acknowledge(id, deliveredAt);
+        const receipt = normalizeTerminalTaskReceipt(body?.receipt);
+        if (!receipt) {
+          throw new BrokerError(
+            "bad_request",
+            "terminal outbox ack requires receipt/operator-visible evidence; provider or Gateway send success alone is not terminal ack evidence",
+          );
+        }
+        const event = broker.getTerminalTaskEventOutbox().acknowledge(id, receipt);
         if (!event) {
           throw new BrokerError("not_found", "terminal outbox event not found");
         }

@@ -10,6 +10,29 @@ export const DEFAULT_TERMINAL_TASK_OUTBOX_RETENTION = 1000;
 
 export type TerminalTaskEventKind = "task.terminal";
 export type TerminalTaskStatus = Extract<TaskStatus, "succeeded" | "failed" | "canceled" | "blocked">;
+export type TerminalTaskAckState = "pending" | "receipt_confirmed";
+export type TerminalTaskReceiptKind = "operator_visible" | "operator_receipt";
+
+export interface TerminalTaskReceipt {
+  /** Receipt class. Provider/Gateway send success is intentionally not a valid terminal ack. */
+  kind: TerminalTaskReceiptKind;
+  /** Notifier/operator surface that produced the receipt, e.g. main-session, telegram-update, dashboard. */
+  source: string;
+  /** Operator-visible receipt timestamp. */
+  receivedAt: string;
+  /** Optional opaque receipt/message id from the operator-visible surface. */
+  evidenceId?: string;
+  /** Optional safe HTTP(S) URL for a human-visible receipt artifact. */
+  evidenceUrl?: string;
+}
+
+export type TerminalTaskReceiptInput = Partial<TerminalTaskReceipt> & {
+  kind?: unknown;
+  source?: unknown;
+  receivedAt?: unknown;
+  evidenceId?: unknown;
+  evidenceUrl?: unknown;
+};
 
 export interface TerminalTaskEventPayload {
   taskId: string;
@@ -33,6 +56,8 @@ export interface TerminalTaskOutboxEvent {
   taskEventId: number;
   payload: TerminalTaskEventPayload;
   createdAt: string;
+  ackState: TerminalTaskAckState;
+  receipt?: TerminalTaskReceipt;
   deliveredAt?: string;
   attempts: number;
 }
@@ -88,6 +113,7 @@ export class TerminalTaskEventOutbox {
       taskEventId: taskEvent.id,
       payload: buildTerminalTaskPayload(task),
       createdAt: taskEvent.timestamp,
+      ackState: "pending",
       attempts: 0,
     };
     this.events.push(event);
@@ -109,14 +135,18 @@ export class TerminalTaskEventOutbox {
   }
 
   /**
-   * Mark an outbox record as acknowledged by an external notifier. The record
-   * remains replayable until normal retention evicts it, and the stable id keeps
-   * repeated enqueue/ack operations idempotent.
+   * Mark an outbox record as acknowledged by an external notifier only after
+   * receipt/operator-visible evidence exists. Provider or Gateway send success
+   * alone must not call this: it would be a false terminal ack.
    */
-  acknowledge(id: string, deliveredAt = new Date().toISOString()): TerminalTaskOutboxEvent | null {
+  acknowledge(id: string, receiptInput: TerminalTaskReceiptInput): TerminalTaskOutboxEvent | null {
     const event = this.events.find((candidate) => candidate.id === id);
     if (!event) return null;
-    event.deliveredAt = deliveredAt;
+    const receipt = normalizeTerminalTaskReceipt(receiptInput);
+    if (!receipt) return null;
+    event.ackState = "receipt_confirmed";
+    event.receipt = receipt;
+    event.deliveredAt = receipt.receivedAt;
     event.attempts += 1;
     return event;
   }
@@ -140,7 +170,10 @@ export class TerminalTaskEventOutbox {
 
   private restore(event: TerminalTaskOutboxEvent): void {
     if (this.seen.has(event.id)) return;
-    this.events.push(structuredClone(event));
+    const restored = structuredClone(event);
+    restored.ackState = restored.receipt ? "receipt_confirmed" : "pending";
+    if (!restored.receipt) delete restored.deliveredAt;
+    this.events.push(restored);
     this.markSeen(event.id);
   }
 
@@ -166,6 +199,29 @@ export function isTerminalStatus(status: TaskStatus): status is TerminalTaskStat
 
 export function formatTerminalTaskEventId(taskId: string, status: TaskStatus, completedAt: string): string {
   return `terminal:${encodeURIComponent(taskId)}:${status}:${encodeURIComponent(completedAt)}`;
+}
+
+export function normalizeTerminalTaskReceipt(value: unknown): TerminalTaskReceipt | null {
+  if (!value || typeof value !== "object") return null;
+  const input = value as TerminalTaskReceiptInput;
+  if (input.kind !== "operator_visible" && input.kind !== "operator_receipt") return null;
+  if (typeof input.source !== "string" || input.source.trim().length === 0) return null;
+  const receivedAt = typeof input.receivedAt === "string" && input.receivedAt.trim().length > 0
+    ? input.receivedAt.trim()
+    : new Date().toISOString();
+  const receipt: TerminalTaskReceipt = {
+    kind: input.kind,
+    source: sanitizeReceiptToken(input.source),
+    receivedAt,
+  };
+  if (typeof input.evidenceId === "string" && input.evidenceId.trim().length > 0) {
+    receipt.evidenceId = sanitizeReceiptToken(input.evidenceId);
+  }
+  if (typeof input.evidenceUrl === "string") {
+    const url = firstSafeHttpUrl(input.evidenceUrl);
+    if (url) receipt.evidenceUrl = url;
+  }
+  return receipt;
 }
 
 function buildTerminalTaskPayload(task: TaskRecord): TerminalTaskEventPayload {
@@ -216,6 +272,15 @@ function sanitizeSummary(value: unknown): string | undefined {
     .replace(/(^|\s)(?:[A-Za-z]:)?\/[\w./-]+/g, "$1[path]")
     .replace(/\s+/g, " ")
     .slice(0, MAX_SUMMARY_CHARS);
+}
+
+function sanitizeReceiptToken(value: string): string {
+  return value
+    .trim()
+    .replace(/\b(?:ghp|gho|ghu|ghs|github_pat|sk|xox[abp])-[-_A-Za-z0-9]+\b/g, "[redacted]")
+    .replace(/\b(token|secret|password|api[_-]?key)\s*[:=]\s*\S+/gi, "$1=[redacted]")
+    .replace(/(^|\s)(?:[A-Za-z]:)?\/[\w./-]+/g, "$1[path]")
+    .slice(0, 200);
 }
 
 function normalizePositiveInt(value: number | undefined, fallback: number): number {

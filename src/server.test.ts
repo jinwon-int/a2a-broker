@@ -3350,15 +3350,36 @@ test("GET/POST /a2a/tasks/terminal-outbox replays and acknowledges compact recor
     assert.equal(replay.count, 0);
     assert.equal(replay.cursor, event.id);
 
+    const providerSendAckRes = await fetch(`${server.baseUrl}/a2a/tasks/terminal-outbox/ack`, {
+      method: "POST",
+      headers: hubHeaders,
+      body: JSON.stringify({
+        id: event.id,
+        deliveredAt: "2026-05-01T23:59:00.000Z",
+        receipt: { kind: "provider_send_success", source: "gateway" },
+      }),
+    });
+    assert.equal(providerSendAckRes.status, 400);
+    const afterProviderSend = await fetch(`${server.baseUrl}/a2a/tasks/terminal-outbox`, {
+      headers: {
+        "x-a2a-edge-secret": "test-edge-secret",
+        "x-a2a-requester-id": "hub-a",
+        "x-a2a-requester-role": "hub",
+      },
+    });
+    assert.equal((await afterProviderSend.json()).events[0].ackState, "pending");
+
     const deliveredAt = "2026-05-02T00:00:00.000Z";
     const ackRes = await fetch(`${server.baseUrl}/a2a/tasks/terminal-outbox/ack`, {
       method: "POST",
       headers: hubHeaders,
-      body: JSON.stringify({ id: event.id, deliveredAt }),
+      body: JSON.stringify({ id: event.id, receipt: { kind: "operator_visible", source: "main-session", receivedAt: deliveredAt } }),
     });
     assert.equal(ackRes.status, 200);
     const ack = await ackRes.json();
+    assert.equal(ack.event.ackState, "receipt_confirmed");
     assert.equal(ack.event.deliveredAt, deliveredAt);
+    assert.equal(ack.event.receipt.source, "main-session");
     assert.equal(ack.event.attempts, 1);
 
     const serialized = JSON.stringify({ list, ack });
