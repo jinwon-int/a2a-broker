@@ -452,7 +452,7 @@ test("server reports SQLite persistence metadata when SQLite backend is enabled"
     assert.equal(health.persistence.kind, "sqlite");
     assert.equal(health.persistence.dbFile, join(dir, "state.sqlite"));
     assert.equal(health.persistence.stateVersion, 8);
-    assert.equal(health.persistence.schemaVersion, 8);
+    assert.equal(health.persistence.schemaVersion, 9);
     assert.equal(health.persistence.journalMode, "wal");
     assert.deepEqual(health.persistence.hotEntityTables, [
       "broker_exchanges",
@@ -464,14 +464,15 @@ test("server reports SQLite persistence metadata when SQLite backend is enabled"
       "broker_tombstones",
       "broker_workers",
       "broker_audit_events",
+      "broker_terminal_outbox",
     ]);
     assert.deepEqual(health.persistence.hotEntityHintTables, health.persistence.hotEntityTables);
     assert.deepEqual(health.persistence.hotEntityHintCoverage, {
       ok: true,
       supportedTables: health.persistence.hotEntityTables,
       missingTables: [],
-      supportedCount: 9,
-      totalCount: 9,
+      supportedCount: 10,
+      totalCount: 10,
     });
     assert.deepEqual(health.auditDiagnostics, {
       total: 0,
@@ -3350,21 +3351,125 @@ test("GET/POST /a2a/tasks/terminal-outbox replays and acknowledges compact recor
     assert.equal(replay.count, 0);
     assert.equal(replay.cursor, event.id);
 
-    const deliveredAt = "2026-05-02T00:00:00.000Z";
+    const falseAckRes = await fetch(`${server.baseUrl}/a2a/tasks/terminal-outbox/ack`, {
+      method: "POST",
+      headers: hubHeaders,
+      body: JSON.stringify({ id: event.id, deliveredAt: "2026-05-02T00:00:00.000Z" }),
+    });
+    assert.equal(falseAckRes.status, 400);
+
+    const sendSuccessAckRes = await fetch(`${server.baseUrl}/a2a/tasks/terminal-outbox/ack`, {
+      method: "POST",
+      headers: hubHeaders,
+      body: JSON.stringify({ id: event.id, receipt: { evidence: "gateway_send_success" } }),
+    });
+    assert.equal(sendSuccessAckRes.status, 400);
+
+    const acknowledgedAt = "2026-05-02T00:00:00.000Z";
     const ackRes = await fetch(`${server.baseUrl}/a2a/tasks/terminal-outbox/ack`, {
       method: "POST",
       headers: hubHeaders,
-      body: JSON.stringify({ id: event.id, deliveredAt }),
+      body: JSON.stringify({
+        id: event.id,
+        receipt: {
+          evidence: "operator_visible",
+          acknowledgedAt,
+          receiptId: "operator-message-246",
+        },
+      }),
     });
     assert.equal(ackRes.status, 200);
     const ack = await ackRes.json();
-    assert.equal(ack.event.deliveredAt, deliveredAt);
+    assert.deepEqual(ack.event.ack, {
+      status: "receipt_confirmed",
+      evidence: "operator_visible",
+      acknowledgedAt,
+      receiptId: "operator-message-246",
+    });
+    assert.equal(ack.event.deliveredAt, undefined);
     assert.equal(ack.event.attempts, 1);
 
     const serialized = JSON.stringify({ list, ack });
     for (const forbidden of ["do not leak", "rawPrompt", "rawLog", "do-not-leak", "ghp_secretvalue", "/work/repo"]) {
       assert.ok(!serialized.includes(forbidden), forbidden);
     }
+  } finally {
+    await server.close();
+  }
+});
+
+test("GET /a2a/tasks/terminal-outbox reconciles unacknowledged records before cursor", async () => {
+  const server = await startTestServer({ edgeSecret: "test-edge-secret" });
+  try {
+    await registerTestWorker(server.baseUrl, "worker-a", "analyst", "test-edge-secret");
+
+    const hubHeaders = jsonHeaders({
+      "x-a2a-edge-secret": "test-edge-secret",
+      "x-a2a-requester-id": "hub-a",
+      "x-a2a-requester-role": "hub",
+    });
+    const workerHeaders = jsonHeaders({
+      "x-a2a-edge-secret": "test-edge-secret",
+      "x-a2a-requester-id": "worker-a",
+      "x-a2a-requester-role": "analyst",
+    });
+
+    for (const name of ["one", "two", "three"]) {
+      const createRes = await fetch(`${server.baseUrl}/tasks`, {
+        method: "POST",
+        headers: hubHeaders,
+        body: JSON.stringify({
+          intent: "analyze",
+          requester: { id: "hub-a", kind: "node", role: "hub" },
+          target: { id: "worker-a", kind: "node", role: "analyst" },
+          assignedWorkerId: "worker-a",
+          payload: { githubRepo: "acme/example", githubIssueNumber: 240 },
+          message: `task ${name}`,
+        }),
+      });
+      const task = await createRes.json();
+      await fetch(`${server.baseUrl}/tasks/${task.id}/claim`, {
+        method: "POST",
+        headers: workerHeaders,
+        body: JSON.stringify({ workerId: "worker-a" }),
+      });
+      await fetch(`${server.baseUrl}/tasks/${task.id}/complete`, {
+        method: "POST",
+        headers: workerHeaders,
+        body: JSON.stringify({ workerId: "worker-a", result: { summary: `done ${name}` } }),
+      });
+    }
+
+    const firstPollRes = await fetch(`${server.baseUrl}/a2a/tasks/terminal-outbox`, { headers: hubHeaders });
+    const firstPoll = await firstPollRes.json();
+    assert.equal(firstPoll.count, 3);
+    const [first, second, third] = firstPoll.events;
+    assert.ok(first && second && third);
+
+    const ackRes = await fetch(`${server.baseUrl}/a2a/tasks/terminal-outbox/ack`, {
+      method: "POST",
+      headers: hubHeaders,
+      body: JSON.stringify({ id: first.id, receipt: { evidence: "operator_visible", acknowledgedAt: "2026-05-02T00:00:00.000Z" } }),
+    });
+    assert.equal(ackRes.status, 200);
+
+    const reconcileRes = await fetch(
+      `${server.baseUrl}/a2a/tasks/terminal-outbox?after_id=${encodeURIComponent(second.id)}&reconcile_unacked=true`,
+      { headers: hubHeaders },
+    );
+    const reconcile = await reconcileRes.json();
+    assert.equal(reconcile.count, 2);
+    assert.equal(reconcile.reconciledUnacked, 1);
+    assert.deepEqual(reconcile.events.map((event: any) => event.id), [second.id, third.id]);
+    assert.equal(reconcile.cursor, third.id);
+
+    const retryOnlyRes = await fetch(
+      `${server.baseUrl}/a2a/tasks/terminal-outbox?after_id=${encodeURIComponent(third.id)}&limit=1&reconcile_unacked=true`,
+      { headers: hubHeaders },
+    );
+    const retryOnly = await retryOnlyRes.json();
+    assert.deepEqual(retryOnly.events.map((event: any) => event.id), [second.id]);
+    assert.equal(retryOnly.cursor, third.id);
   } finally {
     await server.close();
   }

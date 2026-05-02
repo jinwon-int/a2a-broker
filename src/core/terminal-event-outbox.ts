@@ -3,8 +3,14 @@ import type { TaskStatusEvent } from "./task-events.js";
 
 const TERMINAL_TASK_STATUSES = new Set<TaskStatus>(["succeeded", "failed", "canceled", "blocked"]);
 const TERMINAL_TASK_EVENT_KINDS = new Set<TaskStatusEvent["kind"]>(["succeeded", "failed", "canceled"]);
+const TERMINAL_TASK_ACK_EVIDENCE = new Set<TerminalTaskOutboxAckEvidence>([
+  "operator_visible",
+  "operator_confirmed",
+  "provider_delivery_receipt",
+]);
 const URL_KEYS = ["prUrl", "doneUrl", "blockUrl"] as const;
 const MAX_SUMMARY_CHARS = 500;
+const MAX_ACK_NOTE_CHARS = 240;
 
 export const DEFAULT_TERMINAL_TASK_OUTBOX_RETENTION = 1000;
 
@@ -33,13 +39,46 @@ export interface TerminalTaskOutboxEvent {
   taskEventId: number;
   payload: TerminalTaskEventPayload;
   createdAt: string;
+  /**
+   * Receipt-confirmed terminal ack state. This is intentionally stricter than
+   * Gateway/provider send success: callers must supply operator-visible or
+   * provider delivery receipt evidence before the broker marks this cursor acked.
+   */
+  ack?: TerminalTaskOutboxAckState;
+  /** @deprecated Older snapshots may contain this; new acks use `ack.acknowledgedAt`. */
   deliveredAt?: string;
   attempts: number;
+}
+
+export type TerminalTaskOutboxAckEvidence =
+  | "operator_visible"
+  | "operator_confirmed"
+  | "provider_delivery_receipt";
+
+export interface TerminalTaskOutboxAckInput {
+  evidence: TerminalTaskOutboxAckEvidence;
+  acknowledgedAt?: string;
+  receiptId?: string;
+  note?: string;
+}
+
+export interface TerminalTaskOutboxAckState {
+  status: "receipt_confirmed";
+  evidence: TerminalTaskOutboxAckEvidence;
+  acknowledgedAt: string;
+  receiptId?: string;
+  note?: string;
 }
 
 export interface TerminalTaskOutboxSubscribeOptions {
   afterId?: string;
   limit?: number;
+}
+
+export interface TerminalTaskOutboxSubscribeResult {
+  events: TerminalTaskOutboxEvent[];
+  cursor: string | null;
+  reconciledUnacked: number;
 }
 
 export interface TerminalTaskEventOutboxOptions {
@@ -97,15 +136,38 @@ export class TerminalTaskEventOutbox {
   }
 
   subscribe(options: TerminalTaskOutboxSubscribeOptions = {}): TerminalTaskOutboxEvent[] {
-    let start = 0;
-    if (options.afterId) {
-      const index = this.events.findIndex((event) => event.id === options.afterId);
-      start = index >= 0 ? index + 1 : 0;
-    }
-    const events = this.events.slice(start);
-    return typeof options.limit === "number" && options.limit >= 0
-      ? events.slice(0, options.limit)
-      : events;
+    return this.forwardEvents(options);
+  }
+
+  /**
+   * Subscribe while also returning a safe cursor and retrying retained records
+   * that are still missing receipt-confirmed ack evidence at/before afterId.
+   *
+   * This closes the send/crash gap: a notifier can advance its own fetch cursor
+   * only for newly returned records, while unacknowledged records before the
+   * cursor are replayed until acknowledge() receives receipt evidence.
+   */
+  subscribeWithCursor(options: TerminalTaskOutboxSubscribeOptions = {}): TerminalTaskOutboxSubscribeResult {
+    const afterIndex = this.indexOfId(options.afterId);
+    const replayStart = options.afterId && afterIndex < 0 ? 0 : afterIndex + 1;
+    const unacknowledgedBeforeCursor = afterIndex >= 0
+      ? this.events.slice(0, afterIndex + 1).filter((event) => !isReceiptConfirmed(event))
+      : [];
+    const newEvents = this.events.slice(replayStart);
+    const replay = [...unacknowledgedBeforeCursor, ...newEvents];
+    const events = this.applyLimit(replay, options.limit);
+    return {
+      events,
+      cursor: this.nextCursor(options.afterId, afterIndex, events),
+      reconciledUnacked: events.filter((event) => {
+        const index = this.events.findIndex((candidate) => candidate.id === event.id);
+        return index >= 0 && index <= afterIndex && !isReceiptConfirmed(event);
+      }).length,
+    };
+  }
+
+  reconcile(options: TerminalTaskOutboxSubscribeOptions = {}): TerminalTaskOutboxSubscribeResult {
+    return this.subscribeWithCursor(options);
   }
 
   /**
@@ -113,10 +175,14 @@ export class TerminalTaskEventOutbox {
    * remains replayable until normal retention evicts it, and the stable id keeps
    * repeated enqueue/ack operations idempotent.
    */
-  acknowledge(id: string, deliveredAt = new Date().toISOString()): TerminalTaskOutboxEvent | null {
+  acknowledge(id: string, receipt: TerminalTaskOutboxAckInput): TerminalTaskOutboxEvent | null {
+    if (!receipt || !isTerminalTaskOutboxAckEvidence(receipt.evidence)) {
+      throw new TypeError("terminal outbox ack requires receipt/operator-visible evidence");
+    }
     const event = this.events.find((candidate) => candidate.id === id);
     if (!event) return null;
-    event.deliveredAt = deliveredAt;
+    event.ack = buildAckState(receipt);
+    delete event.deliveredAt;
     event.attempts += 1;
     return event;
   }
@@ -140,8 +206,45 @@ export class TerminalTaskEventOutbox {
 
   private restore(event: TerminalTaskOutboxEvent): void {
     if (this.seen.has(event.id)) return;
-    this.events.push(structuredClone(event));
+    const restored = structuredClone(event);
+    if (!restored.ack && restored.deliveredAt) {
+      restored.ack = {
+        status: "receipt_confirmed",
+        evidence: "operator_visible",
+        acknowledgedAt: restored.deliveredAt,
+        note: "migrated legacy deliveredAt ack",
+      };
+    }
+    this.events.push(restored);
     this.markSeen(event.id);
+  }
+
+  private forwardEvents(options: TerminalTaskOutboxSubscribeOptions): TerminalTaskOutboxEvent[] {
+    const start = this.indexAfter(options.afterId);
+    return this.applyLimit(this.events.slice(start), options.limit);
+  }
+
+  private indexAfter(afterId: string | undefined): number {
+    if (!afterId) return 0;
+    const index = this.indexOfId(afterId);
+    return index >= 0 ? index + 1 : 0;
+  }
+
+  private indexOfId(id: string | undefined): number {
+    return id ? this.events.findIndex((event) => event.id === id) : -1;
+  }
+
+  private applyLimit(events: TerminalTaskOutboxEvent[], limit: number | undefined): TerminalTaskOutboxEvent[] {
+    return typeof limit === "number" && limit >= 0 ? events.slice(0, limit) : events;
+  }
+
+  private nextCursor(afterId: string | undefined, afterIndex: number, events: TerminalTaskOutboxEvent[]): string | null {
+    if (!afterId || afterIndex < 0) return events.at(-1)?.id ?? null;
+    const newestReturned = events
+      .map((event) => this.events.findIndex((candidate) => candidate.id === event.id))
+      .filter((index) => index > afterIndex)
+      .at(-1);
+    return typeof newestReturned === "number" ? this.events[newestReturned]!.id : afterId;
   }
 
   private markSeen(id: string): void {
@@ -164,8 +267,16 @@ export function isTerminalStatus(status: TaskStatus): status is TerminalTaskStat
   return TERMINAL_TASK_STATUSES.has(status);
 }
 
+export function isTerminalTaskOutboxAckEvidence(value: unknown): value is TerminalTaskOutboxAckEvidence {
+  return typeof value === "string" && TERMINAL_TASK_ACK_EVIDENCE.has(value as TerminalTaskOutboxAckEvidence);
+}
+
 export function formatTerminalTaskEventId(taskId: string, status: TaskStatus, completedAt: string): string {
   return `terminal:${encodeURIComponent(taskId)}:${status}:${encodeURIComponent(completedAt)}`;
+}
+
+function isReceiptConfirmed(event: TerminalTaskOutboxEvent): boolean {
+  return event.ack?.status === "receipt_confirmed" || Boolean(event.deliveredAt);
 }
 
 function buildTerminalTaskPayload(task: TaskRecord): TerminalTaskEventPayload {
@@ -216,6 +327,25 @@ function sanitizeSummary(value: unknown): string | undefined {
     .replace(/(^|\s)(?:[A-Za-z]:)?\/[\w./-]+/g, "$1[path]")
     .replace(/\s+/g, " ")
     .slice(0, MAX_SUMMARY_CHARS);
+}
+
+function buildAckState(receipt: TerminalTaskOutboxAckInput): TerminalTaskOutboxAckState {
+  const ack: TerminalTaskOutboxAckState = {
+    status: "receipt_confirmed",
+    evidence: receipt.evidence,
+    acknowledgedAt: receipt.acknowledgedAt ?? new Date().toISOString(),
+  };
+  const receiptId = sanitizeAckText(receipt.receiptId, MAX_ACK_NOTE_CHARS);
+  if (receiptId) ack.receiptId = receiptId;
+  const note = sanitizeAckText(receipt.note, MAX_ACK_NOTE_CHARS);
+  if (note) ack.note = note;
+  return ack;
+}
+
+function sanitizeAckText(value: unknown, maxChars: number): string | undefined {
+  const sanitized = sanitizeSummary(value);
+  if (!sanitized) return undefined;
+  return sanitized.slice(0, maxChars);
 }
 
 function normalizePositiveInt(value: number | undefined, fallback: number): number {

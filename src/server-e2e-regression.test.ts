@@ -397,15 +397,32 @@ test("E2E: terminal notification outbox enforces auth and replays compact ack-sa
     assert.equal(terminalPayload.prUrl, "https://github.com/jinwon-int/a2a-broker/pull/251");
     assert.deepEqual(terminalPayload.testSummary, { status: "passed", total: 2, passed: 2 });
 
-    const deliveredAt = "2026-05-02T01:23:45.000Z";
+    const providerSendOnlyAckRes = await fetch(`${server.baseUrl}/a2a/tasks/terminal-outbox/ack`, {
+      method: "POST",
+      headers: hubHeaders,
+      body: JSON.stringify({ id: outboxEvent.id, receipt: { evidence: "provider_send_success" } }),
+    });
+    assert.equal(providerSendOnlyAckRes.status, 400);
+    assert.equal(server.runtime.broker.getTerminalTaskEventOutbox().subscribe()[0]!.attempts, 0);
+
+    const acknowledgedAt = "2026-05-02T01:23:45.000Z";
     const ackRes = await fetch(`${server.baseUrl}/a2a/tasks/terminal-outbox/ack`, {
       method: "POST",
       headers: hubHeaders,
-      body: JSON.stringify({ id: outboxEvent.id, deliveredAt }),
+      body: JSON.stringify({
+        id: outboxEvent.id,
+        receipt: { evidence: "provider_delivery_receipt", acknowledgedAt, receiptId: "delivery-receipt-250" },
+      }),
     });
     assert.equal(ackRes.status, 200);
     const ack = await ackRes.json();
-    assert.equal(ack.event.deliveredAt, deliveredAt);
+    assert.deepEqual(ack.event.ack, {
+      status: "receipt_confirmed",
+      evidence: "provider_delivery_receipt",
+      acknowledgedAt,
+      receiptId: "delivery-receipt-250",
+    });
+    assert.equal(ack.event.deliveredAt, undefined);
     assert.equal(ack.event.attempts, 1);
 
     const noDuplicateRes = await fetch(
