@@ -162,6 +162,49 @@ Rollback order for staged checks:
 
 ## Evidence comment template
 
+The final command-center comment can be rendered from a sanitized evidence file
+without performing any live operation:
+
+```bash
+node scripts/receipt-gated-smoke-evidence.mjs --input evidence.json
+```
+
+The collector is intentionally read-only. It does not deploy, restart Gateway,
+send Telegram, or ACK terminal outbox records. If required receipt-gated proof is
+missing, or if any reported live send lacks the exact operator approval metadata
+listed above, it exits non-zero and renders a `Block:` comment instead of a false
+`Done:`. A minimal dry-run evidence file contains:
+
+```json
+{
+  "candidates": { "broker": "<sha>", "plugin": "<sha-or-PR-164>" },
+  "ci": { "command": "npm test", "result": "<exit-code/link>" },
+  "dryRunAckGate": {
+    "outboxId": "<id>",
+    "invalidAckRejected": true,
+    "invalidAckStatus": "<status/message>",
+    "reconcileUnackedReplayedBeforeReceipt": true,
+    "validReceiptEvidence": "operator_visible",
+    "ackStatus": "receipt_confirmed"
+  },
+  "duplicateGuard": {
+    "dedupeKey": "<outbox-id/plugin-key>",
+    "plannedTelegramSendsForSameId": 1,
+    "replayAfterReceiptClosedRetryCandidate": true
+  },
+  "liveSendGate": { "sendsExecuted": 0 },
+  "rollbackCleanup": {
+    "notifierLiveDeliveryDisabledOrUnchanged": true,
+    "unacknowledgedRecordsRemainReplayable": "yes"
+  }
+}
+```
+
+If `liveSendGate.sendsExecuted` is greater than zero, include
+`liveSendGate.approvalCommentUrl` plus `liveSendGate.approval` fields for the
+approved environment, node, broker/plugin/OpenClaw SHAs, Telegram target class,
+maximum sends, rollback owner, and stop condition.
+
 ```markdown
 Done: #241/#168 receipt-gated ACK canary smoke
 
