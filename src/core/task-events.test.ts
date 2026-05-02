@@ -479,10 +479,13 @@ describe("TerminalTaskEventOutbox", () => {
     const [event] = outbox.subscribe();
     assert.ok(event);
 
-    assert.throws(
-      () => outbox.acknowledge(event.id, { evidence: "gateway_send_success" } as any),
-      /receipt\/operator-visible evidence/,
-    );
+    for (const evidence of ["gateway_send_success", "provider_send_success"]) {
+      assert.throws(
+        () => outbox.acknowledge(event.id, { evidence } as any),
+        /receipt\/operator-visible evidence/,
+        evidence,
+      );
+    }
     assert.equal(outbox.subscribe()[0]!.attempts, 0);
 
     const acknowledgedAt = "2026-05-01T00:00:00.000Z";
