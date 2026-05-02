@@ -510,6 +510,40 @@ describe("TerminalTaskEventOutbox", () => {
     assert.equal(replayed!.attempts, 1);
   });
 
+  it("reconciles unacknowledged terminal records before a notifier cursor", () => {
+    const broker = new InMemoryA2ABroker(undefined, undefined, { maxTerminalTaskOutboxEvents: 10 });
+    registerWorker(broker);
+
+    for (const id of ["cursor-one", "cursor-two", "cursor-three"]) {
+      const task = createTask(broker, { id });
+      broker.claimTask(task.id, "worker-1");
+      broker.completeTask(task.id, "worker-1", { summary: `done ${id}` });
+    }
+
+    const outbox = broker.getTerminalTaskEventOutbox();
+    const firstPoll = outbox.subscribeWithCursor();
+    const [first, second, third] = firstPoll.events;
+    assert.ok(first);
+    assert.ok(second);
+    assert.ok(third);
+    assert.equal(firstPoll.cursor, third.id);
+
+    outbox.acknowledge(first.id, {
+      evidence: "operator_visible",
+      acknowledgedAt: "2026-05-02T00:00:00.000Z",
+    });
+
+    const retryPoll = outbox.reconcile({ afterId: second.id });
+    assert.deepEqual(retryPoll.events.map((event) => event.id), [second.id, third.id]);
+    assert.equal(retryPoll.cursor, third.id);
+    assert.equal(retryPoll.reconciledUnacked, 1);
+
+    const retryOnly = outbox.subscribeWithCursor({ afterId: firstPoll.cursor ?? undefined, limit: 1 });
+    assert.deepEqual(retryOnly.events.map((event) => event.id), [second.id]);
+    assert.equal(retryOnly.cursor, third.id, "retry-only reconciliation must not move the cursor backward");
+    assert.equal(retryOnly.reconciledUnacked, 1);
+  });
+
   it("keeps terminal outbox retention bounded", () => {
     const broker = new InMemoryA2ABroker(undefined, undefined, { maxTerminalTaskOutboxEvents: 2 });
     registerWorker(broker);

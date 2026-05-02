@@ -75,6 +75,12 @@ export interface TerminalTaskOutboxSubscribeOptions {
   limit?: number;
 }
 
+export interface TerminalTaskOutboxSubscribeResult {
+  events: TerminalTaskOutboxEvent[];
+  cursor: string | null;
+  reconciledUnacked: number;
+}
+
 export interface TerminalTaskEventOutboxOptions {
   /** Maximum retained outbox records. Older records are evicted FIFO. */
   maxEvents?: number;
@@ -130,15 +136,38 @@ export class TerminalTaskEventOutbox {
   }
 
   subscribe(options: TerminalTaskOutboxSubscribeOptions = {}): TerminalTaskOutboxEvent[] {
-    let start = 0;
-    if (options.afterId) {
-      const index = this.events.findIndex((event) => event.id === options.afterId);
-      start = index >= 0 ? index + 1 : 0;
-    }
-    const events = this.events.slice(start);
-    return typeof options.limit === "number" && options.limit >= 0
-      ? events.slice(0, options.limit)
-      : events;
+    return this.forwardEvents(options);
+  }
+
+  /**
+   * Subscribe while also returning a safe cursor and retrying retained records
+   * that are still missing receipt-confirmed ack evidence at/before afterId.
+   *
+   * This closes the send/crash gap: a notifier can advance its own fetch cursor
+   * only for newly returned records, while unacknowledged records before the
+   * cursor are replayed until acknowledge() receives receipt evidence.
+   */
+  subscribeWithCursor(options: TerminalTaskOutboxSubscribeOptions = {}): TerminalTaskOutboxSubscribeResult {
+    const afterIndex = this.indexOfId(options.afterId);
+    const replayStart = options.afterId && afterIndex < 0 ? 0 : afterIndex + 1;
+    const unacknowledgedBeforeCursor = afterIndex >= 0
+      ? this.events.slice(0, afterIndex + 1).filter((event) => !isReceiptConfirmed(event))
+      : [];
+    const newEvents = this.events.slice(replayStart);
+    const replay = [...unacknowledgedBeforeCursor, ...newEvents];
+    const events = this.applyLimit(replay, options.limit);
+    return {
+      events,
+      cursor: this.nextCursor(options.afterId, afterIndex, events),
+      reconciledUnacked: events.filter((event) => {
+        const index = this.events.findIndex((candidate) => candidate.id === event.id);
+        return index >= 0 && index <= afterIndex && !isReceiptConfirmed(event);
+      }).length,
+    };
+  }
+
+  reconcile(options: TerminalTaskOutboxSubscribeOptions = {}): TerminalTaskOutboxSubscribeResult {
+    return this.subscribeWithCursor(options);
   }
 
   /**
@@ -177,8 +206,45 @@ export class TerminalTaskEventOutbox {
 
   private restore(event: TerminalTaskOutboxEvent): void {
     if (this.seen.has(event.id)) return;
-    this.events.push(structuredClone(event));
+    const restored = structuredClone(event);
+    if (!restored.ack && restored.deliveredAt) {
+      restored.ack = {
+        status: "receipt_confirmed",
+        evidence: "operator_visible",
+        acknowledgedAt: restored.deliveredAt,
+        note: "migrated legacy deliveredAt ack",
+      };
+    }
+    this.events.push(restored);
     this.markSeen(event.id);
+  }
+
+  private forwardEvents(options: TerminalTaskOutboxSubscribeOptions): TerminalTaskOutboxEvent[] {
+    const start = this.indexAfter(options.afterId);
+    return this.applyLimit(this.events.slice(start), options.limit);
+  }
+
+  private indexAfter(afterId: string | undefined): number {
+    if (!afterId) return 0;
+    const index = this.indexOfId(afterId);
+    return index >= 0 ? index + 1 : 0;
+  }
+
+  private indexOfId(id: string | undefined): number {
+    return id ? this.events.findIndex((event) => event.id === id) : -1;
+  }
+
+  private applyLimit(events: TerminalTaskOutboxEvent[], limit: number | undefined): TerminalTaskOutboxEvent[] {
+    return typeof limit === "number" && limit >= 0 ? events.slice(0, limit) : events;
+  }
+
+  private nextCursor(afterId: string | undefined, afterIndex: number, events: TerminalTaskOutboxEvent[]): string | null {
+    if (!afterId || afterIndex < 0) return events.at(-1)?.id ?? null;
+    const newestReturned = events
+      .map((event) => this.events.findIndex((candidate) => candidate.id === event.id))
+      .filter((index) => index > afterIndex)
+      .at(-1);
+    return typeof newestReturned === "number" ? this.events[newestReturned]!.id : afterId;
   }
 
   private markSeen(id: string): void {
@@ -207,6 +273,10 @@ export function isTerminalTaskOutboxAckEvidence(value: unknown): value is Termin
 
 export function formatTerminalTaskEventId(taskId: string, status: TaskStatus, completedAt: string): string {
   return `terminal:${encodeURIComponent(taskId)}:${status}:${encodeURIComponent(completedAt)}`;
+}
+
+function isReceiptConfirmed(event: TerminalTaskOutboxEvent): boolean {
+  return event.ack?.status === "receipt_confirmed" || Boolean(event.deliveredAt);
 }
 
 function buildTerminalTaskPayload(task: TaskRecord): TerminalTaskEventPayload {

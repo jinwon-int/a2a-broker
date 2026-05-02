@@ -237,7 +237,7 @@ test("SqliteBrokerStateStore saves and reloads snapshots with WAL metadata", () 
       dbFile: temp.filePath,
       stateVersion: CURRENT_BROKER_STATE_VERSION,
       loadSource: "snapshot",
-      schemaVersion: 8,
+      schemaVersion: 9,
       journalMode: "wal",
       hotEntityTables: [
         "broker_exchanges",
@@ -249,6 +249,7 @@ test("SqliteBrokerStateStore saves and reloads snapshots with WAL metadata", () 
         "broker_tombstones",
         "broker_workers",
         "broker_audit_events",
+        "broker_terminal_outbox",
       ],
       hotEntityHintTables: [
         "broker_exchanges",
@@ -260,6 +261,7 @@ test("SqliteBrokerStateStore saves and reloads snapshots with WAL metadata", () 
         "broker_tombstones",
         "broker_workers",
         "broker_audit_events",
+        "broker_terminal_outbox",
       ],
       hotEntityHintCoverage: {
         ok: true,
@@ -273,10 +275,11 @@ test("SqliteBrokerStateStore saves and reloads snapshots with WAL metadata", () 
           "broker_tombstones",
           "broker_workers",
           "broker_audit_events",
+          "broker_terminal_outbox",
         ],
         missingTables: [],
-        supportedCount: 9,
-        totalCount: 9,
+        supportedCount: 10,
+        totalCount: 10,
       },
       hotEntityMirror: {
         ok: true,
@@ -290,6 +293,7 @@ test("SqliteBrokerStateStore saves and reloads snapshots with WAL metadata", () 
           broker_tombstones: 1,
           broker_workers: 1,
           broker_audit_events: 1,
+          broker_terminal_outbox: 0,
         },
         snapshotCounts: {
           exchanges: 1,
@@ -301,6 +305,7 @@ test("SqliteBrokerStateStore saves and reloads snapshots with WAL metadata", () 
           tombstones: 1,
           workers: 1,
           auditEvents: 1,
+          terminalOutbox: 0,
         },
         mismatches: [],
       },
@@ -320,6 +325,7 @@ test("SqliteBrokerStateStore saves and reloads snapshots with WAL metadata", () 
       assert.equal(readSqliteCount(db, "broker_tombstones"), 1);
       assert.equal(readSqliteCount(db, "broker_workers"), 1);
       assert.equal(readSqliteCount(db, "broker_audit_events"), 1);
+      assert.equal(readSqliteCount(db, "broker_terminal_outbox"), 0);
       const taskRow = db.prepare("SELECT id, status, intent, assigned_worker_id, task_origin FROM broker_tasks").get() as {
         id: string;
         status: string;
@@ -1674,7 +1680,7 @@ test("SqliteBrokerStateStore migrates v2 task hot table with task origin column"
       store.readHotTasks({ taskOrigin: "api", targetNodeId: "worker-a" }).map((task) => task.id),
       ["task-migrated"],
     );
-    assert.equal(store.getPersistenceInfo().schemaVersion, 8);
+    assert.equal(store.getPersistenceInfo().schemaVersion, 9);
     store.close();
   } finally {
     temp.cleanup();

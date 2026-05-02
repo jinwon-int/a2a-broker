@@ -758,6 +758,17 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
 
         const afterId = url.searchParams.get("after_id") ?? undefined;
         const limit = numberQueryParam(url, "limit");
+        const reconcileUnacked = booleanQueryParam(url, "reconcile_unacked") ?? false;
+        if (reconcileUnacked) {
+          const subscription = broker.getTerminalTaskEventOutbox().subscribeWithCursor({ afterId, limit });
+          return sendJson(res, 200, {
+            kind: "task.terminal.outbox",
+            count: subscription.events.length,
+            cursor: subscription.cursor,
+            reconciledUnacked: subscription.reconciledUnacked,
+            events: subscription.events,
+          });
+        }
         const events = broker.getTerminalTaskEventOutbox().subscribe({ afterId, limit });
         return sendJson(res, 200, {
           kind: "task.terminal.outbox",
