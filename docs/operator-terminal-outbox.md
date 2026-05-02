@@ -37,6 +37,8 @@ npm run smoke:docker-broker -- --dry-run
 
 For a post-approval live validation, operators can use `npm run smoke:docker-broker -- --live` or the fleet variant from `docs/docker-broker-live-smoke.md`. Do not run live smokes or deploy without explicit operator approval.
 
+For the #241/#168 duplicate Telegram flood closeout, use the receipt-gated canary smoke runbook in [receipt-gated-ack-canary-runbook.md](receipt-gated-ack-canary-runbook.md). It keeps dry-run/manual receipt ACK as the default path and treats any staged live Telegram send as an explicit command-center approval gate.
+
 ## Replay, ack, and retention
 
 - Consumers replay with `subscribe({ afterId })`; HTTP consumers pass the same stable cursor as `after_id`.
