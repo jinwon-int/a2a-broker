@@ -88,13 +88,23 @@ Malformed JSON import fails startup/load with the same bounded validation errors
       "ok": true,
       "tableCounts": {
         "broker_tasks": 12,
-        "broker_audit_events": 42
+        "broker_audit_events": 5000
       },
       "snapshotCounts": {
         "tasks": 12,
-        "auditEvents": 42
+        "auditEvents": 7421
       },
-      "mismatches": []
+      "mismatches": [],
+      "retentionWindows": [
+        {
+          "table": "broker_audit_events",
+          "snapshotKey": "auditEvents",
+          "tableCount": 5000,
+          "snapshotCount": 7421,
+          "reason": "audit_hot_retention",
+          "prunedCount": 2421
+        }
+      ]
     },
     "importedFromJsonFile": "/var/lib/a2a-broker/state.json",
     "lastImportAt": "2026-04-27T00:00:00.000Z"
@@ -108,8 +118,10 @@ Operator check:
 - `persistence.hotEntityHintCoverage.missingTables` should be empty.
 - `persistence.hotEntityHintCoverage.supportedCount` should equal `persistence.hotEntityHintCoverage.totalCount`.
 - `persistence.hotEntityHintTables` should match the mirrored `persistence.hotEntityTables` set.
+- `persistence.hotEntityMirror.ok` should be `true` and `persistence.hotEntityMirror.mismatches` should be empty before treating the SQLite hot mirror as healthy.
+- `persistence.hotEntityMirror.retentionWindows` may list `broker_audit_events` with `reason: "audit_hot_retention"` when hot audit retention has intentionally pruned older audit rows from the mirror. This is not a drift failure as long as `mismatches` is empty; the retained hot audit row ids are still checked against the canonical snapshot so rogue audit rows or non-audit count drift continue to fail health.
 
-If `ok=false`, at least one mirrored SQLite hot table is missing dirty hinted-write support. Treat that as a schema/write-path drift signal before relying on hot-table read performance for that deployment.
+If `hotEntityHintCoverage.ok=false`, at least one mirrored SQLite hot table is missing dirty hinted-write support. Treat that as a schema/write-path drift signal before relying on hot-table read performance for that deployment. If `hotEntityMirror.ok=false`, inspect `mismatches` and take a backup before repairing or rebuilding the live SQLite DB.
 
 ## Schema v8 and diagnostics hot reads
 

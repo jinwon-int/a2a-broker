@@ -1111,6 +1111,82 @@ test("SqliteBrokerStateStore reports hot table mirror count drift", () => {
   }
 });
 
+test("SqliteBrokerStateStore treats pruned audit hot rows as a retention window", () => {
+  const temp = withTempFile("state.sqlite");
+  try {
+    const snapshot: BrokerSnapshot = {
+      ...emptySnapshot(),
+      auditEvents: [
+        makeAuditEvent("audit-old", "task.created", "task-retained", "2026-04-27T00:00:00.000Z"),
+        makeAuditEvent("audit-middle", "task.started", "task-retained", "2026-04-27T00:01:00.000Z"),
+        makeAuditEvent("audit-new", "task.succeeded", "task-retained", "2026-04-27T00:02:00.000Z"),
+      ],
+    };
+
+    const store = new SqliteBrokerStateStore(temp.filePath);
+    store.save(snapshot);
+    store.pruneHotAuditEventsToMax(1);
+
+    const status = store.readHotEntityMirrorStatus();
+    assert.equal(status.ok, true);
+    assert.deepEqual(status.mismatches, []);
+    assert.deepEqual(status.retentionWindows, [
+      {
+        table: "broker_audit_events",
+        snapshotKey: "auditEvents",
+        tableCount: 1,
+        snapshotCount: 3,
+        reason: "audit_hot_retention",
+        prunedCount: 2,
+      },
+    ]);
+    store.close();
+  } finally {
+    temp.cleanup();
+  }
+});
+
+test("SqliteBrokerStateStore still reports audit hot-table id drift", () => {
+  const temp = withTempFile("state.sqlite");
+  try {
+    const snapshot: BrokerSnapshot = {
+      ...emptySnapshot(),
+      auditEvents: [
+        makeAuditEvent("audit-one", "task.created", "task-drift", "2026-04-27T00:00:00.000Z"),
+        makeAuditEvent("audit-two", "task.started", "task-drift", "2026-04-27T00:01:00.000Z"),
+      ],
+    };
+
+    const store = new SqliteBrokerStateStore(temp.filePath);
+    store.save(snapshot);
+    store.close();
+
+    const db = new DatabaseSync(temp.filePath);
+    try {
+      db.prepare("UPDATE broker_audit_events SET id = ? WHERE id = ?").run("audit-rogue", "audit-two");
+    } finally {
+      db.close();
+    }
+
+    const reloaded = new SqliteBrokerStateStore(temp.filePath);
+    const status = reloaded.readHotEntityMirrorStatus();
+    assert.equal(status.ok, false);
+    assert.deepEqual(status.mismatches, [
+      {
+        table: "broker_audit_events",
+        snapshotKey: "auditEvents",
+        tableCount: 2,
+        snapshotCount: 2,
+        reason: "id_drift",
+      },
+    ]);
+    assert.equal(status.retentionWindows, undefined);
+    reloaded.close();
+  } finally {
+    temp.cleanup();
+  }
+});
+
 test("SqliteBrokerStateStore supports granular task and audit hot-table upserts", () => {
   const temp = withTempFile("state.sqlite");
   try {
