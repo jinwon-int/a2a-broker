@@ -452,7 +452,7 @@ test("server reports SQLite persistence metadata when SQLite backend is enabled"
     assert.equal(health.persistence.kind, "sqlite");
     assert.equal(health.persistence.dbFile, join(dir, "state.sqlite"));
     assert.equal(health.persistence.stateVersion, 8);
-    assert.equal(health.persistence.schemaVersion, 8);
+    assert.equal(health.persistence.schemaVersion, 9);
     assert.equal(health.persistence.journalMode, "wal");
     assert.deepEqual(health.persistence.hotEntityTables, [
       "broker_exchanges",
@@ -464,14 +464,15 @@ test("server reports SQLite persistence metadata when SQLite backend is enabled"
       "broker_tombstones",
       "broker_workers",
       "broker_audit_events",
+      "broker_terminal_outbox",
     ]);
     assert.deepEqual(health.persistence.hotEntityHintTables, health.persistence.hotEntityTables);
     assert.deepEqual(health.persistence.hotEntityHintCoverage, {
       ok: true,
       supportedTables: health.persistence.hotEntityTables,
       missingTables: [],
-      supportedCount: 9,
-      totalCount: 9,
+      supportedCount: 10,
+      totalCount: 10,
     });
     assert.deepEqual(health.auditDiagnostics, {
       total: 0,

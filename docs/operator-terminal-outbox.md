@@ -22,7 +22,8 @@ A notifier can consume the broker-owned outbox without subscribing to raw task s
 
 - `GET /a2a/tasks/terminal-outbox?after_id=<cursor>&limit=<n>` returns `{ kind, count, cursor, events }`.
 - Save the response `cursor` (or the last event `id`) and pass it as `after_id` on the next poll.
-- `POST /a2a/tasks/terminal-outbox/ack` with `{ "id": "...", "deliveredAt": "..." }` marks a record delivered without removing replay state.
+- On restart or cursor uncertainty, pass `reconcile_unacked=true`; the broker prepends any retained unacknowledged records at/before the cursor, so fetched-but-not-receipted terminal notifications retry without duplicating acknowledged records.
+- `POST /a2a/tasks/terminal-outbox/ack` with `{ "id": "...", "deliveredAt": "..." }` marks a record delivered without removing replay state. Only call this after receipt/operator-visible evidence, not merely after Gateway/provider send success.
 - Both routes require an authenticated hub/operator requester when edge identity enforcement is enabled.
 
 ## Release/deploy readiness smoke
@@ -39,7 +40,8 @@ For a post-approval live validation, operators can use `npm run smoke:docker-bro
 
 - Consumers replay with `subscribe({ afterId })`; HTTP consumers pass the same stable cursor as `after_id`.
 - Records after the stable cursor are returned in insertion order; unknown/stale cursors replay retained records from the beginning.
-- Retained outbox records are included in broker state version 8 snapshots as `terminalOutbox`, so replay cursors, acknowledgements, and dedupe IDs survive JSON/SQLite snapshot restart.
+- `reconcile_unacked=true` returns unacknowledged retained records at or before `after_id` before newer records. This is duplicate-safe because each record keeps the same stable `id`; notifiers must dedupe by that id and should only advance their own completed cursor after ack/receipt evidence.
+- Retained outbox records are included in broker state version 8 snapshots and mirrored in SQLite schema 9 `broker_terminal_outbox`, so replay cursors, acknowledgements, and dedupe IDs survive JSON/SQLite hot-table restart.
 - `acknowledge(id, deliveredAt)` marks delivery metadata without removing the record, so a notifier can recover after a crash until normal retention evicts it.
 - Duplicate enqueue of the same terminal task state returns the retained record or is suppressed if recently seen.
 - Retention is bounded by `maxTerminalTaskOutboxEvents` (default `1000`), evicting oldest records FIFO.

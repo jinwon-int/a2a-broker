@@ -40,6 +40,13 @@ export interface TerminalTaskOutboxEvent {
 export interface TerminalTaskOutboxSubscribeOptions {
   afterId?: string;
   limit?: number;
+  /**
+   * Include any still-unacknowledged retained records at or before afterId.
+   * This lets a notifier restart with an advanced fetch cursor without losing
+   * records that were fetched but never acknowledged with operator-visible
+   * receipt evidence.
+   */
+  reconcileUnacknowledged?: boolean;
 }
 
 export interface TerminalTaskEventOutboxOptions {
@@ -102,7 +109,12 @@ export class TerminalTaskEventOutbox {
       const index = this.events.findIndex((event) => event.id === options.afterId);
       start = index >= 0 ? index + 1 : 0;
     }
-    const events = this.events.slice(start);
+    const events = options.reconcileUnacknowledged && options.afterId
+      ? dedupeEventsById([
+          ...this.events.slice(0, start).filter((event) => !event.deliveredAt),
+          ...this.events.slice(start),
+        ])
+      : this.events.slice(start);
     return typeof options.limit === "number" && options.limit >= 0
       ? events.slice(0, options.limit)
       : events;
@@ -220,4 +232,15 @@ function sanitizeSummary(value: unknown): string | undefined {
 
 function normalizePositiveInt(value: number | undefined, fallback: number): number {
   return typeof value === "number" && Number.isInteger(value) && value > 0 ? value : fallback;
+}
+
+function dedupeEventsById(events: TerminalTaskOutboxEvent[]): TerminalTaskOutboxEvent[] {
+  const seen = new Set<string>();
+  const deduped: TerminalTaskOutboxEvent[] = [];
+  for (const event of events) {
+    if (seen.has(event.id)) continue;
+    seen.add(event.id);
+    deduped.push(event);
+  }
+  return deduped;
 }

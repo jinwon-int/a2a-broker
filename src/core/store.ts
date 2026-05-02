@@ -183,7 +183,7 @@ export interface SqliteTombstoneHotTableFilters {
 }
 
 export interface SqliteHotRetentionPlan {
-  table: "broker_exchanges" | "broker_exchange_messages" | "broker_proposals" | "broker_artifacts" | "broker_validations" | "broker_tasks" | "broker_tombstones" | "broker_audit_events" | "broker_workers";
+  table: "broker_exchanges" | "broker_exchange_messages" | "broker_proposals" | "broker_artifacts" | "broker_validations" | "broker_tasks" | "broker_tombstones" | "broker_audit_events" | "broker_workers" | "broker_terminal_outbox";
   cutoffMs: number;
   retainedIds: string[];
   pruneIds: string[];
@@ -228,7 +228,7 @@ export interface SqliteWorkerHotRetentionPlanOptions {
   protectedWorkerIds?: string[];
 }
 
-const SQLITE_SCHEMA_VERSION = 8;
+const SQLITE_SCHEMA_VERSION = 9;
 const SQLITE_HOT_ENTITY_TABLES = [
   "broker_exchanges",
   "broker_exchange_messages",
@@ -239,6 +239,7 @@ const SQLITE_HOT_ENTITY_TABLES = [
   "broker_tombstones",
   "broker_workers",
   "broker_audit_events",
+  "broker_terminal_outbox",
 ] as const;
 const SQLITE_HOT_ENTITY_HINT_TABLES = [
   "broker_exchanges",
@@ -250,6 +251,7 @@ const SQLITE_HOT_ENTITY_HINT_TABLES = [
   "broker_tombstones",
   "broker_workers",
   "broker_audit_events",
+  "broker_terminal_outbox",
 ] as const;
 type SqliteHotEntityTable = typeof SQLITE_HOT_ENTITY_TABLES[number];
 type BrokerSnapshotArrayKey = Exclude<{
@@ -265,6 +267,7 @@ const SQLITE_HOT_ENTITY_SNAPSHOT_KEYS: Record<SqliteHotEntityTable, BrokerSnapsh
   broker_tombstones: "tombstones",
   broker_workers: "workers",
   broker_audit_events: "auditEvents",
+  broker_terminal_outbox: "terminalOutbox",
 };
 
 const partyRefSchema = z
@@ -614,7 +617,7 @@ const brokerSnapshotSchema = z
     workers: z.array(workerSchema).optional().default([]),
     tasks: z.array(taskSchema).optional().default([]),
     tombstones: z.array(tombstoneSchema).optional().default([]),
-    terminalOutbox: z.array(terminalOutboxEventSchema).optional(),
+    terminalOutbox: z.array(terminalOutboxEventSchema).optional().default([]),
   })
   .passthrough();
 
@@ -710,6 +713,7 @@ export class SqliteBrokerStateStore implements BrokerStateStore {
       workers: this.readHotWorkers(),
       tasks: this.readHotTasks(),
       tombstones: this.readHotTombstones(),
+      terminalOutbox: this.readHotTerminalOutbox(),
     };
   }
 
@@ -839,6 +843,13 @@ export class SqliteBrokerStateStore implements BrokerStateStore {
     return filters.since
       ? tombstones.filter((tombstone) => tombstone.tombstonedAt >= filters.since!)
       : tombstones;
+  }
+
+  readHotTerminalOutbox(): TerminalTaskOutboxEvent[] {
+    return this.db
+      .prepare("SELECT payload FROM broker_terminal_outbox ORDER BY created_at ASC, id ASC")
+      .all()
+      .map((row) => parseHotEntityPayload(row, terminalOutboxEventSchema, "broker_terminal_outbox")) as TerminalTaskOutboxEvent[];
   }
 
   readHotAuditEvents(filters: SqliteAuditHotTableFilters = {}): AuditEvent[] {
@@ -1213,6 +1224,15 @@ export class SqliteBrokerStateStore implements BrokerStateStore {
         ON broker_audit_events(target_type, target_id, created_at);
       CREATE INDEX IF NOT EXISTS broker_audit_events_action_idx
         ON broker_audit_events(action, created_at);
+      CREATE TABLE IF NOT EXISTS broker_terminal_outbox (
+        id TEXT PRIMARY KEY,
+        task_event_id INTEGER NOT NULL,
+        delivered_at TEXT,
+        created_at TEXT NOT NULL,
+        payload TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS broker_terminal_outbox_unacked_idx
+        ON broker_terminal_outbox(delivered_at, created_at);
     `);
     this.ensureColumn("broker_tasks", "task_origin", "TEXT NOT NULL DEFAULT 'unknown'");
     this.db.exec(`
@@ -1390,6 +1410,9 @@ export class SqliteBrokerStateStore implements BrokerStateStore {
     this.upsertHotWorkersUnsafe(hotWorkerHints ?? snapshot.workers);
 
     this.upsertHotAuditEventsUnsafe(hotAuditHints ?? snapshot.auditEvents);
+
+    this.applyCanonicalHotRetentionPlan("broker_terminal_outbox", (snapshot.terminalOutbox ?? []).map((event) => event.id));
+    this.upsertHotTerminalOutboxUnsafe(snapshot.terminalOutbox ?? []);
   }
 
   private applyCanonicalHotRetentionPlan(
@@ -1629,6 +1652,28 @@ export class SqliteBrokerStateStore implements BrokerStateStore {
         worker.lastSeenAt,
         worker.updatedAt,
         JSON.stringify(worker),
+      );
+    }
+  }
+
+  private upsertHotTerminalOutboxUnsafe(events: TerminalTaskOutboxEvent[]): void {
+    const upsertEvent = this.db.prepare(
+      `INSERT INTO broker_terminal_outbox
+        (id, task_event_id, delivered_at, created_at, payload)
+       VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET
+         task_event_id = excluded.task_event_id,
+         delivered_at = excluded.delivered_at,
+         created_at = excluded.created_at,
+         payload = excluded.payload`,
+    );
+    for (const event of events) {
+      upsertEvent.run(
+        event.id,
+        event.taskEventId,
+        event.deliveredAt ?? null,
+        event.createdAt,
+        JSON.stringify(event),
       );
     }
   }
@@ -1920,6 +1965,7 @@ export function emptySnapshot(): BrokerSnapshot {
     workers: [],
     tasks: [],
     tombstones: [],
+    terminalOutbox: [],
   };
 }
 

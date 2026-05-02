@@ -754,11 +754,16 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
 
         const afterId = url.searchParams.get("after_id") ?? undefined;
         const limit = numberQueryParam(url, "limit");
-        const events = broker.getTerminalTaskEventOutbox().subscribe({ afterId, limit });
+        const reconcileUnacknowledged = booleanQueryParam(url, "reconcile_unacked");
+        const outbox = broker.getTerminalTaskEventOutbox();
+        const events = outbox.subscribe({ afterId, limit, reconcileUnacknowledged });
+        const cursor = reconcileUnacknowledged && afterId
+          ? terminalOutboxCursorAfterReconcile(outbox.subscribe(), events, afterId)
+          : events.at(-1)?.id ?? afterId ?? null;
         return sendJson(res, 200, {
           kind: "task.terminal.outbox",
           count: events.length,
-          cursor: events.at(-1)?.id ?? afterId ?? null,
+          cursor,
           events,
         });
       }
@@ -2183,6 +2188,22 @@ function optionalEnum<T extends string>(value: string | null, allowed: readonly 
   }
   const normalized = value.trim() as T;
   return allowed.includes(normalized) ? normalized : undefined;
+}
+
+function terminalOutboxCursorAfterReconcile(
+  retainedEvents: Array<{ id: string }>,
+  returnedEvents: Array<{ id: string }>,
+  afterId: string,
+): string {
+  const retainedIndexes = new Map(retainedEvents.map((event, index) => [event.id, index]));
+  const afterIndex = retainedIndexes.get(afterId) ?? -1;
+  for (let index = returnedEvents.length - 1; index >= 0; index -= 1) {
+    const event = returnedEvents[index];
+    if (event && (retainedIndexes.get(event.id) ?? -1) > afterIndex) {
+      return event.id;
+    }
+  }
+  return afterId;
 }
 
 function numberQueryParam(url: URL, name: string): number | undefined {
