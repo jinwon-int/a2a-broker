@@ -94,6 +94,7 @@ export interface BrokerHotEntityMirrorStatus {
   tableCounts: Record<string, number>;
   snapshotCounts?: Record<string, number>;
   mismatches: BrokerHotEntityMirrorMismatch[];
+  retentionWindows?: BrokerHotEntityMirrorRetentionWindow[];
 }
 
 export interface BrokerHotEntityMirrorMismatch {
@@ -101,6 +102,12 @@ export interface BrokerHotEntityMirrorMismatch {
   snapshotKey: string;
   tableCount: number;
   snapshotCount: number;
+  reason?: "count_drift" | "id_drift" | "audit_hot_retention";
+}
+
+export interface BrokerHotEntityMirrorRetentionWindow extends BrokerHotEntityMirrorMismatch {
+  reason: "audit_hot_retention";
+  prunedCount: number;
 }
 
 export interface BrokerHotAuditDiagnostics {
@@ -914,8 +921,8 @@ export class SqliteBrokerStateStore implements BrokerStateStore {
 
   readHotEntityMirrorStatus(): BrokerHotEntityMirrorStatus {
     const tableCounts = this.readHotEntityTableCounts();
-    const snapshotCounts = this.readSnapshotEntityCounts();
-    if (!snapshotCounts) {
+    const snapshot = this.readSnapshotRow();
+    if (!snapshot) {
       return {
         ok: Object.values(tableCounts).every((count) => count === 0),
         tableCounts,
@@ -930,10 +937,38 @@ export class SqliteBrokerStateStore implements BrokerStateStore {
       };
     }
 
-    const mismatches = SQLITE_HOT_ENTITY_TABLES.flatMap((table) => {
+    const snapshotCounts = countSnapshotEntities(snapshot);
+    const snapshotAuditIds = new Set((snapshot.auditEvents ?? []).map((event) => event.id));
+    const retentionWindows: BrokerHotEntityMirrorRetentionWindow[] = [];
+    const mismatches: BrokerHotEntityMirrorMismatch[] = SQLITE_HOT_ENTITY_TABLES.flatMap((table): BrokerHotEntityMirrorMismatch[] => {
       const snapshotKey = SQLITE_HOT_ENTITY_SNAPSHOT_KEYS[table];
       const tableCount = tableCounts[table] ?? 0;
       const snapshotCount = snapshotCounts[snapshotKey] ?? 0;
+      if (table === "broker_audit_events") {
+        const hotAuditIds = this.readTableIds("broker_audit_events");
+        const hotAuditIdsAreSnapshotRows = hotAuditIds.every((id) => snapshotAuditIds.has(id));
+        if (tableCount < snapshotCount && hotAuditIdsAreSnapshotRows) {
+          retentionWindows.push({
+            table,
+            snapshotKey,
+            tableCount,
+            snapshotCount,
+            reason: "audit_hot_retention",
+            prunedCount: snapshotCount - tableCount,
+          });
+          return [];
+        }
+        if (tableCount === snapshotCount && hotAuditIdsAreSnapshotRows) {
+          return [];
+        }
+        return [{
+          table,
+          snapshotKey,
+          tableCount,
+          snapshotCount,
+          reason: tableCount === snapshotCount ? "id_drift" as const : "count_drift" as const,
+        }];
+      }
       if (tableCount === snapshotCount) {
         return [];
       }
@@ -944,6 +979,7 @@ export class SqliteBrokerStateStore implements BrokerStateStore {
       tableCounts,
       snapshotCounts,
       mismatches,
+      ...(retentionWindows.length > 0 ? { retentionWindows } : {}),
     };
   }
 
@@ -1330,16 +1366,14 @@ export class SqliteBrokerStateStore implements BrokerStateStore {
     this.writeHotEntityTables(snapshot, hints);
   }
 
-  private readSnapshotEntityCounts(): Record<string, number> | undefined {
+  private readSnapshotRow(): BrokerSnapshot | undefined {
     const row = this.db
       .prepare("SELECT payload FROM broker_snapshots WHERE id = 1")
       .get() as { payload?: string } | undefined;
     if (typeof row?.payload !== "string") {
       return undefined;
     }
-    return countSnapshotEntities(
-      parseSnapshotPayload(row.payload, `SQLite broker snapshot at ${this.dbFile}`, this.maxBytes),
-    );
+    return parseSnapshotPayload(row.payload, `SQLite broker snapshot at ${this.dbFile}`, this.maxBytes);
   }
 
   private readTableCount(tableName: SqliteHotEntityTable): number {
