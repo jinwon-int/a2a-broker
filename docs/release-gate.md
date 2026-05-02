@@ -117,6 +117,7 @@ sqlite runtime repositories: task/worker/audit/tombstone write/read covered
 This gate is the **operator-facing entry point**. The underlying details remain in:
 - `docs/smoke-compose.md` — compose smoke reference
 - `docs/restart-recovery-smoke.md` — recovery drill reference
+- `docs/terminal-notifications-release-smoke.md` — terminal notification release smoke, Telegram-safe dry-run, auth/rate-limit checks, and rollback steps
 - `scripts/restart-recovery-smoke.mjs` — recovery automation (standalone)
 
 ## Phase 7b Gate Checklist
