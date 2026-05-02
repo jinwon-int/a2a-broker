@@ -121,6 +121,71 @@ async function readAllSseEvents(response: Response): Promise<ParsedSseEvent[]> {
   return events;
 }
 
+function parseSseBlock(block: string): ParsedSseEvent | null {
+  if (!block.trim()) return null;
+  let event = "message";
+  let data = "";
+  let id: string | undefined;
+  for (const line of block.split("\n")) {
+    if (!line || line.startsWith(":")) continue;
+    if (line.startsWith("event:")) {
+      event = line.slice(line.startsWith("event: ") ? "event: ".length : "event:".length).trim();
+    } else if (line.startsWith("data:")) {
+      const fragment = line.slice(line.startsWith("data: ") ? "data: ".length : "data:".length);
+      data = data ? `${data}\n${fragment}` : fragment;
+    } else if (line.startsWith("id:")) {
+      id = line.slice(line.startsWith("id: ") ? "id: ".length : "id:".length).trim();
+    }
+  }
+  return { event, data, id };
+}
+
+async function readSseEventsUntil(
+  response: Response,
+  predicate: (events: ParsedSseEvent[]) => boolean,
+  timeoutMs = 5_000,
+): Promise<ParsedSseEvent[]> {
+  const body = response.body;
+  assert.ok(body, "SSE response must have a body");
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  const events: ParsedSseEvent[] = [];
+  let buffer = "";
+  const deadline = Date.now() + timeoutMs;
+
+  try {
+    while (Date.now() <= deadline) {
+      const remainingMs = deadline - Date.now();
+      const chunk = await Promise.race([
+        reader.read(),
+        new Promise<never>((_, reject) => {
+          setTimeout(() => reject(new Error("timed out waiting for SSE events")), remainingMs);
+        }),
+      ]);
+      if (chunk.done) break;
+      buffer += decoder.decode(chunk.value, { stream: true });
+      let boundary = buffer.indexOf("\n\n");
+      while (boundary >= 0) {
+        const block = buffer.slice(0, boundary);
+        buffer = buffer.slice(boundary + 2);
+        const event = parseSseBlock(block);
+        if (event) {
+          events.push(event);
+          if (predicate(events)) {
+            await reader.cancel();
+            return events;
+          }
+        }
+        boundary = buffer.indexOf("\n\n");
+      }
+    }
+  } finally {
+    reader.releaseLock();
+  }
+
+  throw new Error(`timed out waiting for SSE events; received ${events.length}`);
+}
+
 // ---------------------------------------------------------------------------
 // E2E: Full lifecycle through HTTP — create → claim → start → complete
 // ---------------------------------------------------------------------------
@@ -210,6 +275,159 @@ test("E2E: full happy-path lifecycle through HTTP endpoints produces correct das
     assert.ok(actions.includes("task.claimed"));
     assert.ok(actions.includes("task.started"));
     assert.ok(actions.includes("task.succeeded"));
+  } finally {
+    await server.close();
+  }
+});
+
+test("E2E: terminal notification outbox enforces auth and replays compact ack-safe evidence", async () => {
+  const server = await startTestServer({ edgeSecret: "s" });
+  try {
+    const hubHeaders = h("s", { "x-a2a-requester-id": "hub-1", "x-a2a-requester-role": "hub" });
+    const workerHeaders = h("s", { "x-a2a-requester-id": "worker-a", "x-a2a-requester-role": "analyst" });
+
+    const regRes = await fetch(`${server.baseUrl}/workers/register`, {
+      method: "POST",
+      headers: workerHeaders,
+      body: JSON.stringify({
+        nodeId: "worker-a",
+        role: "analyst",
+        capabilities: {
+          canAnalyze: true,
+          canBackfill: false,
+          canPatchWorkspace: false,
+          canPromoteLive: false,
+          workspaceIds: ["ws"],
+          environments: ["research"],
+        },
+      }),
+    });
+    assert.equal(regRes.status, 201);
+
+    const forbiddenOutbox = await fetch(`${server.baseUrl}/a2a/tasks/terminal-outbox`, {
+      headers: workerHeaders,
+    });
+    assert.equal(forbiddenOutbox.status, 401);
+
+    const forbiddenAck = await fetch(`${server.baseUrl}/a2a/tasks/terminal-outbox/ack`, {
+      method: "POST",
+      headers: workerHeaders,
+      body: JSON.stringify({ id: "terminal:missing:succeeded:never" }),
+    });
+    assert.equal(forbiddenAck.status, 401);
+
+    const forbiddenSse = await fetch(`${server.baseUrl}/a2a/tasks/terminal-events`, {
+      headers: { ...workerHeaders, accept: "text/event-stream" },
+    });
+    assert.equal(forbiddenSse.status, 401);
+
+    const taskRes = await fetch(`${server.baseUrl}/tasks`, {
+      method: "POST",
+      headers: hubHeaders,
+      body: JSON.stringify({
+        intent: "analyze",
+        requester: { id: "hub-1", kind: "node", role: "hub" },
+        target: { id: "worker-a", kind: "node", role: "analyst" },
+        assignedWorkerId: "worker-a",
+        payload: {
+          githubRepo: "jinwon-int/a2a-broker",
+          githubIssueNumber: 250,
+          rawPrompt: "do-not-leak",
+          token: "ghp_do_not_leak",
+        },
+        message: "private prompt that must not enter operator notification payloads",
+      }),
+    });
+    assert.equal(taskRes.status, 201);
+    const task = await taskRes.json();
+
+    const claimRes = await fetch(`${server.baseUrl}/tasks/${task.id}/claim`, {
+      method: "POST",
+      headers: workerHeaders,
+      body: JSON.stringify({ workerId: "worker-a" }),
+    });
+    assert.equal(claimRes.status, 200);
+
+    const completeRes = await fetch(`${server.baseUrl}/tasks/${task.id}/complete`, {
+      method: "POST",
+      headers: workerHeaders,
+      body: JSON.stringify({
+        workerId: "worker-a",
+        result: {
+          summary: "Done: terminal outbox regression passed from /work/private token=ghp_do_not_leak",
+          output: {
+            prUrl: "https://github.com/jinwon-int/a2a-broker/pull/251",
+            doneUrl: "https://github.com/jinwon-int/a2a-broker/issues/250#issuecomment-done",
+            rawLog: "private prompt that must not enter operator notification payloads",
+            testSummary: { status: "passed", total: 2, passed: 2 },
+          },
+        },
+      }),
+    });
+    assert.equal(completeRes.status, 200);
+
+    const outboxRes = await fetch(`${server.baseUrl}/a2a/tasks/terminal-outbox`, { headers: hubHeaders });
+    assert.equal(outboxRes.status, 200);
+    const outbox = await outboxRes.json();
+    assert.equal(outbox.kind, "task.terminal.outbox");
+    assert.equal(outbox.count, 1);
+    const [outboxEvent] = outbox.events;
+    assert.equal(outbox.cursor, outboxEvent.id);
+    assert.equal(outboxEvent.kind, "task.terminal");
+    assert.equal(outboxEvent.attempts, 0);
+    assert.equal(outboxEvent.payload.taskId, task.id);
+    assert.equal(outboxEvent.payload.status, "succeeded");
+    assert.equal(outboxEvent.payload.worker, "worker-a");
+    assert.equal(outboxEvent.payload.repo, "jinwon-int/a2a-broker");
+    assert.equal(outboxEvent.payload.issue, 250);
+    assert.equal(outboxEvent.payload.prUrl, "https://github.com/jinwon-int/a2a-broker/pull/251");
+    assert.equal(outboxEvent.payload.doneUrl, "https://github.com/jinwon-int/a2a-broker/issues/250#issuecomment-done");
+    assert.match(outboxEvent.payload.testSummary, /terminal outbox regression passed from \[path\]/);
+
+    const sseReplayRes = await fetch(`${server.baseUrl}/a2a/tasks/terminal-events`, {
+      headers: { ...hubHeaders, "last-event-id": "0", accept: "text/event-stream" },
+    });
+    assert.equal(sseReplayRes.status, 200);
+    const sseEvents = await readSseEventsUntil(sseReplayRes, (seen) => seen.some((event) => event.event === "task-terminal"));
+    const terminalSse = sseEvents.find((event) => event.event === "task-terminal");
+    assert.ok(terminalSse);
+    assert.notEqual(terminalSse.id, outboxEvent.id, "SSE numeric cursor is separate from outbox stable cursor");
+    const terminalPayload = JSON.parse(terminalSse.data);
+    assert.equal(terminalPayload.taskId, task.id);
+    assert.equal(terminalPayload.prUrl, "https://github.com/jinwon-int/a2a-broker/pull/251");
+    assert.deepEqual(terminalPayload.testSummary, { status: "passed", total: 2, passed: 2 });
+
+    const deliveredAt = "2026-05-02T01:23:45.000Z";
+    const ackRes = await fetch(`${server.baseUrl}/a2a/tasks/terminal-outbox/ack`, {
+      method: "POST",
+      headers: hubHeaders,
+      body: JSON.stringify({ id: outboxEvent.id, deliveredAt }),
+    });
+    assert.equal(ackRes.status, 200);
+    const ack = await ackRes.json();
+    assert.equal(ack.event.deliveredAt, deliveredAt);
+    assert.equal(ack.event.attempts, 1);
+
+    const noDuplicateRes = await fetch(
+      `${server.baseUrl}/a2a/tasks/terminal-outbox?after_id=${encodeURIComponent(outboxEvent.id)}`,
+      { headers: hubHeaders },
+    );
+    assert.equal(noDuplicateRes.status, 200);
+    const noDuplicate = await noDuplicateRes.json();
+    assert.equal(noDuplicate.count, 0);
+    assert.equal(noDuplicate.cursor, outboxEvent.id);
+
+    const serialized = JSON.stringify({ outbox, ack, terminalPayload });
+    for (const forbidden of [
+      "private prompt",
+      "rawPrompt",
+      "rawLog",
+      "do-not-leak",
+      "ghp_do_not_leak",
+      "/work/private",
+    ]) {
+      assert.ok(!serialized.includes(forbidden), forbidden);
+    }
   } finally {
     await server.close();
   }
