@@ -3358,12 +3358,14 @@ test("GET/POST /a2a/tasks/terminal-outbox replays and acknowledges compact recor
     });
     assert.equal(falseAckRes.status, 400);
 
-    const sendSuccessAckRes = await fetch(`${server.baseUrl}/a2a/tasks/terminal-outbox/ack`, {
-      method: "POST",
-      headers: hubHeaders,
-      body: JSON.stringify({ id: event.id, receipt: { evidence: "gateway_send_success" } }),
-    });
-    assert.equal(sendSuccessAckRes.status, 400);
+    for (const evidence of ["gateway_send_success", "provider_send_success"]) {
+      const sendSuccessAckRes = await fetch(`${server.baseUrl}/a2a/tasks/terminal-outbox/ack`, {
+        method: "POST",
+        headers: hubHeaders,
+        body: JSON.stringify({ id: event.id, receipt: { evidence } }),
+      });
+      assert.equal(sendSuccessAckRes.status, 400, evidence);
+    }
 
     const acknowledgedAt = "2026-05-02T00:00:00.000Z";
     const ackRes = await fetch(`${server.baseUrl}/a2a/tasks/terminal-outbox/ack`, {
