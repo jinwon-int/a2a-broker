@@ -22,6 +22,7 @@ A notifier can consume the broker-owned outbox without subscribing to raw task s
 
 - `GET /a2a/tasks/terminal-outbox?after_id=<cursor>&limit=<n>` returns `{ kind, count, cursor, events }`.
 - Save the response `cursor` (or the last event `id`) and pass it as `after_id` on the next poll.
+- Add `reconcile_unacked=true` after restart or when the notifier suspects a send/ack gap. The broker returns unacknowledged retained records at or before `after_id` for duplicate-safe retry, then appends newer records. The returned `cursor` only advances for newer records; retrying an old unacknowledged record never marks the cursor complete by itself.
 - `POST /a2a/tasks/terminal-outbox/ack` with `{ "id": "...", "deliveredAt": "..." }` marks a record delivered without removing replay state.
 - Both routes require an authenticated hub/operator requester when edge identity enforcement is enabled.
 
@@ -39,6 +40,7 @@ For a post-approval live validation, operators can use `npm run smoke:docker-bro
 
 - Consumers replay with `subscribe({ afterId })`; HTTP consumers pass the same stable cursor as `after_id`.
 - Records after the stable cursor are returned in insertion order; unknown/stale cursors replay retained records from the beginning.
+- `reconcile({ afterId })` / `reconcile_unacked=true` overlays retained unacknowledged records at or before the cursor, so provider/Gateway send success alone cannot hide an unreceipted terminal notification.
 - Retained outbox records are included in broker state version 8 snapshots as `terminalOutbox`, so replay cursors, acknowledgements, and dedupe IDs survive JSON/SQLite snapshot restart.
 - `acknowledge(id, deliveredAt)` marks delivery metadata without removing the record, so a notifier can recover after a crash until normal retention evicts it.
 - Duplicate enqueue of the same terminal task state returns the retained record or is suppressed if recently seen.

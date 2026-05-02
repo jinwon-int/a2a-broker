@@ -458,6 +458,37 @@ describe("TerminalTaskEventOutbox", () => {
     assert.equal(restarted.getTerminalTaskEventOutbox().subscribe().length, 1);
   });
 
+  it("reconciles unacknowledged terminal records before a notifier cursor", () => {
+    const broker = new InMemoryA2ABroker();
+    registerWorker(broker);
+
+    for (const id of ["cursor-one", "cursor-two", "cursor-three"]) {
+      const task = createTask(broker, { id });
+      broker.claimTask(task.id, "worker-1");
+      broker.completeTask(task.id, "worker-1", { summary: `done ${id}` });
+    }
+
+    const outbox = broker.getTerminalTaskEventOutbox();
+    const [first, second, third] = outbox.subscribe();
+    assert.ok(first);
+    assert.ok(second);
+    assert.ok(third);
+    outbox.acknowledge(first.id, "2026-05-02T00:00:00.000Z");
+
+    const reconciled = outbox.reconcile({ afterId: second.id });
+    assert.deepEqual(
+      reconciled.events.map((event) => event.id),
+      [second.id, third.id],
+    );
+    assert.equal(reconciled.cursor, third.id);
+    assert.equal(reconciled.reconciledUnacked, 1);
+
+    const retryOnly = outbox.reconcile({ afterId: second.id, limit: 1 });
+    assert.deepEqual(retryOnly.events.map((event) => event.id), [second.id]);
+    assert.equal(retryOnly.cursor, second.id);
+    assert.equal(retryOnly.reconciledUnacked, 1);
+  });
+
   it("acknowledges delivered terminal records without removing replay state", () => {
     const broker = new InMemoryA2ABroker();
     registerWorker(broker);

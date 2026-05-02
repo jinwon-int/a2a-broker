@@ -3350,6 +3350,22 @@ test("GET/POST /a2a/tasks/terminal-outbox replays and acknowledges compact recor
     assert.equal(replay.count, 0);
     assert.equal(replay.cursor, event.id);
 
+    const reconcileRes = await fetch(
+      `${server.baseUrl}/a2a/tasks/terminal-outbox?after_id=${encodeURIComponent(event.id)}&reconcile_unacked=true`,
+      {
+        headers: {
+          "x-a2a-edge-secret": "test-edge-secret",
+          "x-a2a-requester-id": "hub-a",
+          "x-a2a-requester-role": "hub",
+        },
+      },
+    );
+    const reconcile = await reconcileRes.json();
+    assert.equal(reconcile.count, 1);
+    assert.equal(reconcile.cursor, event.id);
+    assert.equal(reconcile.reconciledUnacked, 1);
+    assert.equal(reconcile.events[0].id, event.id);
+
     const deliveredAt = "2026-05-02T00:00:00.000Z";
     const ackRes = await fetch(`${server.baseUrl}/a2a/tasks/terminal-outbox/ack`, {
       method: "POST",

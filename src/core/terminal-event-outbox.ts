@@ -42,6 +42,16 @@ export interface TerminalTaskOutboxSubscribeOptions {
   limit?: number;
 }
 
+export interface TerminalTaskOutboxReconcileResult {
+  events: TerminalTaskOutboxEvent[];
+  /**
+   * Cursor advanced only by records that are newer than afterId. Retried
+   * unacknowledged records at/before afterId must not move the notifier cursor.
+   */
+  cursor: string | null;
+  reconciledUnacked: number;
+}
+
 export interface TerminalTaskEventOutboxOptions {
   /** Maximum retained outbox records. Older records are evicted FIFO. */
   maxEvents?: number;
@@ -97,15 +107,35 @@ export class TerminalTaskEventOutbox {
   }
 
   subscribe(options: TerminalTaskOutboxSubscribeOptions = {}): TerminalTaskOutboxEvent[] {
-    let start = 0;
-    if (options.afterId) {
-      const index = this.events.findIndex((event) => event.id === options.afterId);
-      start = index >= 0 ? index + 1 : 0;
-    }
-    const events = this.events.slice(start);
+    const events = this.events.slice(this.indexAfter(options.afterId));
     return typeof options.limit === "number" && options.limit >= 0
       ? events.slice(0, options.limit)
       : events;
+  }
+
+  /**
+   * Reconcile notifier recovery after a send/crash gap. A notifier may have
+   * advanced its local cursor after attempting transport delivery, but the
+   * broker must not consider terminal notification delivery complete until the
+   * notifier posts receipt evidence via acknowledge(). This method therefore
+   * returns unacknowledged records at or before the supplied cursor for
+   * duplicate-safe retry, then appends records after the cursor for normal
+   * forward progress.
+   */
+  reconcile(options: TerminalTaskOutboxSubscribeOptions = {}): TerminalTaskOutboxReconcileResult {
+    const start = this.indexAfter(options.afterId);
+    const beforeCursorUnacked = this.events.slice(0, start).filter((event) => !event.deliveredAt);
+    const afterCursor = this.events.slice(start);
+    const all = [...beforeCursorUnacked, ...afterCursor];
+    const events = typeof options.limit === "number" && options.limit >= 0
+      ? all.slice(0, options.limit)
+      : all;
+    const afterCursorReturned = events.filter((event) => this.events.indexOf(event) >= start);
+    return {
+      events,
+      cursor: afterCursorReturned.at(-1)?.id ?? options.afterId ?? null,
+      reconciledUnacked: events.filter((event) => this.events.indexOf(event) < start && !event.deliveredAt).length,
+    };
   }
 
   /**
@@ -142,6 +172,12 @@ export class TerminalTaskEventOutbox {
     if (this.seen.has(event.id)) return;
     this.events.push(structuredClone(event));
     this.markSeen(event.id);
+  }
+
+  private indexAfter(afterId: string | undefined): number {
+    if (!afterId) return 0;
+    const index = this.events.findIndex((event) => event.id === afterId);
+    return index >= 0 ? index + 1 : 0;
   }
 
   private markSeen(id: string): void {
