@@ -3,8 +3,14 @@ import type { TaskStatusEvent } from "./task-events.js";
 
 const TERMINAL_TASK_STATUSES = new Set<TaskStatus>(["succeeded", "failed", "canceled", "blocked"]);
 const TERMINAL_TASK_EVENT_KINDS = new Set<TaskStatusEvent["kind"]>(["succeeded", "failed", "canceled"]);
+const TERMINAL_TASK_ACK_EVIDENCE = new Set<TerminalTaskOutboxAckEvidence>([
+  "operator_visible",
+  "operator_confirmed",
+  "provider_delivery_receipt",
+]);
 const URL_KEYS = ["prUrl", "doneUrl", "blockUrl"] as const;
 const MAX_SUMMARY_CHARS = 500;
+const MAX_ACK_NOTE_CHARS = 240;
 
 export const DEFAULT_TERMINAL_TASK_OUTBOX_RETENTION = 1000;
 
@@ -33,8 +39,35 @@ export interface TerminalTaskOutboxEvent {
   taskEventId: number;
   payload: TerminalTaskEventPayload;
   createdAt: string;
+  /**
+   * Receipt-confirmed terminal ack state. This is intentionally stricter than
+   * Gateway/provider send success: callers must supply operator-visible or
+   * provider delivery receipt evidence before the broker marks this cursor acked.
+   */
+  ack?: TerminalTaskOutboxAckState;
+  /** @deprecated Older snapshots may contain this; new acks use `ack.acknowledgedAt`. */
   deliveredAt?: string;
   attempts: number;
+}
+
+export type TerminalTaskOutboxAckEvidence =
+  | "operator_visible"
+  | "operator_confirmed"
+  | "provider_delivery_receipt";
+
+export interface TerminalTaskOutboxAckInput {
+  evidence: TerminalTaskOutboxAckEvidence;
+  acknowledgedAt?: string;
+  receiptId?: string;
+  note?: string;
+}
+
+export interface TerminalTaskOutboxAckState {
+  status: "receipt_confirmed";
+  evidence: TerminalTaskOutboxAckEvidence;
+  acknowledgedAt: string;
+  receiptId?: string;
+  note?: string;
 }
 
 export interface TerminalTaskOutboxSubscribeOptions {
@@ -113,10 +146,14 @@ export class TerminalTaskEventOutbox {
    * remains replayable until normal retention evicts it, and the stable id keeps
    * repeated enqueue/ack operations idempotent.
    */
-  acknowledge(id: string, deliveredAt = new Date().toISOString()): TerminalTaskOutboxEvent | null {
+  acknowledge(id: string, receipt: TerminalTaskOutboxAckInput): TerminalTaskOutboxEvent | null {
+    if (!receipt || !isTerminalTaskOutboxAckEvidence(receipt.evidence)) {
+      throw new TypeError("terminal outbox ack requires receipt/operator-visible evidence");
+    }
     const event = this.events.find((candidate) => candidate.id === id);
     if (!event) return null;
-    event.deliveredAt = deliveredAt;
+    event.ack = buildAckState(receipt);
+    delete event.deliveredAt;
     event.attempts += 1;
     return event;
   }
@@ -162,6 +199,10 @@ export class TerminalTaskEventOutbox {
 
 export function isTerminalStatus(status: TaskStatus): status is TerminalTaskStatus {
   return TERMINAL_TASK_STATUSES.has(status);
+}
+
+export function isTerminalTaskOutboxAckEvidence(value: unknown): value is TerminalTaskOutboxAckEvidence {
+  return typeof value === "string" && TERMINAL_TASK_ACK_EVIDENCE.has(value as TerminalTaskOutboxAckEvidence);
 }
 
 export function formatTerminalTaskEventId(taskId: string, status: TaskStatus, completedAt: string): string {
@@ -216,6 +257,25 @@ function sanitizeSummary(value: unknown): string | undefined {
     .replace(/(^|\s)(?:[A-Za-z]:)?\/[\w./-]+/g, "$1[path]")
     .replace(/\s+/g, " ")
     .slice(0, MAX_SUMMARY_CHARS);
+}
+
+function buildAckState(receipt: TerminalTaskOutboxAckInput): TerminalTaskOutboxAckState {
+  const ack: TerminalTaskOutboxAckState = {
+    status: "receipt_confirmed",
+    evidence: receipt.evidence,
+    acknowledgedAt: receipt.acknowledgedAt ?? new Date().toISOString(),
+  };
+  const receiptId = sanitizeAckText(receipt.receiptId, MAX_ACK_NOTE_CHARS);
+  if (receiptId) ack.receiptId = receiptId;
+  const note = sanitizeAckText(receipt.note, MAX_ACK_NOTE_CHARS);
+  if (note) ack.note = note;
+  return ack;
+}
+
+function sanitizeAckText(value: unknown, maxChars: number): string | undefined {
+  const sanitized = sanitizeSummary(value);
+  if (!sanitized) return undefined;
+  return sanitized.slice(0, maxChars);
 }
 
 function normalizePositiveInt(value: number | undefined, fallback: number): number {
