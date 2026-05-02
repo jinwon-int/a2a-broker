@@ -29,6 +29,7 @@ A notifier can consume the broker-owned outbox without subscribing to raw task s
 
 - Consumers replay with `subscribe({ afterId })`; HTTP consumers pass the same stable cursor as `after_id`.
 - Records after the stable cursor are returned in insertion order; unknown/stale cursors replay retained records from the beginning.
+- Retained outbox records are included in broker state version 8 snapshots as `terminalOutbox`, so replay cursors, acknowledgements, and dedupe IDs survive JSON/SQLite snapshot restart.
 - `acknowledge(id, deliveredAt)` marks delivery metadata without removing the record, so a notifier can recover after a crash until normal retention evicts it.
 - Duplicate enqueue of the same terminal task state returns the retained record or is suppressed if recently seen.
 - Retention is bounded by `maxTerminalTaskOutboxEvents` (default `1000`), evicting oldest records FIFO.

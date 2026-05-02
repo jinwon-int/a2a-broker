@@ -451,7 +451,7 @@ test("server reports SQLite persistence metadata when SQLite backend is enabled"
     const health = await res.json();
     assert.equal(health.persistence.kind, "sqlite");
     assert.equal(health.persistence.dbFile, join(dir, "state.sqlite"));
-    assert.equal(health.persistence.stateVersion, 7);
+    assert.equal(health.persistence.stateVersion, 8);
     assert.equal(health.persistence.schemaVersion, 8);
     assert.equal(health.persistence.journalMode, "wal");
     assert.deepEqual(health.persistence.hotEntityTables, [
