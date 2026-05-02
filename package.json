@@ -19,8 +19,8 @@
     "dev:worker": "node --watch --enable-source-maps src/worker.ts",
     "release_gate": "node scripts/release-gate.mjs",
     "docker_runtime_preflight": "node scripts/docker-runtime-preflight.mjs",
-    "rollout_guard": "node scripts/worker-artifact-rollout-guard.mjs"
-  
+    "rollout_guard": "node scripts/worker-artifact-rollout-guard.mjs",
+    "terminal_outbox_preflight": "node scripts/terminal-outbox-preflight.mjs"
   },
   "engines": {
     "node": ">=22"
