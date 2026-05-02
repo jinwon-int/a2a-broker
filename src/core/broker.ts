@@ -65,6 +65,8 @@ import type {
   TaskWakePlanResult,
   TaskWakeState,
   ValidationResult,
+  WorkerCapacitySummary,
+  WorkerCapacitySummaryItem,
   WorkerFleetSummary,
   WorkerHeartbeatRequest,
   TaskDiagnosticReport,
@@ -1749,6 +1751,103 @@ export class InMemoryA2ABroker {
     );
   }
 
+
+  getWorkerCapacitySummary(options?: {
+    nowMs?: number;
+    workerOfflineAfterMs?: number;
+    taskStaleAfterMs?: number;
+  }): WorkerCapacitySummary {
+    const nowMs = options?.nowMs ?? Date.now();
+    const workerOfflineAfterMs = options?.workerOfflineAfterMs ?? 90_000;
+    const taskStaleAfterMs = options?.taskStaleAfterMs ?? workerOfflineAfterMs;
+    const workers = this.listWorkers();
+    const tasks = this.listTasks().filter((task) =>
+      task.status === "queued" || task.status === "claimed" || task.status === "running",
+    );
+    const tasksByWorker = new Map<string, TaskRecord[]>();
+    for (const task of tasks) {
+      const workerId = task.assignedWorkerId ?? task.targetNodeId;
+      if (!workerId) {
+        continue;
+      }
+      const bucket = tasksByWorker.get(workerId) ?? [];
+      bucket.push(task);
+      tasksByWorker.set(workerId, bucket);
+    }
+
+    let online = 0;
+    let staleWorkers = 0;
+    let queued = 0;
+    let claimed = 0;
+    let running = 0;
+    let staleTasks = 0;
+    let active = 0;
+
+    const items: WorkerCapacitySummaryItem[] = workers.map((worker) => {
+      const workerIsStale = isWorkerStale(worker.lastSeenAt, workerOfflineAfterMs, nowMs);
+      if (workerIsStale) {
+        staleWorkers += 1;
+      } else {
+        online += 1;
+      }
+
+      const workerTasks = tasksByWorker.get(worker.nodeId) ?? [];
+      const counts = { queued: 0, claimed: 0, running: 0, stale: 0, active: 0 };
+      let latestTaskUpdatedAt: string | undefined;
+      for (const task of workerTasks) {
+        if (task.status === "queued") {
+          counts.queued += 1;
+        } else if (task.status === "claimed") {
+          counts.claimed += 1;
+        } else if (task.status === "running") {
+          counts.running += 1;
+        }
+        counts.active += 1;
+        if (!latestTaskUpdatedAt || task.updatedAt > latestTaskUpdatedAt) {
+          latestTaskUpdatedAt = task.updatedAt;
+        }
+        if ((task.status === "claimed" || task.status === "running") && (
+          workerIsStale || nowMs - Date.parse(taskStatusSinceAt(task)) > taskStaleAfterMs
+        )) {
+          counts.stale += 1;
+        }
+      }
+
+      queued += counts.queued;
+      claimed += counts.claimed;
+      running += counts.running;
+      staleTasks += counts.stale;
+      active += counts.active;
+
+      return {
+        nodeId: worker.nodeId,
+        role: worker.role,
+        displayName: worker.displayName,
+        status: workerIsStale ? "stale" : "online",
+        lastSeenAt: worker.lastSeenAt,
+        lastSeenAgeSec: ageSecFromIso(worker.lastSeenAt, nowMs),
+        counts,
+        latestTaskUpdatedAt,
+      };
+    });
+
+    return {
+      generatedAt: new Date(nowMs).toISOString(),
+      workerOfflineAfterMs,
+      taskStaleAfterMs,
+      totals: {
+        workers: workers.length,
+        online,
+        staleWorkers,
+        queued,
+        claimed,
+        running,
+        staleTasks,
+        active,
+      },
+      items,
+    };
+  }
 
   getDashboard(options?: {
     nowMs?: number;

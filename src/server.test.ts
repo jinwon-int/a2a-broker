@@ -149,6 +149,20 @@ test("server requires a real PUBLIC_BASE_URL", () => {
   );
 });
 
+test("server exposes empty worker capacity preflight as compact response", async () => {
+  const server = await startTestServer();
+  try {
+    const res = await fetch(`${server.baseUrl}/workers/capacity`);
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.deepEqual(body.items, []);
+    assert.equal(body.totals.workers, 0);
+    assert.equal(body.totals.active, 0);
+  } finally {
+    await server.close();
+  }
+});
+
 test("server surfaces env-injected broker version/build revision on health and dashboard status", async () => {
   await withEnv({
     A2A_BROKER_REVISION: "78b2b42fca6e",
