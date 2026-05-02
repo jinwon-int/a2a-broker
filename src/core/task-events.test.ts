@@ -310,9 +310,11 @@ describe("TerminalTaskEventOutbox", () => {
     broker.claimTask(second.id, "worker-1");
     broker.completeTask(second.id, "worker-1", { summary: "tests passed" });
 
-    const all = broker.getTerminalTaskEventOutbox().subscribe();
+    const outbox = broker.getTerminalTaskEventOutbox();
+    const all = outbox.subscribe();
     assert.equal(all.length, 2);
-    const replay = broker.getTerminalTaskEventOutbox().subscribe({ afterId: all[0]!.id });
+    outbox.acknowledge(all[0]!.id, "2026-05-02T00:00:00.000Z");
+    const replay = outbox.subscribe({ afterId: all[0]!.id });
     assert.equal(replay.length, 1);
     assert.equal(replay[0]!.payload.taskId, "task-two");
     assert.equal(replay[0]!.payload.status, "succeeded");
@@ -390,6 +392,8 @@ describe("TerminalTaskEventOutbox", () => {
       "https://github.com/jinwon-int/a2a-broker/issues/229#issuecomment-block",
     );
 
+    outbox.acknowledge(webhookEvents[0]!.id, "2026-05-02T00:00:00.000Z");
+    outbox.acknowledge(webhookEvents[1]!.id, "2026-05-02T00:01:00.000Z");
     const replay = outbox.subscribe({ afterId: webhookEvents[1]!.id });
     assert.deepEqual(
       replay.map((event) => event.payload.taskId),
@@ -481,6 +485,40 @@ describe("TerminalTaskEventOutbox", () => {
     assert.equal(replayed!.id, event.id);
     assert.equal(replayed!.deliveredAt, deliveredAt);
     assert.equal(replayed!.attempts, 1);
+  });
+
+  it("reconciles unacknowledged terminal records even after a saved cursor", () => {
+    const broker = new InMemoryA2ABroker();
+    registerWorker(broker);
+
+    for (const id of ["reconcile-1", "reconcile-2", "reconcile-3"]) {
+      const task = createTask(broker, { id });
+      broker.claimTask(task.id, "worker-1");
+      broker.completeTask(task.id, "worker-1", { summary: `done ${id}` });
+    }
+
+    const outbox = broker.getTerminalTaskEventOutbox();
+    const firstPoll = outbox.subscribeWithCursor();
+    assert.equal(firstPoll.events.length, 3);
+    const [first, second, third] = firstPoll.events;
+    assert.ok(first && second && third);
+    assert.equal(firstPoll.cursor, third.id);
+
+    outbox.acknowledge(first.id, "2026-05-02T00:00:00.000Z");
+
+    const retryPoll = outbox.subscribeWithCursor({ afterId: firstPoll.cursor ?? undefined });
+    assert.deepEqual(
+      retryPoll.events.map((event) => event.id),
+      [second.id, third.id],
+    );
+    assert.equal(retryPoll.cursor, third.id, "retry-only reconciliation must not move the cursor backwards");
+
+    outbox.acknowledge(second.id, "2026-05-02T00:01:00.000Z");
+    outbox.acknowledge(third.id, "2026-05-02T00:02:00.000Z");
+    assert.deepEqual(outbox.subscribeWithCursor({ afterId: firstPoll.cursor ?? undefined }), {
+      events: [],
+      cursor: third.id,
+    });
   });
 
   it("keeps terminal outbox retention bounded", () => {

@@ -22,7 +22,8 @@ A notifier can consume the broker-owned outbox without subscribing to raw task s
 
 - `GET /a2a/tasks/terminal-outbox?after_id=<cursor>&limit=<n>` returns `{ kind, count, cursor, events }`.
 - Save the response `cursor` (or the last event `id`) and pass it as `after_id` on the next poll.
-- `POST /a2a/tasks/terminal-outbox/ack` with `{ "id": "...", "deliveredAt": "..." }` marks a record delivered without removing replay state.
+- Cursor replay reconciles durable unacknowledged records: if a prior poll advanced the cursor but crashed or failed before receipt-visible delivery, later polls with that cursor include older retained records that still lack `deliveredAt`, followed by new records after the cursor. The returned cursor never moves backward for retry-only batches.
+- `POST /a2a/tasks/terminal-outbox/ack` with `{ "id": "...", "deliveredAt": "..." }` marks a record delivered without removing replay state. Only call this after receipt/operator-visible evidence from the notifier path; Gateway/provider send success alone is not sufficient.
 - Both routes require an authenticated hub/operator requester when edge identity enforcement is enabled.
 
 ## Release/deploy readiness smoke
@@ -39,6 +40,7 @@ For a post-approval live validation, operators can use `npm run smoke:docker-bro
 
 - Consumers replay with `subscribe({ afterId })`; HTTP consumers pass the same stable cursor as `after_id`.
 - Records after the stable cursor are returned in insertion order; unknown/stale cursors replay retained records from the beginning.
+- Unacknowledged retained records at or before a known cursor are also returned so notifier retries are duplicate-safe by stable `id` and cannot be lost by cursor advancement alone.
 - Retained outbox records are included in broker state version 8 snapshots as `terminalOutbox`, so replay cursors, acknowledgements, and dedupe IDs survive JSON/SQLite snapshot restart.
 - `acknowledge(id, deliveredAt)` marks delivery metadata without removing the record, so a notifier can recover after a crash until normal retention evicts it.
 - Duplicate enqueue of the same terminal task state returns the retained record or is suppressed if recently seen.

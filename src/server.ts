@@ -754,12 +754,12 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
 
         const afterId = url.searchParams.get("after_id") ?? undefined;
         const limit = numberQueryParam(url, "limit");
-        const events = broker.getTerminalTaskEventOutbox().subscribe({ afterId, limit });
+        const subscription = broker.getTerminalTaskEventOutbox().subscribeWithCursor({ afterId, limit });
         return sendJson(res, 200, {
           kind: "task.terminal.outbox",
-          count: events.length,
-          cursor: events.at(-1)?.id ?? afterId ?? null,
-          events,
+          count: subscription.events.length,
+          cursor: subscription.cursor,
+          events: subscription.events,
         });
       }
 

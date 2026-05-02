@@ -42,6 +42,11 @@ export interface TerminalTaskOutboxSubscribeOptions {
   limit?: number;
 }
 
+export interface TerminalTaskOutboxSubscribeResult {
+  events: TerminalTaskOutboxEvent[];
+  cursor: string | null;
+}
+
 export interface TerminalTaskEventOutboxOptions {
   /** Maximum retained outbox records. Older records are evicted FIFO. */
   maxEvents?: number;
@@ -97,15 +102,35 @@ export class TerminalTaskEventOutbox {
   }
 
   subscribe(options: TerminalTaskOutboxSubscribeOptions = {}): TerminalTaskOutboxEvent[] {
-    let start = 0;
-    if (options.afterId) {
-      const index = this.events.findIndex((event) => event.id === options.afterId);
-      start = index >= 0 ? index + 1 : 0;
-    }
-    const events = this.events.slice(start);
-    return typeof options.limit === "number" && options.limit >= 0
-      ? events.slice(0, options.limit)
-      : events;
+    return this.subscribeWithCursor(options).events;
+  }
+
+  subscribeWithCursor(options: TerminalTaskOutboxSubscribeOptions = {}): TerminalTaskOutboxSubscribeResult {
+    const afterIndex = options.afterId
+      ? this.events.findIndex((event) => event.id === options.afterId)
+      : -1;
+    const replayStart = options.afterId && afterIndex < 0 ? 0 : afterIndex + 1;
+    const unacknowledgedBeforeCursor = afterIndex >= 0
+      ? this.events.slice(0, afterIndex + 1).filter((event) => !event.deliveredAt)
+      : [];
+    const newEvents = this.events.slice(replayStart);
+    const replay = [...unacknowledgedBeforeCursor, ...newEvents];
+    const events = typeof options.limit === "number" && options.limit >= 0
+      ? replay.slice(0, options.limit)
+      : replay;
+    return {
+      events,
+      cursor: this.nextCursor(options.afterId, afterIndex, events),
+    };
+  }
+
+  private nextCursor(afterId: string | undefined, afterIndex: number, events: TerminalTaskOutboxEvent[]): string | null {
+    if (!afterId || afterIndex < 0) return events.at(-1)?.id ?? null;
+    const newestReturned = events
+      .map((event) => this.events.findIndex((candidate) => candidate.id === event.id))
+      .filter((index) => index > afterIndex)
+      .at(-1);
+    return typeof newestReturned === "number" ? this.events[newestReturned]!.id : afterId;
   }
 
   /**

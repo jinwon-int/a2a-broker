@@ -3336,6 +3336,32 @@ test("GET/POST /a2a/tasks/terminal-outbox replays and acknowledges compact recor
     assert.match(event.payload.testSummary, /Done from \[path\]/);
     assert.equal(list.cursor, event.id);
 
+    const retryBeforeAckRes = await fetch(
+      `${server.baseUrl}/a2a/tasks/terminal-outbox?after_id=${encodeURIComponent(event.id)}`,
+      {
+        headers: {
+          "x-a2a-edge-secret": "test-edge-secret",
+          "x-a2a-requester-id": "hub-a",
+          "x-a2a-requester-role": "hub",
+        },
+      },
+    );
+    const retryBeforeAck = await retryBeforeAckRes.json();
+    assert.equal(retryBeforeAck.count, 1);
+    assert.equal(retryBeforeAck.events[0].id, event.id);
+    assert.equal(retryBeforeAck.cursor, event.id);
+
+    const deliveredAt = "2026-05-02T00:00:00.000Z";
+    const ackRes = await fetch(`${server.baseUrl}/a2a/tasks/terminal-outbox/ack`, {
+      method: "POST",
+      headers: hubHeaders,
+      body: JSON.stringify({ id: event.id, deliveredAt }),
+    });
+    assert.equal(ackRes.status, 200);
+    const ack = await ackRes.json();
+    assert.equal(ack.event.deliveredAt, deliveredAt);
+    assert.equal(ack.event.attempts, 1);
+
     const replayRes = await fetch(
       `${server.baseUrl}/a2a/tasks/terminal-outbox?after_id=${encodeURIComponent(event.id)}`,
       {
@@ -3349,17 +3375,6 @@ test("GET/POST /a2a/tasks/terminal-outbox replays and acknowledges compact recor
     const replay = await replayRes.json();
     assert.equal(replay.count, 0);
     assert.equal(replay.cursor, event.id);
-
-    const deliveredAt = "2026-05-02T00:00:00.000Z";
-    const ackRes = await fetch(`${server.baseUrl}/a2a/tasks/terminal-outbox/ack`, {
-      method: "POST",
-      headers: hubHeaders,
-      body: JSON.stringify({ id: event.id, deliveredAt }),
-    });
-    assert.equal(ackRes.status, 200);
-    const ack = await ackRes.json();
-    assert.equal(ack.event.deliveredAt, deliveredAt);
-    assert.equal(ack.event.attempts, 1);
 
     const serialized = JSON.stringify({ list, ack });
     for (const forbidden of ["do not leak", "rawPrompt", "rawLog", "do-not-leak", "ghp_secretvalue", "/work/repo"]) {
