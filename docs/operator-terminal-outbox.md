@@ -42,6 +42,8 @@ For a post-approval live validation, operators can use `npm run smoke:docker-bro
 - Consumers replay with `subscribe({ afterId })`; HTTP consumers pass the same stable cursor as `after_id`.
 - Records after the stable cursor are returned in insertion order; unknown/stale cursors replay retained records from the beginning.
 - `subscribeWithCursor({ afterId })` / `reconcile({ afterId })` / `reconcile_unacked=true` overlays retained unacknowledged records at or before the cursor, so cursor advancement alone cannot hide an unreceipted terminal notification.
+- Manual `acknowledge(id, receipt)` calls are per stable event id. A later reconcile at the saved cursor replays only retained records that still lack receipt-confirmed ack evidence; already acked ids are not replayed, and no response should contain the same id twice.
+- Once every id at/before the cursor is receipt-confirmed, reconciling that cursor returns no old records. The cursor remains stable instead of moving backward, preventing notifier ACK/replay loops from generating duplicate Telegram/operator pushes.
 - Retained outbox records are included in broker state version 8 snapshots as `terminalOutbox`, so replay cursors, acknowledgements, and dedupe IDs survive JSON/SQLite snapshot restart.
 - `acknowledge(id, receipt)` stores receipt metadata in `ack`, increments attempts, removes legacy `deliveredAt`, and leaves the record replayable until retention evicts it.
 - Older snapshots with `deliveredAt` but no `ack` are migrated to receipt-confirmed ack state on restore.

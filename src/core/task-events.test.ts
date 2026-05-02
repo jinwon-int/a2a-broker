@@ -547,6 +547,51 @@ describe("TerminalTaskEventOutbox", () => {
     assert.equal(retryOnly.reconciledUnacked, 1);
   });
 
+  it("does not duplicate terminal records across manual ack and cursor replay", () => {
+    const broker = new InMemoryA2ABroker(undefined, undefined, { maxTerminalTaskOutboxEvents: 10 });
+    registerWorker(broker);
+
+    for (const id of ["manual-ack-one", "manual-ack-two", "manual-ack-three"]) {
+      const task = createTask(broker, { id });
+      broker.claimTask(task.id, "worker-1");
+      broker.completeTask(task.id, "worker-1", { summary: `done ${id}` });
+    }
+
+    const outbox = broker.getTerminalTaskEventOutbox();
+    const initial = outbox.subscribeWithCursor();
+    const [first, second, third] = initial.events;
+    assert.ok(first);
+    assert.ok(second);
+    assert.ok(third);
+    assert.equal(initial.cursor, third.id);
+
+    outbox.acknowledge(second.id, {
+      evidence: "operator_confirmed",
+      acknowledgedAt: "2026-05-02T00:00:00.000Z",
+      receiptId: "manual-ack-message-2",
+    });
+
+    const replay = outbox.reconcile({ afterId: initial.cursor ?? undefined });
+    assert.deepEqual(replay.events.map((event) => event.id), [first.id, third.id]);
+    assert.equal(new Set(replay.events.map((event) => event.id)).size, replay.events.length);
+    assert.equal(replay.cursor, third.id);
+    assert.equal(replay.reconciledUnacked, 2);
+
+    for (const event of replay.events) {
+      outbox.acknowledge(event.id, {
+        evidence: "provider_delivery_receipt",
+        acknowledgedAt: "2026-05-02T00:01:00.000Z",
+        receiptId: `receipt-${event.payload.taskId}`,
+      });
+    }
+
+    const settled = outbox.reconcile({ afterId: initial.cursor ?? undefined });
+    assert.deepEqual(settled.events, []);
+    assert.equal(settled.cursor, third.id);
+    assert.equal(settled.reconciledUnacked, 0);
+    assert.equal(outbox.subscribe().length, 3, "acknowledged records remain retained for audit/dedupe");
+  });
+
   it("keeps terminal outbox retention bounded", () => {
     const broker = new InMemoryA2ABroker(undefined, undefined, { maxTerminalTaskOutboxEvents: 2 });
     registerWorker(broker);
