@@ -755,6 +755,40 @@ export interface WorkerFleetSummary {
   }>;
 }
 
+export interface WorkerCapacitySummaryItem {
+  nodeId: string;
+  role: string;
+  displayName: string | undefined;
+  status: WorkerStatus;
+  lastSeenAt: string;
+  lastSeenAgeSec: number;
+  counts: {
+    queued: number;
+    claimed: number;
+    running: number;
+    stale: number;
+    active: number;
+  };
+  latestTaskUpdatedAt?: string;
+}
+
+export interface WorkerCapacitySummary {
+  generatedAt: string;
+  workerOfflineAfterMs: number;
+  taskStaleAfterMs: number;
+  totals: {
+    workers: number;
+    online: number;
+    staleWorkers: number;
+    queued: number;
+    claimed: number;
+    running: number;
+    staleTasks: number;
+    active: number;
+  };
+  items: WorkerCapacitySummaryItem[];
+}
+
 // ---------------------------------------------------------------------------
 // Delegated-run types (re-exported from ./delegated-runtime.ts)
 // ---------------------------------------------------------------------------

@@ -817,6 +817,13 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
         return sendJson(res, 200, { items });
       }
 
+      if (req.method === "GET" && path === "/workers/capacity") {
+        return sendJson(res, 200, broker.getWorkerCapacitySummary({
+          workerOfflineAfterMs: workerOfflineAfterSec * 1000,
+          taskStaleAfterMs: numberQueryParam(url, "stale_after_ms") ?? workerOfflineAfterSec * 1000,
+        }));
+      }
+
       if (req.method === "POST" && path === "/workers/register") {
         const body = await readJson<RegisterWorkerRequest>(req);
         if (!body) {

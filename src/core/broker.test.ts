@@ -39,6 +39,88 @@ function registerWorker(broker: InMemoryA2ABroker, nodeId: string): void {
   });
 }
 
+function createWorkerTask(broker: InMemoryA2ABroker, id: string, workerId: string) {
+  return broker.createTask({
+    id,
+    intent: "chat",
+    requester: { id: "hub-a", kind: "node", role: "hub" },
+    target: { id: workerId, kind: "node", role: "analyst" },
+    assignedWorkerId: workerId,
+    message: `task ${id}`,
+    payload: { secretLikeLargePayload: "must not appear in capacity summary" },
+  });
+}
+
+test("broker returns compact worker capacity counts for queued claimed and running tasks", () => {
+  const broker = new InMemoryA2ABroker();
+  registerWorker(broker, "worker-capacity");
+
+  createWorkerTask(broker, "task-capacity-queued", "worker-capacity");
+  const claimed = createWorkerTask(broker, "task-capacity-claimed", "worker-capacity");
+  broker.claimTask(claimed.id, "worker-capacity");
+  const running = createWorkerTask(broker, "task-capacity-running", "worker-capacity");
+  broker.claimTask(running.id, "worker-capacity");
+  broker.startTask(running.id, "worker-capacity");
+
+  const summary = broker.getWorkerCapacitySummary({ workerOfflineAfterMs: 120_000, taskStaleAfterMs: 120_000 });
+
+  assert.equal(summary.totals.workers, 1);
+  assert.equal(summary.totals.queued, 1);
+  assert.equal(summary.totals.claimed, 1);
+  assert.equal(summary.totals.running, 1);
+  assert.equal(summary.totals.active, 3);
+  assert.equal(summary.totals.staleTasks, 0);
+  assert.equal(summary.items.length, 1);
+  assert.deepEqual(summary.items[0].counts, {
+    queued: 1,
+    claimed: 1,
+    running: 1,
+    stale: 0,
+    active: 3,
+  });
+  assert.ok(summary.items[0].latestTaskUpdatedAt);
+  assert.equal(JSON.stringify(summary).includes("secretLikeLargePayload"), false);
+});
+
+test("broker marks claimed and running capacity stale after the configured threshold", () => {
+  const broker = new InMemoryA2ABroker();
+  registerWorker(broker, "worker-stale-capacity");
+  const claimed = createWorkerTask(broker, "task-stale-capacity-claimed", "worker-stale-capacity");
+  broker.claimTask(claimed.id, "worker-stale-capacity");
+  const running = createWorkerTask(broker, "task-stale-capacity-running", "worker-stale-capacity");
+  broker.claimTask(running.id, "worker-stale-capacity");
+  broker.startTask(running.id, "worker-stale-capacity");
+
+  const summary = broker.getWorkerCapacitySummary({
+    nowMs: Date.now() + 300_000,
+    workerOfflineAfterMs: 120_000,
+    taskStaleAfterMs: 120_000,
+  });
+
+  assert.equal(summary.totals.online, 0);
+  assert.equal(summary.totals.staleWorkers, 1);
+  assert.equal(summary.totals.staleTasks, 2);
+  assert.equal(summary.items[0].status, "stale");
+  assert.equal(summary.items[0].counts.stale, 2);
+});
+
+test("broker worker capacity summary handles an empty fleet", () => {
+  const broker = new InMemoryA2ABroker();
+  const summary = broker.getWorkerCapacitySummary({ nowMs: 0 });
+
+  assert.deepEqual(summary.totals, {
+    workers: 0,
+    online: 0,
+    staleWorkers: 0,
+    queued: 0,
+    claimed: 0,
+    running: 0,
+    staleTasks: 0,
+    active: 0,
+  });
+  assert.deepEqual(summary.items, []);
+});
+
 test("broker exposes compact diagnostics without task payload expansion", () => {
   const broker = new InMemoryA2ABroker();
   registerWorker(broker, "worker-diag");

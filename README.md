@@ -130,6 +130,19 @@ for (const worker of workers) {
 }
 ```
 
+## Worker capacity preflight
+
+`GET /workers/capacity` returns a compact pre-dispatch view for repeated A2A rounds. It omits task payloads/messages and reports per-worker `queued`, `claimed`, `running`, `stale`, and `active` counts plus `latestTaskUpdatedAt`.
+
+Example gate before assigning another round:
+
+```bash
+curl -s "$BROKER_URL/workers/capacity?stale_after_ms=120000" \
+  | jq -e '.totals.staleTasks == 0 and all(.items[]; .status == "online" and .counts.active < 2)'
+```
+
+If the command exits non-zero, pause dispatch and inspect the compact response instead of repeatedly fetching large `/tasks?detail=full` snapshots.
+
 ## What is included
 
 - Node 22 + TypeScript service
