@@ -746,6 +746,46 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
 
       if (
         req.method === "GET" &&
+        path === "/a2a/tasks/terminal-outbox"
+      ) {
+        if (enforceRequesterIdentity) {
+          assertRequesterHasRole(requesterIdentity, ["hub", "operator"], "task-terminal-outbox.subscribe");
+        }
+
+        const afterId = url.searchParams.get("after_id") ?? undefined;
+        const limit = numberQueryParam(url, "limit");
+        const events = broker.getTerminalTaskEventOutbox().subscribe({ afterId, limit });
+        return sendJson(res, 200, {
+          kind: "task.terminal.outbox",
+          count: events.length,
+          cursor: events.at(-1)?.id ?? afterId ?? null,
+          events,
+        });
+      }
+
+      if (
+        req.method === "POST" &&
+        path === "/a2a/tasks/terminal-outbox/ack"
+      ) {
+        if (enforceRequesterIdentity) {
+          assertRequesterHasRole(requesterIdentity, ["hub", "operator"], "task-terminal-outbox.ack");
+        }
+
+        const body = await readJson<{ id?: unknown; deliveredAt?: unknown }>(req);
+        const id = body?.id;
+        if (typeof id !== "string" || id.length === 0) {
+          throw new BrokerError("bad_request", "terminal outbox ack requires a non-empty id");
+        }
+        const deliveredAt = typeof body?.deliveredAt === "string" ? body.deliveredAt : undefined;
+        const event = broker.getTerminalTaskEventOutbox().acknowledge(id, deliveredAt);
+        if (!event) {
+          throw new BrokerError("not_found", "terminal outbox event not found");
+        }
+        return sendJson(res, 200, { event });
+      }
+
+      if (
+        req.method === "GET" &&
         path === "/a2a/tasks/terminal-events"
       ) {
         if (enforceRequesterIdentity) {
