@@ -3350,15 +3350,42 @@ test("GET/POST /a2a/tasks/terminal-outbox replays and acknowledges compact recor
     assert.equal(replay.count, 0);
     assert.equal(replay.cursor, event.id);
 
-    const deliveredAt = "2026-05-02T00:00:00.000Z";
+    const falseAckRes = await fetch(`${server.baseUrl}/a2a/tasks/terminal-outbox/ack`, {
+      method: "POST",
+      headers: hubHeaders,
+      body: JSON.stringify({ id: event.id, deliveredAt: "2026-05-02T00:00:00.000Z" }),
+    });
+    assert.equal(falseAckRes.status, 400);
+
+    const sendSuccessAckRes = await fetch(`${server.baseUrl}/a2a/tasks/terminal-outbox/ack`, {
+      method: "POST",
+      headers: hubHeaders,
+      body: JSON.stringify({ id: event.id, receipt: { evidence: "gateway_send_success" } }),
+    });
+    assert.equal(sendSuccessAckRes.status, 400);
+
+    const acknowledgedAt = "2026-05-02T00:00:00.000Z";
     const ackRes = await fetch(`${server.baseUrl}/a2a/tasks/terminal-outbox/ack`, {
       method: "POST",
       headers: hubHeaders,
-      body: JSON.stringify({ id: event.id, deliveredAt }),
+      body: JSON.stringify({
+        id: event.id,
+        receipt: {
+          evidence: "operator_visible",
+          acknowledgedAt,
+          receiptId: "operator-message-246",
+        },
+      }),
     });
     assert.equal(ackRes.status, 200);
     const ack = await ackRes.json();
-    assert.equal(ack.event.deliveredAt, deliveredAt);
+    assert.deepEqual(ack.event.ack, {
+      status: "receipt_confirmed",
+      evidence: "operator_visible",
+      acknowledgedAt,
+      receiptId: "operator-message-246",
+    });
+    assert.equal(ack.event.deliveredAt, undefined);
     assert.equal(ack.event.attempts, 1);
 
     const serialized = JSON.stringify({ list, ack });
