@@ -26,7 +26,23 @@ Run from the broker checkout.
    npm run release_gate
    ```
 
-3. If validating the Round 3 worker cohort against a disposable or approved broker, require only the active workers:
+3. Before any smoke that could hand off to a notifier, run the read-only broker
+   preflight against the candidate broker. This checks `/health`, polls the
+   terminal outbox, and replays with `reconcile_unacked=true` without calling
+   the ACK endpoint or any Telegram transport:
+
+   ```sh
+   BROKER_URL="${BROKER_URL:-http://127.0.0.1:8787}" \
+     BROKER_EDGE_SECRET="${BROKER_EDGE_SECRET:-}" \
+     npm run terminal_outbox_preflight -- --json
+   ```
+
+   Pass evidence should show `broker health`, `terminal-outbox poll`,
+   `terminal-outbox replay`, and `ack safety` as passing. An empty outbox is
+   acceptable for a no-op preflight; any non-HTTP evidence URL, missing stable
+   outbox id, auth failure, or failed replay is a Block.
+
+4. If validating the Round 3 worker cohort against a disposable or approved broker, require only the active workers:
 
    ```sh
    npm run smoke:docker-broker:fleet -- --require-workers bangtong,dungae,sogyo,nosuk

@@ -53,6 +53,21 @@ Minimum evidence to capture:
 
 ## Phase 1 — Broker-only dry-run smoke
 
+Start with the read-only broker preflight before creating or ACKing any canary
+record:
+
+```bash
+BROKER_URL="${BROKER_URL:-http://127.0.0.1:8787}" \
+  BROKER_EDGE_SECRET="${BROKER_EDGE_SECRET:-}" \
+  npm run terminal_outbox_preflight -- --json
+```
+
+The preflight checks broker health and terminal-outbox poll/replay state with
+`reconcile_unacked=true`. It never calls `/ack`, never sends Telegram, and is
+safe to run against a candidate broker before smoke. Treat failed health,
+unauthorized outbox access, missing stable event ids, non-HTTP evidence URLs, or
+failed replay as Block evidence.
+
 This phase verifies the ACK gate without contacting Telegram.
 
 1. Start a local broker or use the PR validation broker instance.
