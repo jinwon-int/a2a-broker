@@ -2102,6 +2102,7 @@ export class InMemoryA2ABroker {
       workers: [...this.workers.values()],
       tasks: [...this.tasks.values()],
       tombstones: [...this.tombstones.values()],
+      terminalOutbox: this.terminalTaskEventOutbox.snapshot(),
     };
   }
 
@@ -2361,6 +2362,8 @@ export class InMemoryA2ABroker {
     for (const tombstone of snapshot.tombstones ?? []) {
       this.tombstones.set(tombstone.taskId, tombstone);
     }
+
+    this.terminalTaskEventOutbox.restoreSnapshot(snapshot.terminalOutbox ?? []);
 
     this.applyRetentionPolicy();
   }

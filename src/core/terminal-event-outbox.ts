@@ -45,6 +45,8 @@ export interface TerminalTaskOutboxSubscribeOptions {
 export interface TerminalTaskEventOutboxOptions {
   /** Maximum retained outbox records. Older records are evicted FIFO. */
   maxEvents?: number;
+  /** Previously persisted outbox records to replay after broker restart. */
+  events?: TerminalTaskOutboxEvent[];
 }
 
 /**
@@ -66,6 +68,7 @@ export class TerminalTaskEventOutbox {
   constructor(options: TerminalTaskEventOutboxOptions = {}) {
     this.maxEvents = normalizePositiveInt(options.maxEvents, DEFAULT_TERMINAL_TASK_OUTBOX_RETENTION);
     this.maxSeen = this.maxEvents * 2;
+    this.restoreSnapshot(options.events ?? []);
   }
 
   enqueue(taskEvent: TaskStatusEvent, task: TaskRecord): TerminalTaskOutboxEvent | null {
@@ -120,6 +123,25 @@ export class TerminalTaskEventOutbox {
 
   get size(): number {
     return this.events.length;
+  }
+
+  /** Return a persistence-safe copy of retained records. */
+  snapshot(): TerminalTaskOutboxEvent[] {
+    return structuredClone(this.events);
+  }
+
+  /** Merge previously persisted records without duplicating stable ids. */
+  restoreSnapshot(events: TerminalTaskOutboxEvent[]): void {
+    for (const event of events) {
+      this.restore(event);
+    }
+    this.enforceRetention();
+  }
+
+  private restore(event: TerminalTaskOutboxEvent): void {
+    if (this.seen.has(event.id)) return;
+    this.events.push(structuredClone(event));
+    this.markSeen(event.id);
   }
 
   private markSeen(id: string): void {

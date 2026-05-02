@@ -41,7 +41,7 @@ Malformed JSON import fails startup/load with the same bounded validation errors
   "persistence": {
     "kind": "sqlite",
     "dbFile": "/var/lib/a2a-broker/state.sqlite",
-    "stateVersion": 7,
+    "stateVersion": 8,
     "loadSource": "snapshot",
     "schemaVersion": 8,
     "journalMode": "wal",
@@ -192,7 +192,7 @@ JSON mode continues to report:
   "persistence": {
     "kind": "json-file",
     "stateFile": "/var/lib/a2a-broker/state.json",
-    "stateVersion": 7
+    "stateVersion": 8
   }
 }
 ```

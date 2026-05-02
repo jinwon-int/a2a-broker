@@ -421,6 +421,43 @@ describe("TerminalTaskEventOutbox", () => {
     }
   });
 
+  it("persists terminal outbox replay and dedupe state in broker snapshots", () => {
+    const broker = new InMemoryA2ABroker(undefined, undefined, { maxTerminalTaskOutboxEvents: 10 });
+    registerWorker(broker);
+    const task = createTask(broker, {
+      id: "persisted-terminal",
+      payload: { githubRepo: "jinwon-int/a2a-broker", githubIssueNumber: 247 },
+    });
+
+    broker.claimTask(task.id, "worker-1");
+    broker.completeTask(task.id, "worker-1", {
+      summary: "npm test passed",
+      output: { doneUrl: "https://github.com/jinwon-int/a2a-broker/issues/247#issuecomment-done" },
+    });
+
+    const [before] = broker.getTerminalTaskEventOutbox().subscribe();
+    assert.ok(before);
+    broker.getTerminalTaskEventOutbox().acknowledge(before.id, "2026-05-02T00:00:00.000Z");
+
+    const restarted = new InMemoryA2ABroker(undefined, broker.exportSnapshot(), {
+      maxTerminalTaskOutboxEvents: 10,
+    });
+    const replayed = restarted.getTerminalTaskEventOutbox().subscribe();
+    assert.equal(replayed.length, 1);
+    assert.equal(replayed[0]!.id, before.id);
+    assert.equal(replayed[0]!.deliveredAt, "2026-05-02T00:00:00.000Z");
+    assert.equal(replayed[0]!.attempts, 1);
+    assert.equal(
+      restarted.getTerminalTaskEventOutbox().subscribe({ afterId: before.id }).length,
+      0,
+    );
+
+    // Rehydrating the same snapshot twice must not duplicate records; the stable id
+    // remains the durable dedupe key across restart/replay cycles.
+    restarted.getTerminalTaskEventOutbox().restoreSnapshot(broker.exportSnapshot().terminalOutbox ?? []);
+    assert.equal(restarted.getTerminalTaskEventOutbox().subscribe().length, 1);
+  });
+
   it("acknowledges delivered terminal records without removing replay state", () => {
     const broker = new InMemoryA2ABroker();
     registerWorker(broker);

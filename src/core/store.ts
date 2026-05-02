@@ -28,8 +28,9 @@ import type { TaskRuntimeRepository } from "./task-repository.js";
 import type { TombstoneRuntimeRepository } from "./tombstone-repository.js";
 import type { ValidationRuntimeRepository } from "./validation-repository.js";
 import type { WorkerRuntimeRepository } from "./worker-repository.js";
+import type { TerminalTaskOutboxEvent } from "./terminal-event-outbox.js";
 
-export const CURRENT_BROKER_STATE_VERSION = 7;
+export const CURRENT_BROKER_STATE_VERSION = 8;
 export const DEFAULT_BROKER_STATE_MAX_BYTES = 50 * 1024 * 1024;
 
 export interface BrokerSnapshot {
@@ -43,6 +44,7 @@ export interface BrokerSnapshot {
   workers: WorkerRecord[];
   tasks: TaskRecord[];
   tombstones?: TaskTombstone[];
+  terminalOutbox?: TerminalTaskOutboxEvent[];
 }
 
 export interface BrokerStateStore {
@@ -573,6 +575,33 @@ const tombstoneSchema = z
   })
   .passthrough();
 
+const terminalOutboxEventSchema = z
+  .object({
+    id: z.string().min(1),
+    kind: z.literal("task.terminal"),
+    taskEventId: z.number().int().nonnegative(),
+    payload: z
+      .object({
+        taskId: z.string().min(1),
+        status: z.enum(["succeeded", "failed", "canceled", "blocked"]),
+        worker: z.string().optional(),
+        repo: z.string().optional(),
+        issue: z.number().int().nonnegative().optional(),
+        prUrl: z.string().url().optional(),
+        doneUrl: z.string().url().optional(),
+        blockUrl: z.string().url().optional(),
+        testSummary: z.string().optional(),
+        createdAt: z.string(),
+        updatedAt: z.string(),
+        completedAt: z.string().optional(),
+      })
+      .passthrough(),
+    createdAt: z.string(),
+    deliveredAt: z.string().optional(),
+    attempts: z.number().int().nonnegative(),
+  })
+  .passthrough();
+
 const brokerSnapshotSchema = z
   .object({
     version: z.number().int().nonnegative().optional().default(CURRENT_BROKER_STATE_VERSION),
@@ -585,6 +614,7 @@ const brokerSnapshotSchema = z
     workers: z.array(workerSchema).optional().default([]),
     tasks: z.array(taskSchema).optional().default([]),
     tombstones: z.array(tombstoneSchema).optional().default([]),
+    terminalOutbox: z.array(terminalOutboxEventSchema).optional(),
   })
   .passthrough();
 
