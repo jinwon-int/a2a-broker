@@ -25,6 +25,16 @@ A notifier can consume the broker-owned outbox without subscribing to raw task s
 - `POST /a2a/tasks/terminal-outbox/ack` with `{ "id": "...", "deliveredAt": "..." }` marks a record delivered without removing replay state.
 - Both routes require an authenticated hub/operator requester when edge identity enforcement is enabled.
 
+## Release/deploy readiness smoke
+
+Before any live deploy, run the broker-side dry-run smoke first; it does not send Telegram messages or deploy services:
+
+```sh
+npm run smoke:docker-broker -- --dry-run
+```
+
+For a post-approval live validation, operators can use `npm run smoke:docker-broker -- --live` or the fleet variant from `docs/docker-broker-live-smoke.md`. Do not run live smokes or deploy without explicit operator approval.
+
 ## Replay, ack, and retention
 
 - Consumers replay with `subscribe({ afterId })`; HTTP consumers pass the same stable cursor as `after_id`.
