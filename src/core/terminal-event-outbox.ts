@@ -5,6 +5,8 @@ const TERMINAL_TASK_STATUSES = new Set<TaskStatus>(["succeeded", "failed", "canc
 const TERMINAL_TASK_EVENT_KINDS = new Set<TaskStatusEvent["kind"]>(["succeeded", "failed", "canceled"]);
 const URL_KEYS = ["prUrl", "doneUrl", "blockUrl"] as const;
 const MAX_SUMMARY_CHARS = 500;
+const MAX_RECEIPT_FIELD_CHARS = 200;
+
 
 export const DEFAULT_TERMINAL_TASK_OUTBOX_RETENTION = 1000;
 
@@ -33,8 +35,28 @@ export interface TerminalTaskOutboxEvent {
   taskEventId: number;
   payload: TerminalTaskEventPayload;
   createdAt: string;
+  /** Pending until an external notifier provides operator-visible receipt evidence. */
+  ackState: TerminalTaskAckState;
   deliveredAt?: string;
+  receipt?: TerminalTaskAckReceipt;
   attempts: number;
+}
+
+export type TerminalTaskAckState = "pending" | "receipt_confirmed";
+export type TerminalTaskAckReceiptKind = "operator_visible" | "operator_confirmed";
+
+export interface TerminalTaskAckReceipt {
+  /** Must represent operator-visible evidence, not Gateway/provider send success. */
+  kind: TerminalTaskAckReceiptKind;
+  at: string;
+  channel?: string;
+  ref?: string;
+  note?: string;
+}
+
+export interface TerminalTaskAcknowledgeOptions {
+  deliveredAt?: string;
+  receipt: unknown;
 }
 
 export interface TerminalTaskOutboxSubscribeOptions {
@@ -88,6 +110,7 @@ export class TerminalTaskEventOutbox {
       taskEventId: taskEvent.id,
       payload: buildTerminalTaskPayload(task),
       createdAt: taskEvent.timestamp,
+      ackState: "pending",
       attempts: 0,
     };
     this.events.push(event);
@@ -113,10 +136,13 @@ export class TerminalTaskEventOutbox {
    * remains replayable until normal retention evicts it, and the stable id keeps
    * repeated enqueue/ack operations idempotent.
    */
-  acknowledge(id: string, deliveredAt = new Date().toISOString()): TerminalTaskOutboxEvent | null {
+  acknowledge(id: string, options: TerminalTaskAcknowledgeOptions): TerminalTaskOutboxEvent | null {
     const event = this.events.find((candidate) => candidate.id === id);
     if (!event) return null;
-    event.deliveredAt = deliveredAt;
+    const receipt = normalizeTerminalTaskAckReceipt(options.receipt, options.deliveredAt);
+    event.ackState = "receipt_confirmed";
+    event.deliveredAt = receipt.at;
+    event.receipt = receipt;
     event.attempts += 1;
     return event;
   }
@@ -140,7 +166,9 @@ export class TerminalTaskEventOutbox {
 
   private restore(event: TerminalTaskOutboxEvent): void {
     if (this.seen.has(event.id)) return;
-    this.events.push(structuredClone(event));
+    const restored = structuredClone(event);
+    restored.ackState ??= restored.deliveredAt ? "receipt_confirmed" : "pending";
+    this.events.push(restored);
     this.markSeen(event.id);
   }
 
@@ -166,6 +194,27 @@ export function isTerminalStatus(status: TaskStatus): status is TerminalTaskStat
 
 export function formatTerminalTaskEventId(taskId: string, status: TaskStatus, completedAt: string): string {
   return `terminal:${encodeURIComponent(taskId)}:${status}:${encodeURIComponent(completedAt)}`;
+}
+
+export function normalizeTerminalTaskAckReceipt(value: unknown, deliveredAt?: string): TerminalTaskAckReceipt {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("terminal outbox ack requires operator-visible receipt evidence");
+  }
+  const source = value as Record<string, unknown>;
+  const kind = source["kind"];
+  if (kind !== "operator_visible" && kind !== "operator_confirmed") {
+    throw new Error("terminal outbox ack receipt kind must be operator_visible or operator_confirmed");
+  }
+
+  const at = firstString(source["at"], deliveredAt) ?? new Date().toISOString();
+  const receipt: TerminalTaskAckReceipt = { kind, at };
+  const channel = sanitizeReceiptField(source["channel"]);
+  if (channel) receipt.channel = channel;
+  const ref = sanitizeReceiptField(source["ref"]);
+  if (ref) receipt.ref = ref;
+  const note = sanitizeReceiptField(source["note"]);
+  if (note) receipt.note = note;
+  return receipt;
 }
 
 function buildTerminalTaskPayload(task: TaskRecord): TerminalTaskEventPayload {
@@ -216,6 +265,18 @@ function sanitizeSummary(value: unknown): string | undefined {
     .replace(/(^|\s)(?:[A-Za-z]:)?\/[\w./-]+/g, "$1[path]")
     .replace(/\s+/g, " ")
     .slice(0, MAX_SUMMARY_CHARS);
+}
+
+function firstString(...values: unknown[]): string | undefined {
+  for (const value of values) {
+    if (typeof value === "string" && value.trim()) return value.trim();
+  }
+  return undefined;
+}
+
+function sanitizeReceiptField(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  return sanitizeSummary(value)?.slice(0, MAX_RECEIPT_FIELD_CHARS);
 }
 
 function normalizePositiveInt(value: number | undefined, fallback: number): number {

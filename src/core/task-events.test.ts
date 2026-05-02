@@ -437,7 +437,10 @@ describe("TerminalTaskEventOutbox", () => {
 
     const [before] = broker.getTerminalTaskEventOutbox().subscribe();
     assert.ok(before);
-    broker.getTerminalTaskEventOutbox().acknowledge(before.id, "2026-05-02T00:00:00.000Z");
+    broker.getTerminalTaskEventOutbox().acknowledge(before.id, {
+      deliveredAt: "2026-05-02T00:00:00.000Z",
+      receipt: { kind: "operator_visible", at: "2026-05-02T00:00:00.000Z", channel: "operator-terminal" },
+    });
 
     const restarted = new InMemoryA2ABroker(undefined, broker.exportSnapshot(), {
       maxTerminalTaskOutboxEvents: 10,
@@ -445,7 +448,9 @@ describe("TerminalTaskEventOutbox", () => {
     const replayed = restarted.getTerminalTaskEventOutbox().subscribe();
     assert.equal(replayed.length, 1);
     assert.equal(replayed[0]!.id, before.id);
+    assert.equal(replayed[0]!.ackState, "receipt_confirmed");
     assert.equal(replayed[0]!.deliveredAt, "2026-05-02T00:00:00.000Z");
+    assert.equal(replayed[0]!.receipt?.kind, "operator_visible");
     assert.equal(replayed[0]!.attempts, 1);
     assert.equal(
       restarted.getTerminalTaskEventOutbox().subscribe({ afterId: before.id }).length,
@@ -470,16 +475,36 @@ describe("TerminalTaskEventOutbox", () => {
     const [event] = outbox.subscribe();
     assert.ok(event);
 
+    assert.equal(event.ackState, "pending");
+
     const deliveredAt = "2026-05-01T00:00:00.000Z";
-    const acked = outbox.acknowledge(event.id, deliveredAt);
+    const acked = outbox.acknowledge(event.id, {
+      deliveredAt,
+      receipt: {
+        kind: "operator_visible",
+        at: deliveredAt,
+        channel: "operator-terminal",
+        ref: "telegram-message-1 token=ghp_secretvalue /work/private/raw.log",
+      },
+    });
     assert.ok(acked);
+    assert.equal(acked.ackState, "receipt_confirmed");
     assert.equal(acked.deliveredAt, deliveredAt);
+    assert.equal(acked.receipt?.kind, "operator_visible");
+    assert.equal(acked.receipt?.channel, "operator-terminal");
+    assert.equal(acked.receipt?.ref, "telegram-message-1 token=[redacted] [path]");
     assert.equal(acked.attempts, 1);
-    assert.equal(outbox.acknowledge("missing"), null);
+    assert.equal(outbox.acknowledge("missing", { receipt: { kind: "operator_visible", at: deliveredAt } }), null);
+    assert.throws(
+      () => outbox.acknowledge(event.id, { receipt: { kind: "provider_send_success", at: deliveredAt } }),
+      /operator_visible or operator_confirmed/,
+    );
 
     const replayed = outbox.subscribe()[0];
     assert.equal(replayed!.id, event.id);
+    assert.equal(replayed!.ackState, "receipt_confirmed");
     assert.equal(replayed!.deliveredAt, deliveredAt);
+    assert.equal(replayed!.receipt?.kind, "operator_visible");
     assert.equal(replayed!.attempts, 1);
   });
 

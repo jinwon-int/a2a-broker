@@ -44,6 +44,7 @@ import {
   type BrokerStateStore,
   type SqliteBrokerLoadSource,
 } from "./core/store.js";
+import { normalizeTerminalTaskAckReceipt } from "./core/terminal-event-outbox.js";
 import type {
   A2AExchangeMessageRecord,
   A2AExchangeMessageRequest,
@@ -771,13 +772,19 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
           assertRequesterHasRole(requesterIdentity, ["hub", "operator"], "task-terminal-outbox.ack");
         }
 
-        const body = await readJson<{ id?: unknown; deliveredAt?: unknown }>(req);
+        const body = await readJson<{ id?: unknown; deliveredAt?: unknown; receipt?: unknown }>(req);
         const id = body?.id;
         if (typeof id !== "string" || id.length === 0) {
           throw new BrokerError("bad_request", "terminal outbox ack requires a non-empty id");
         }
         const deliveredAt = typeof body?.deliveredAt === "string" ? body.deliveredAt : undefined;
-        const event = broker.getTerminalTaskEventOutbox().acknowledge(id, deliveredAt);
+        let receipt;
+        try {
+          receipt = normalizeTerminalTaskAckReceipt(body?.receipt, deliveredAt);
+        } catch (error) {
+          throw new BrokerError("bad_request", error instanceof Error ? error.message : "invalid terminal outbox ack receipt");
+        }
+        const event = broker.getTerminalTaskEventOutbox().acknowledge(id, { deliveredAt, receipt });
         if (!event) {
           throw new BrokerError("not_found", "terminal outbox event not found");
         }

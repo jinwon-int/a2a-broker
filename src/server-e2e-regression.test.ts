@@ -398,14 +398,31 @@ test("E2E: terminal notification outbox enforces auth and replays compact ack-sa
     assert.deepEqual(terminalPayload.testSummary, { status: "passed", total: 2, passed: 2 });
 
     const deliveredAt = "2026-05-02T01:23:45.000Z";
+    const falseAckRes = await fetch(`${server.baseUrl}/a2a/tasks/terminal-outbox/ack`, {
+      method: "POST",
+      headers: hubHeaders,
+      body: JSON.stringify({
+        id: outboxEvent.id,
+        deliveredAt,
+        receipt: { kind: "gateway_send_success", at: deliveredAt },
+      }),
+    });
+    assert.equal(falseAckRes.status, 400);
+
     const ackRes = await fetch(`${server.baseUrl}/a2a/tasks/terminal-outbox/ack`, {
       method: "POST",
       headers: hubHeaders,
-      body: JSON.stringify({ id: outboxEvent.id, deliveredAt }),
+      body: JSON.stringify({
+        id: outboxEvent.id,
+        deliveredAt,
+        receipt: { kind: "operator_visible", at: deliveredAt, channel: "operator-terminal", ref: "operator-message-1" },
+      }),
     });
     assert.equal(ackRes.status, 200);
     const ack = await ackRes.json();
+    assert.equal(ack.event.ackState, "receipt_confirmed");
     assert.equal(ack.event.deliveredAt, deliveredAt);
+    assert.equal(ack.event.receipt.kind, "operator_visible");
     assert.equal(ack.event.attempts, 1);
 
     const noDuplicateRes = await fetch(

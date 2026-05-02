@@ -3351,14 +3351,31 @@ test("GET/POST /a2a/tasks/terminal-outbox replays and acknowledges compact recor
     assert.equal(replay.cursor, event.id);
 
     const deliveredAt = "2026-05-02T00:00:00.000Z";
+    const falseAckRes = await fetch(`${server.baseUrl}/a2a/tasks/terminal-outbox/ack`, {
+      method: "POST",
+      headers: hubHeaders,
+      body: JSON.stringify({
+        id: event.id,
+        deliveredAt,
+        receipt: { kind: "provider_send_success", at: deliveredAt },
+      }),
+    });
+    assert.equal(falseAckRes.status, 400);
+
     const ackRes = await fetch(`${server.baseUrl}/a2a/tasks/terminal-outbox/ack`, {
       method: "POST",
       headers: hubHeaders,
-      body: JSON.stringify({ id: event.id, deliveredAt }),
+      body: JSON.stringify({
+        id: event.id,
+        deliveredAt,
+        receipt: { kind: "operator_visible", at: deliveredAt, channel: "operator-terminal", ref: "message-1" },
+      }),
     });
     assert.equal(ackRes.status, 200);
     const ack = await ackRes.json();
+    assert.equal(ack.event.ackState, "receipt_confirmed");
     assert.equal(ack.event.deliveredAt, deliveredAt);
+    assert.equal(ack.event.receipt.kind, "operator_visible");
     assert.equal(ack.event.attempts, 1);
 
     const serialized = JSON.stringify({ list, ack });
