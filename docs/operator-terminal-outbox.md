@@ -16,9 +16,19 @@ Each outbox record contains only:
 
 Records must not include raw logs, secrets, prompts, session transcripts, arbitrary payload fields, or private local paths.
 
+## HTTP adapter for plugin/OpenClaw notifiers
+
+A notifier can consume the broker-owned outbox without subscribing to raw task state:
+
+- `GET /a2a/tasks/terminal-outbox?after_id=<cursor>&limit=<n>` returns `{ kind, count, cursor, events }`.
+- Save the response `cursor` (or the last event `id`) and pass it as `after_id` on the next poll.
+- `POST /a2a/tasks/terminal-outbox/ack` with `{ "id": "...", "deliveredAt": "..." }` marks a record delivered without removing replay state.
+- Both routes require an authenticated hub/operator requester when edge identity enforcement is enabled.
+
 ## Replay, ack, and retention
 
-- Consumers replay with `subscribe({ afterId })`; records after the stable cursor are returned in insertion order.
+- Consumers replay with `subscribe({ afterId })`; HTTP consumers pass the same stable cursor as `after_id`.
+- Records after the stable cursor are returned in insertion order; unknown/stale cursors replay retained records from the beginning.
 - Retained outbox records are included in broker state version 8 snapshots as `terminalOutbox`, so replay cursors, acknowledgements, and dedupe IDs survive JSON/SQLite snapshot restart.
 - `acknowledge(id, deliveredAt)` marks delivery metadata without removing the record, so a notifier can recover after a crash until normal retention evicts it.
 - Duplicate enqueue of the same terminal task state returns the retained record or is suppressed if recently seen.
