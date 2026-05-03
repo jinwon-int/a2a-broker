@@ -41,6 +41,7 @@ import {
   SqliteTombstoneRuntimeRepository,
   SqliteValidationRuntimeRepository,
   SqliteWorkerRuntimeRepository,
+  type BrokerHotEntityDiagnostics,
   type BrokerStateStore,
   type SqliteBrokerLoadSource,
 } from "./core/store.js";
@@ -188,6 +189,7 @@ type OperatorSummary = BrokerDashboard & {
   };
   attention: DashboardAttentionSummary;
   operatorSnapshot: OperatorDashboardSnapshot;
+  hotEntityDiagnostics?: BrokerHotEntityDiagnostics;
 };
 
 interface OperatorSnapshotEvent {
@@ -847,6 +849,9 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
           recentHistoryLimit: recentLimit,
           oldestPendingLimit,
           pendingActionLimit,
+          hotEntityDiagnostics: stateStore instanceof SqliteBrokerStateStore
+            ? stateStore.readHotEntityDiagnostics()
+            : undefined,
         }));
       }
 
@@ -2529,6 +2534,7 @@ function buildDashboardResponse(input: {
   recentHistoryLimit?: number;
   oldestPendingLimit?: number;
   pendingActionLimit?: number;
+  hotEntityDiagnostics?: BrokerHotEntityDiagnostics;
 }): OperatorSummary {
   const dashboard = input.broker.getDashboard({
     offlineAfterMs: input.workerOfflineAfterSec * 1000,
@@ -2557,6 +2563,7 @@ function buildDashboardResponse(input: {
       dashboard,
       staleReaper,
     }),
+    hotEntityDiagnostics: input.hotEntityDiagnostics,
   };
 }
 
