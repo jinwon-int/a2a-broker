@@ -632,6 +632,71 @@ test("broker worker mutations can use the SQLite runtime repository without JSON
   }
 });
 
+test("broker normalizes minimal legacy and full worker capabilities before SQLite hot persistence", () => {
+  const dir = mkdtempSync(join(tmpdir(), "a2a-broker-worker-capabilities-"));
+  const sqliteStore = new SqliteBrokerStateStore(join(dir, "state.sqlite"));
+  const noopStore: BrokerStateStore = {
+    load: () => emptySnapshot(),
+    save: () => undefined,
+  };
+
+  try {
+    const broker = new InMemoryA2ABroker(noopStore, noopStore.load(), {
+      workerRepository: new SqliteWorkerRuntimeRepository(sqliteStore),
+    });
+
+    broker.registerWorker({
+      nodeId: "worker-minimal-capabilities",
+      role: "analyst",
+      capabilities: { canAnalyze: "yes" } as any,
+    });
+    assert.deepEqual(sqliteStore.readHotWorkers({ nodeId: "worker-minimal-capabilities" })[0]?.capabilities, {
+      canAnalyze: false,
+      canBackfill: false,
+      canPatchWorkspace: false,
+      canPromoteLive: false,
+      workspaceIds: [],
+      environments: [],
+    });
+
+    broker.registerWorker({
+      nodeId: "worker-legacy-array-capabilities",
+      role: "analyst",
+      capabilities: ["canAnalyze", "canPatchWorkspace"] as any,
+    });
+    assert.deepEqual(sqliteStore.readHotWorkers({ nodeId: "worker-legacy-array-capabilities" })[0]?.capabilities, {
+      canAnalyze: true,
+      canBackfill: false,
+      canPatchWorkspace: true,
+      canPromoteLive: false,
+      workspaceIds: [],
+      environments: [],
+    });
+
+    broker.heartbeatWorker("worker-legacy-array-capabilities", {
+      capabilities: {
+        canAnalyze: true,
+        canBackfill: true,
+        canPatchWorkspace: false,
+        canPromoteLive: true,
+        workspaceIds: ["repo-seam", "repo-seam"],
+        environments: ["research", "staging"],
+      },
+    });
+    assert.deepEqual(sqliteStore.readHotWorkers({ nodeId: "worker-legacy-array-capabilities" })[0]?.capabilities, {
+      canAnalyze: true,
+      canBackfill: true,
+      canPatchWorkspace: false,
+      canPromoteLive: true,
+      workspaceIds: ["repo-seam"],
+      environments: ["research", "staging"],
+    });
+  } finally {
+    sqliteStore.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("broker audit and tombstone diagnostics can use SQLite runtime repositories", () => {
   const dir = mkdtempSync(join(tmpdir(), "a2a-broker-audit-tombstone-repo-"));
   const sqliteStore = new SqliteBrokerStateStore(join(dir, "state.sqlite"));

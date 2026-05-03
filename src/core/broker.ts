@@ -33,6 +33,7 @@ import type {
   AuditAction,
   AuditEvent,
   AuditListFilters,
+  A2AWorkerEnvironment,
   A2AExchangeMessageRecord,
   A2AExchangeMessageRequest,
   A2AExchangeRequest,
@@ -67,6 +68,7 @@ import type {
   ValidationResult,
   WorkerCapacitySummary,
   WorkerCapacitySummaryItem,
+  WorkerCapabilities,
   WorkerFleetSummary,
   WorkerHeartbeatRequest,
   TaskDiagnosticReport,
@@ -3620,17 +3622,45 @@ function projectTaskDurableSignals(params: {
   };
 }
 
-function normalizeCapabilities(
-  capabilities: WorkerRecord["capabilities"],
-): WorkerRecord["capabilities"] {
+function normalizeCapabilities(capabilities: unknown): WorkerCapabilities {
+  if (Array.isArray(capabilities)) {
+    const capabilityNames = new Set(capabilities.map((capability) => String(capability)));
+    return {
+      canAnalyze: capabilityNames.has("canAnalyze"),
+      canBackfill: capabilityNames.has("canBackfill"),
+      canPatchWorkspace: capabilityNames.has("canPatchWorkspace"),
+      canPromoteLive: capabilityNames.has("canPromoteLive"),
+      workspaceIds: [],
+      environments: [],
+    };
+  }
+
+  const capabilityRecord = capabilities && typeof capabilities === "object"
+    ? capabilities as Partial<WorkerCapabilities>
+    : {};
+
   return {
-    canAnalyze: capabilities.canAnalyze,
-    canBackfill: capabilities.canBackfill,
-    canPatchWorkspace: capabilities.canPatchWorkspace,
-    canPromoteLive: capabilities.canPromoteLive,
-    workspaceIds: [...new Set(capabilities.workspaceIds ?? [])],
-    environments: [...new Set(capabilities.environments ?? [])],
+    canAnalyze: capabilityRecord.canAnalyze === true,
+    canBackfill: capabilityRecord.canBackfill === true,
+    canPatchWorkspace: capabilityRecord.canPatchWorkspace === true,
+    canPromoteLive: capabilityRecord.canPromoteLive === true,
+    workspaceIds: uniqueStringList(capabilityRecord.workspaceIds),
+    environments: uniqueEnvironmentList(capabilityRecord.environments),
   };
+}
+
+function uniqueStringList(values: unknown): string[] {
+  return Array.isArray(values)
+    ? [...new Set(values.map((value) => String(value)).filter(Boolean))]
+    : [];
+}
+
+function uniqueEnvironmentList(values: unknown): A2AWorkerEnvironment[] {
+  return uniqueStringList(values).filter(isA2AWorkerEnvironment);
+}
+
+function isA2AWorkerEnvironment(value: string): value is A2AWorkerEnvironment {
+  return value === "research" || value === "staging" || value === "live";
 }
 
 function normalizeWorkerRecord(worker: WorkerRecord): WorkerRecord {
