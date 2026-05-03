@@ -375,6 +375,7 @@ test("E2E: terminal notification outbox enforces auth and replays compact ack-sa
     assert.equal(outbox.cursor, outboxEvent.id);
     assert.equal(outboxEvent.kind, "task.terminal");
     assert.equal(outboxEvent.attempts, 0);
+    assert.deepEqual(outboxEvent.receipt, { status: "accepted", updatedAt: outboxEvent.createdAt });
     assert.equal(outboxEvent.payload.taskId, task.id);
     assert.equal(outboxEvent.payload.status, "succeeded");
     assert.equal(outboxEvent.payload.worker, "worker-a");
@@ -420,6 +421,12 @@ test("E2E: terminal notification outbox enforces auth and replays compact ack-sa
       status: "receipt_confirmed",
       evidence: "provider_delivery_receipt",
       acknowledgedAt,
+      receiptId: "delivery-receipt-250",
+    });
+    assert.deepEqual(ack.event.receipt, {
+      status: "provider_delivered_if_known",
+      updatedAt: acknowledgedAt,
+      evidence: "provider_delivery_receipt",
       receiptId: "delivery-receipt-250",
     });
     assert.equal(ack.event.deliveredAt, undefined);

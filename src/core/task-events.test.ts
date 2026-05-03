@@ -478,6 +478,10 @@ describe("TerminalTaskEventOutbox", () => {
     const outbox = broker.getTerminalTaskEventOutbox();
     const [event] = outbox.subscribe();
     assert.ok(event);
+    assert.deepEqual(event.receipt, {
+      status: "accepted",
+      updatedAt: event.createdAt,
+    });
 
     for (const evidence of ["gateway_send_success", "provider_send_success"]) {
       assert.throws(
@@ -503,6 +507,13 @@ describe("TerminalTaskEventOutbox", () => {
       receiptId: "receipt-123",
       note: "operator saw message at [path] token=[redacted]",
     });
+    assert.deepEqual(acked.receipt, {
+      status: "provider_delivered_if_known",
+      updatedAt: acknowledgedAt,
+      evidence: "provider_delivery_receipt",
+      receiptId: "receipt-123",
+      note: "operator saw message at [path] token=[redacted]",
+    });
     assert.equal(acked.deliveredAt, undefined);
     assert.equal(acked.attempts, 1);
     assert.equal(outbox.acknowledge("missing", { evidence: "operator_visible" }), null);
@@ -510,7 +521,48 @@ describe("TerminalTaskEventOutbox", () => {
     const replayed = outbox.subscribe()[0];
     assert.equal(replayed!.id, event.id);
     assert.deepEqual(replayed!.ack, acked.ack);
+    assert.deepEqual(replayed!.receipt, acked.receipt);
     assert.equal(replayed!.attempts, 1);
+  });
+
+  it("tracks notification send failure and stale/timed-out receipt without acking", () => {
+    const broker = new InMemoryA2ABroker();
+    registerWorker(broker);
+    const task = createTask(broker, { id: "receipt-status-task" });
+
+    broker.claimTask(task.id, "worker-1");
+    broker.completeTask(task.id, "worker-1", { summary: "done" });
+
+    const outbox = broker.getTerminalTaskEventOutbox();
+    const [event] = outbox.subscribe();
+    assert.ok(event);
+
+    const failed = outbox.recordReceiptStatus(event.id, {
+      status: "failed",
+      updatedAt: "2026-05-02T02:00:00.000Z",
+      note: "provider send failed token=ghp_secretvalue",
+    });
+    assert.ok(failed);
+    assert.equal(failed.ack, undefined);
+    assert.deepEqual(failed.receipt, {
+      status: "failed",
+      updatedAt: "2026-05-02T02:00:00.000Z",
+      note: "provider send failed token=[redacted]",
+    });
+
+    const timedOut = outbox.recordReceiptStatus(event.id, {
+      status: "timed_out",
+      updatedAt: "2026-05-02T02:15:00.000Z",
+    });
+    assert.equal(timedOut?.receipt.status, "timed_out");
+    assert.equal(timedOut?.ack, undefined);
+
+    const stale = outbox.recordReceiptStatus(event.id, {
+      status: "stale",
+      updatedAt: "2026-05-02T02:30:00.000Z",
+    });
+    assert.equal(stale?.receipt.status, "stale");
+    assert.equal(outbox.subscribeWithCursor({ afterId: event.id }).reconciledUnacked, 1);
   });
 
   it("reconciles unacknowledged terminal records before a notifier cursor", () => {
