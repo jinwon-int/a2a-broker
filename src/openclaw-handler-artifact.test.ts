@@ -521,6 +521,63 @@ process.exit(1);
   }
 });
 
+test("github issue-instruction tasks fail closed when no executor evidence path is configured", () => {
+  const result = spawnSync(process.execPath, [handlerPath], {
+    input: JSON.stringify(githubTask({ payload: { mode: "github-issue-instruction", repo: "owner/repo", issue: "#1" } })),
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      A2A_EXECUTOR_MODE: "builtin",
+      A2A_DOCKER_RUNNER_ENABLED: "1",
+      A2A_DOCKER_RUNNER_ALL_GITHUB: "1",
+      A2A_DOCKER_RUNNER_BIN: "/path/that/should/not/run",
+    },
+  });
+
+  assert.equal(result.status, 1);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.error.code, "github_executor_not_configured");
+  assert.equal(payload.error.details.executorMode, "builtin");
+});
+
+test("github issue-instruction runner success without evidence surfaces as docker_runner_evidence_missing", () => {
+  const tempDir = mkdtempSync(join(tmpdir(), "handler-issue-instruction-no-evidence-"));
+  const fakeRunnerPath = join(tempDir, "fake-runner.mjs");
+  try {
+    writeFileSync(fakeRunnerPath, `
+import { readFileSync } from "node:fs";
+const taskPath = process.argv.at(-1);
+const task = JSON.parse(readFileSync(taskPath, "utf8"));
+if (task.mode !== "github-issue-instruction") throw new Error("expected github-issue-instruction, got " + task.mode);
+console.log(JSON.stringify({
+  ok: true,
+  taskId: task.id,
+  status: "completed",
+  workDir: "/tmp/work-fixture",
+  artifacts: []
+}));
+`);
+
+    const result = spawnSync(process.execPath, [handlerPath], {
+      input: JSON.stringify(githubTask({ payload: { mode: "github-issue-instruction", repo: "owner/repo", issue: "#1" } })),
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        A2A_EXECUTOR_MODE: "docker",
+        A2A_DOCKER_RUNNER_BIN: process.execPath,
+        A2A_DOCKER_RUNNER_ARGS_JSON: JSON.stringify([fakeRunnerPath]),
+      },
+    });
+
+    assert.equal(result.status, 1);
+    const payload = JSON.parse(result.stdout);
+    assert.equal(payload.error.code, "docker_runner_evidence_missing");
+    assert.match(payload.error.message, /docker runner completed but produced no PR\/Done\/Block evidence/);
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
 test("docker runner success without evidence surfaces as docker_runner_evidence_missing (contract #169)", () => {
   const tempDir = mkdtempSync(join(tmpdir(), "handler-no-evidence-test-"));
   const fakeRunnerPath = join(tempDir, "fake-runner.mjs");

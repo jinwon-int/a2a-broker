@@ -81,8 +81,7 @@ function shouldUseDockerRunner(task, env = process.env) {
   const executorMode = normalizedExecutorMode(env);
   if (executorMode === "builtin") return false;
 
-  const mode = taskMode(task);
-  if (task?.intent !== "propose_patch" && mode !== "github-propose-patch") return false;
+  if (!isGithubEvidenceTask(task)) return false;
   if (executorMode === "docker") return true;
   if (normalizedDockerScope(env) === "all-github") {
     return !(hasBlockedClaudeDockerConfig(env) && isOpenClawBridgeConfigured(env));
@@ -166,7 +165,7 @@ function buildRunnerTask(task, env = process.env) {
 function isGithubEvidenceTask(task) {
   const mode = taskMode(task);
   const intent = safeText(task.intent, "");
-  return intent === "propose_patch" && mode === "github-propose-patch";
+  return intent === "propose_patch" && (mode === "github-propose-patch" || mode === "github-issue-instruction");
 }
 
 
