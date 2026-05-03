@@ -2583,3 +2583,78 @@ test("accepted-task wake failure is durable and operator-visible", () => {
   assert.equal(failures.length, 1);
   assert.match(failures[0].note ?? "", /runtime unavailable/);
 });
+
+test("broker accepts canonical GitHub patch dispatch and stamps taskOrigin", () => {
+  const broker = new InMemoryA2ABroker();
+  registerWorker(broker, "worker-github-canonical");
+
+  const task = broker.createTask({
+    intent: "propose_patch",
+    requester: { id: "hub-a", kind: "node", role: "hub" },
+    target: { id: "worker-github-canonical", kind: "node", role: "analyst" },
+    message: "fix issue",
+    payload: {
+      mode: "github-propose-patch",
+      repo: "acme/platform",
+      issueNumber: 291,
+      issueUrl: "https://github.com/acme/platform/issues/291",
+    },
+  });
+
+  assert.equal(task.taskOrigin, "github");
+  assert.equal(task.payload.mode, "github-propose-patch");
+  assert.equal(task.payload.repo, "acme/platform");
+  assert.equal(task.payload.issue, "#291");
+  assert.equal(task.payload.issueNumber, 291);
+  assert.equal(task.payload.issueUrl, "https://github.com/acme/platform/issues/291");
+  assert.equal(task.payload.githubDispatchCompatibility, undefined);
+});
+
+test("broker normalizes legacy GitHub dispatch fields with compatibility marker", () => {
+  const broker = new InMemoryA2ABroker();
+  registerWorker(broker, "worker-github-legacy");
+
+  const task = broker.createTask({
+    intent: "propose_patch",
+    requester: { id: "hub-a", kind: "node", role: "hub" },
+    target: { id: "worker-github-legacy", kind: "node", role: "analyst" },
+    message: "fix issue",
+    payload: {
+      githubRepo: "acme/platform",
+      githubIssueNumber: 292,
+      workMode: "github",
+    },
+  });
+
+  assert.equal(task.taskOrigin, "github");
+  assert.equal(task.payload.mode, "github-propose-patch");
+  assert.equal(task.payload.repo, "acme/platform");
+  assert.equal(task.payload.issue, "#292");
+  assert.equal(task.payload.issueNumber, 292);
+  assert.equal(task.payload.issueUrl, "https://github.com/acme/platform/issues/292");
+  assert.deepEqual(task.payload.githubDispatchCompatibility, {
+    normalizedFromLegacyPayload: true,
+    legacyFields: ["githubRepo", "githubIssueNumber", "workMode"],
+  });
+});
+
+test("broker rejects non-canonical GitHub dispatch with wrong taskOrigin", () => {
+  const broker = new InMemoryA2ABroker();
+  registerWorker(broker, "worker-github-reject");
+
+  assert.throws(
+    () => broker.createTask({
+      intent: "propose_patch",
+      requester: { id: "hub-a", kind: "node", role: "hub" },
+      target: { id: "worker-github-reject", kind: "node", role: "analyst" },
+      taskOrigin: "api",
+      message: "fix issue",
+      payload: {
+        mode: "github-propose-patch",
+        repo: "acme/platform",
+        issueNumber: 293,
+      },
+    }),
+    /taskOrigin=github/,
+  );
+});
