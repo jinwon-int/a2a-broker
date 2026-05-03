@@ -77,8 +77,20 @@ export interface BrokerPersistenceInfo {
   hotEntityHintTables?: string[];
   hotEntityHintCoverage?: BrokerHotEntityHintCoverage;
   hotEntityMirror?: BrokerHotEntityMirrorStatus;
+  hotEntityDiagnostics?: BrokerHotEntityDiagnostics;
   importedFromJsonFile?: string;
   lastImportAt?: string;
+}
+
+export interface BrokerHotEntityDiagnostics {
+  invalidRows: BrokerInvalidHotEntityRow[];
+}
+
+export interface BrokerInvalidHotEntityRow {
+  table: string;
+  primaryKey: string;
+  schemaError: string;
+  count: number;
 }
 
 export interface BrokerHotEntityHintCoverage {
@@ -840,7 +852,7 @@ export class SqliteBrokerStateStore implements BrokerStateStore {
     return this.db
       .prepare(sql)
       .all(...params)
-      .map((row) => parseHotEntityPayload(row, workerSchema, "broker_workers")) as WorkerRecord[];
+      .flatMap((row) => parseHotEntityPayloadSafe(row, workerSchema, "broker_workers")) as WorkerRecord[];
   }
 
   readHotTombstones(filters: SqliteTombstoneHotTableFilters = {}): TaskTombstone[] {
@@ -910,6 +922,7 @@ export class SqliteBrokerStateStore implements BrokerStateStore {
       hotEntityHintTables: [...SQLITE_HOT_ENTITY_HINT_TABLES],
       hotEntityHintCoverage: this.readHotEntityHintCoverage(),
       hotEntityMirror: this.readHotEntityMirrorStatus(),
+      hotEntityDiagnostics: this.readHotEntityDiagnostics(),
       importedFromJsonFile: this.readMetadata("imported_from_json_file"),
       lastImportAt: this.readMetadata("last_import_at"),
     };
@@ -917,6 +930,30 @@ export class SqliteBrokerStateStore implements BrokerStateStore {
 
   readHotEntityHintCoverage(): BrokerHotEntityHintCoverage {
     return buildHotEntityHintCoverage(SQLITE_HOT_ENTITY_TABLES, SQLITE_HOT_ENTITY_HINT_TABLES);
+  }
+
+  readHotEntityDiagnostics(): BrokerHotEntityDiagnostics {
+    return {
+      invalidRows: this.readInvalidHotWorkerRows(),
+    };
+  }
+
+  private readInvalidHotWorkerRows(): BrokerInvalidHotEntityRow[] {
+    const invalidRows = (this.db
+      .prepare("SELECT node_id AS primaryKey, payload FROM broker_workers ORDER BY node_id ASC")
+      .all() as Array<{ primaryKey?: unknown; payload?: unknown }>).flatMap((row): BrokerInvalidHotEntityRow[] => {
+        const parsed = parseHotEntityPayloadResult(row, workerSchema, "broker_workers");
+        if (parsed.success) {
+          return [];
+        }
+        return [{
+          table: "broker_workers",
+          primaryKey: sanitizeDiagnosticValue(row.primaryKey),
+          schemaError: parsed.error,
+          count: 1,
+        }];
+      });
+    return coalesceInvalidHotEntityRows(invalidRows);
   }
 
   readHotEntityMirrorStatus(): BrokerHotEntityMirrorStatus {
@@ -2270,14 +2307,54 @@ function parseRetentionTimestamp(value: string | undefined): number | null {
 }
 
 function parseHotEntityPayload<T>(row: unknown, schema: z.ZodType<T>, tableName: string): T {
-  const payload = readSqlitePayload(row, tableName);
-  const parsed = schema.safeParse(JSON.parse(payload));
+  const parsed = parseHotEntityPayloadResult(row, schema, tableName);
   if (!parsed.success) {
     throw new Error(
-      `invalid hot entity payload in ${tableName}: ${parsed.error.issues[0]?.message ?? "unknown schema error"}`,
+      `invalid hot entity payload in ${tableName}: ${parsed.error}`,
     );
   }
   return parsed.data;
+}
+
+function parseHotEntityPayloadSafe<T>(row: unknown, schema: z.ZodType<T>, tableName: string): T[] {
+  const parsed = parseHotEntityPayloadResult(row, schema, tableName);
+  if (!parsed.success) {
+    return [];
+  }
+  return [parsed.data];
+}
+
+function parseHotEntityPayloadResult<T>(row: unknown, schema: z.ZodType<T>, tableName: string): { success: true; data: T } | { success: false; error: string } {
+  let value: unknown;
+  try {
+    value = JSON.parse(readSqlitePayload(row, tableName));
+  } catch (error) {
+    return { success: false, error: sanitizeDiagnosticValue(error instanceof Error ? error.message : String(error)) };
+  }
+  const parsed = schema.safeParse(value);
+  if (!parsed.success) {
+    return { success: false, error: sanitizeDiagnosticValue(parsed.error.issues[0]?.message ?? "unknown schema error") };
+  }
+  return { success: true, data: parsed.data };
+}
+
+function sanitizeDiagnosticValue(value: unknown): string {
+  const raw = typeof value === "string" ? value : String(value ?? "unknown");
+  return raw.replace(/[\r\n\t]+/g, " ").slice(0, 240);
+}
+
+function coalesceInvalidHotEntityRows(rows: BrokerInvalidHotEntityRow[]): BrokerInvalidHotEntityRow[] {
+  const byKey = new Map<string, BrokerInvalidHotEntityRow>();
+  for (const row of rows) {
+    const key = `${row.table}\u0000${row.primaryKey}\u0000${row.schemaError}`;
+    const existing = byKey.get(key);
+    if (existing) {
+      existing.count += row.count;
+    } else {
+      byKey.set(key, { ...row });
+    }
+  }
+  return [...byKey.values()];
 }
 
 function readSqlitePayload(row: unknown, tableName: string): string {

@@ -4,6 +4,7 @@ import { once } from "node:events";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 
 import { createBrokerServer, type BrokerServerOptions } from "./server.js";
 import {
@@ -424,6 +425,66 @@ test("server approves blocked live-impact task with operator audit metadata", as
     assert.equal(audit.items[0].note, "change ticket reviewed");
   } finally {
     await server.close();
+  }
+});
+
+test("server surfaces invalid worker hot row diagnostics on health and dashboard", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "a2a-broker-invalid-worker-"));
+  const sqliteFile = join(dir, "state.sqlite");
+  const runtime = createBrokerServer({
+    host: "127.0.0.1",
+    port: 0,
+    publicBaseUrl: "https://broker.test/",
+    stateFile: join(dir, "state.json"),
+    sqliteFile,
+    persistenceBackend: "sqlite",
+    staleReaperEnabled: false,
+  });
+  try {
+    const db = new DatabaseSync(sqliteFile);
+    try {
+      db.prepare(
+        `INSERT INTO broker_workers (node_id, role, last_seen_at, updated_at, payload)
+         VALUES (?, ?, ?, ?, ?)`,
+      ).run(
+        "worker-invalid",
+        "analyst",
+        "2026-04-27T00:00:00.000Z",
+        "2026-04-27T00:00:00.000Z",
+        JSON.stringify({
+          nodeId: "worker-invalid",
+          role: "analyst",
+          createdAt: "2026-04-27T00:00:00.000Z",
+          updatedAt: "2026-04-27T00:00:00.000Z",
+          lastSeenAt: "2026-04-27T00:00:00.000Z",
+        }),
+      );
+    } finally {
+      db.close();
+    }
+
+    runtime.server.listen(0, "127.0.0.1");
+    await once(runtime.server, "listening");
+    const address = runtime.server.address();
+    if (!address || typeof address === "string") {
+      throw new Error("failed to bind test server");
+    }
+
+    const expectedInvalidRows = [{
+      table: "broker_workers",
+      primaryKey: "worker-invalid",
+      schemaError: "Invalid input: expected object, received undefined",
+      count: 1,
+    }];
+    const health = await (await fetch(`http://127.0.0.1:${address.port}/health`)).json();
+    assert.deepEqual(health.persistence.hotEntityDiagnostics.invalidRows, expectedInvalidRows);
+
+    const dashboard = await (await fetch(`http://127.0.0.1:${address.port}/dashboard`)).json();
+    assert.deepEqual(dashboard.hotEntityDiagnostics.invalidRows, expectedInvalidRows);
+  } finally {
+    runtime.stopStaleReaper();
+    await new Promise<void>((resolve) => runtime.server.close(() => resolve()));
+    rmSync(dir, { recursive: true, force: true });
   }
 });
 

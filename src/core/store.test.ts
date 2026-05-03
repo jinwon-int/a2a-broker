@@ -309,6 +309,9 @@ test("SqliteBrokerStateStore saves and reloads snapshots with WAL metadata", () 
         },
         mismatches: [],
       },
+      hotEntityDiagnostics: {
+        invalidRows: [],
+      },
       importedFromJsonFile: undefined,
       lastImportAt: undefined,
     });
@@ -628,6 +631,50 @@ test("SqliteBrokerStateStore projects empty hot tables as an empty runtime snaps
     const store = new SqliteBrokerStateStore(temp.filePath);
 
     assert.deepEqual(store.readHotRuntimeSnapshot(), emptySnapshot());
+    store.close();
+  } finally {
+    temp.cleanup();
+  }
+});
+
+test("SqliteBrokerStateStore skips invalid worker hot rows and reports diagnostics", () => {
+  const temp = withTempFile("state.sqlite");
+  try {
+    const validWorker = makeWorker("worker-valid");
+    const invalidWorker = {
+      nodeId: "worker-invalid",
+      role: "analyst",
+      createdAt: "2026-04-27T00:00:00.000Z",
+      updatedAt: "2026-04-27T00:00:00.000Z",
+      lastSeenAt: "2026-04-27T00:00:00.000Z",
+    };
+    const store = new SqliteBrokerStateStore(temp.filePath, { loadSource: "hot-tables" });
+    store.upsertHotWorkers([validWorker]);
+
+    const db = new DatabaseSync(temp.filePath);
+    try {
+      db.prepare(
+        `INSERT INTO broker_workers (node_id, role, last_seen_at, updated_at, payload)
+         VALUES (?, ?, ?, ?, ?)`,
+      ).run(
+        invalidWorker.nodeId,
+        invalidWorker.role,
+        invalidWorker.lastSeenAt,
+        invalidWorker.updatedAt,
+        JSON.stringify(invalidWorker),
+      );
+    } finally {
+      db.close();
+    }
+
+    assert.deepEqual(store.load().workers.map((worker) => worker.nodeId), ["worker-valid"]);
+    assert.deepEqual(store.readHotWorkers().map((worker) => worker.nodeId), ["worker-valid"]);
+    assert.deepEqual(store.getPersistenceInfo().hotEntityDiagnostics?.invalidRows, [{
+      table: "broker_workers",
+      primaryKey: "worker-invalid",
+      schemaError: "Invalid input: expected object, received undefined",
+      count: 1,
+    }]);
     store.close();
   } finally {
     temp.cleanup();
