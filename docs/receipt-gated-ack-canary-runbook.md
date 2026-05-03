@@ -31,6 +31,7 @@ Related trackers:
 ## Preconditions
 
 - Broker candidate includes receipt-gated terminal outbox ACK behavior.
+- Run the no-live receipt-gate canary matrix first: see [receipt-gate-canary-matrix.md](receipt-gate-canary-matrix.md).
 - Plugin candidate includes the duplicate Telegram flood regression fix.
 - Local checkout is clean except for the candidate under test.
 - For live/staged checks, the command-center issue has named the operator,
