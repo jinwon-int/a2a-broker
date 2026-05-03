@@ -629,6 +629,16 @@ const terminalOutboxEventSchema = z
       })
       .passthrough()
       .optional(),
+    receipt: z
+      .object({
+        status: z.enum(["accepted", "sent", "provider_delivered_if_known", "operator_visible", "timed_out", "stale", "failed"]),
+        updatedAt: z.string(),
+        evidence: z.enum(["operator_visible", "operator_confirmed", "provider_delivery_receipt"]).optional(),
+        receiptId: z.string().optional(),
+        note: z.string().optional(),
+      })
+      .passthrough()
+      .optional(),
     deliveredAt: z.string().optional(),
     attempts: z.number().int().nonnegative(),
   })

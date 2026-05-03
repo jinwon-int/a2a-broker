@@ -1,4 +1,5 @@
 import type { TaskRecord, TaskStatus } from "./types.js";
+import { isTerminalTaskReceiptStatus, type TerminalTaskReceiptStatus } from "./terminal-event-outbox.js";
 
 export type OperatorTaskReportStage = "queued" | "claimed" | "running" | "terminal";
 export type OperatorTaskReportKind = "progress" | "stale" | "result";
@@ -29,6 +30,7 @@ export interface OperatorTaskReportItem {
   errorCode?: string;
   errorMessage?: string;
   resultSummary?: string;
+  receiptStatus?: TerminalTaskReceiptStatus;
   github?: {
     repo?: string;
     issue?: string;
@@ -101,6 +103,7 @@ function buildOperatorTaskReportItem(
   const updatedMs = Date.parse(task.updatedAt);
   const reportable = final || stale || (options.updatedAfterMs !== undefined && Number.isFinite(updatedMs) && updatedMs > options.updatedAfterMs);
   const github = extractGithubEvidence(task);
+  const receiptStatus = extractReceiptStatus(task, final);
   const resultSummary = task.result?.summary ?? task.result?.note;
   const nextAction = buildNextAction(task, github);
 
@@ -123,9 +126,10 @@ function buildOperatorTaskReportItem(
     errorCode: task.error?.code,
     errorMessage: task.error?.message,
     resultSummary,
+    receiptStatus,
     github,
     nextAction,
-    reportLine: buildReportLine(task, { kind, statusAgeMs, resultSummary, github }),
+    reportLine: buildReportLine(task, { kind, statusAgeMs, resultSummary, github, receiptStatus }),
   };
 }
 
@@ -136,6 +140,7 @@ function buildReportLine(
     statusAgeMs: number;
     resultSummary?: string;
     github?: OperatorTaskReportItem["github"];
+    receiptStatus?: TerminalTaskReceiptStatus;
   },
 ): string {
   const node = task.targetNodeId || task.assignedWorkerId || "unknown-node";
@@ -149,8 +154,11 @@ function buildReportLine(
   if (context.kind === "result") {
     const evidence = context.github?.prUrl ?? context.github?.doneCommentUrl ?? context.github?.blockCommentUrl;
     if (task.status === "succeeded") {
+      const receiptGap = context.receiptStatus && context.receiptStatus !== "operator_visible"
+        ? ` — receipt: ${context.receiptStatus}`
+        : "";
       const suffix = evidence ? ` — ${evidence}` : context.resultSummary ? ` — ${context.resultSummary}` : "";
-      return `완료: ${subject}${evidenceLabel}${suffix}`;
+      return `완료: ${subject}${evidenceLabel}${receiptGap}${suffix}`;
     }
     if (task.status === "failed") {
       return `실패: ${subject}${evidenceLabel}${task.error?.code ? ` — ${task.error.code}` : ""}${task.error?.message ? `: ${task.error.message}` : ""}`;
@@ -182,6 +190,15 @@ function parseIssueNumberFromUrl(url: string): string | undefined {
   } catch {
     return undefined;
   }
+}
+
+function extractReceiptStatus(task: TaskRecord, final: boolean): TerminalTaskReceiptStatus | undefined {
+  if (!final) return undefined;
+  const output = asRecord(task.result?.output);
+  const nested = asRecord(output?.receipt);
+  const candidate = output?.receiptStatus ?? nested?.status;
+  if (isTerminalTaskReceiptStatus(candidate)) return candidate;
+  return "accepted";
 }
 
 function extractGithubEvidence(task: TaskRecord): OperatorTaskReportItem["github"] | undefined {

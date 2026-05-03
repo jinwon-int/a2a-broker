@@ -66,6 +66,69 @@ test("operator task report surfaces terminal GitHub evidence as result report", 
   assert.match(report.items[0].reportLine, /pull\/123/);
 });
 
+test("operator task report exposes terminal receipt gap as first-class status", () => {
+  const report = buildOperatorTaskReport([
+    task({
+      id: "receipt-gap-1",
+      status: "succeeded",
+      completedAt: "2026-05-01T00:05:00.000Z",
+      updatedAt: "2026-05-01T00:05:00.000Z",
+      result: {
+        summary: "task terminal success",
+        output: { prUrl: "https://github.com/o/r/pull/124" },
+      },
+    }),
+  ], { nowMs: Date.parse("2026-05-01T00:06:00.000Z") });
+
+  const item = report.items[0];
+  assert.equal(item.status, "succeeded");
+  assert.equal(item.receiptStatus, "accepted");
+  assert.match(item.reportLine, /receipt: accepted/);
+});
+
+test("operator task report distinguishes receipt confirmed and failed or stale receipt states", () => {
+  const report = buildOperatorTaskReport([
+    task({
+      id: "receipt-visible-1",
+      status: "succeeded",
+      completedAt: "2026-05-01T00:05:00.000Z",
+      updatedAt: "2026-05-01T00:05:00.000Z",
+      result: { output: { receipt: { status: "operator_visible" } } },
+    }),
+    task({
+      id: "receipt-failed-1",
+      status: "succeeded",
+      completedAt: "2026-05-01T00:06:00.000Z",
+      updatedAt: "2026-05-01T00:06:00.000Z",
+      result: { output: { receiptStatus: "failed" } },
+    }),
+    task({
+      id: "receipt-timedout-1",
+      status: "succeeded",
+      completedAt: "2026-05-01T00:07:00.000Z",
+      updatedAt: "2026-05-01T00:07:00.000Z",
+      result: { output: { receiptStatus: "timed_out" } },
+    }),
+    task({
+      id: "receipt-stale-1",
+      status: "succeeded",
+      completedAt: "2026-05-01T00:08:00.000Z",
+      updatedAt: "2026-05-01T00:08:00.000Z",
+      result: { output: { receiptStatus: "stale" } },
+    }),
+  ], { nowMs: Date.parse("2026-05-01T00:09:00.000Z") });
+
+  const byId = new Map(report.items.map((item) => [item.taskId, item]));
+  assert.equal(byId.get("receipt-visible-1")?.receiptStatus, "operator_visible");
+  assert.equal(byId.get("receipt-failed-1")?.receiptStatus, "failed");
+  assert.equal(byId.get("receipt-timedout-1")?.receiptStatus, "timed_out");
+  assert.equal(byId.get("receipt-stale-1")?.receiptStatus, "stale");
+  assert.doesNotMatch(byId.get("receipt-visible-1")!.reportLine, /receipt:/);
+  assert.match(byId.get("receipt-failed-1")!.reportLine, /receipt: failed/);
+  assert.match(byId.get("receipt-timedout-1")!.reportLine, /receipt: timed_out/);
+  assert.match(byId.get("receipt-stale-1")!.reportLine, /receipt: stale/);
+});
+
 test("extracts enriched docker-runner evidence from result output", () => {
   const report = buildOperatorTaskReport([
     task({

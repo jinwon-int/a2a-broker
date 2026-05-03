@@ -11,7 +11,7 @@ Each outbox record contains only:
 - stable `id` for notifier dedupe and replay cursors
 - `kind: "task.terminal"`
 - source `taskEventId`
-- `createdAt`, optional receipt-confirmed `ack`, legacy `deliveredAt` only from older snapshots, and `attempts`
+- `createdAt`, explicit notification `receipt`, optional receipt-confirmed `ack`, legacy `deliveredAt` only from older snapshots, and `attempts`
 - `payload` with `taskId`, terminal `status`, optional `worker`, timestamps, optional GitHub `repo`/`issue`, safe HTTP evidence URLs (`prUrl`, `doneUrl`, `blockUrl`), and a short redacted summary
 
 Records must not include raw logs, secrets, prompts, session transcripts, arbitrary payload fields, or private local paths.
@@ -25,6 +25,7 @@ A notifier can consume the broker-owned outbox without subscribing to raw task s
 - Add `reconcile_unacked=true` after restart or when the notifier suspects a send/ack gap. The broker prepends retained records at/before `after_id` that still lack receipt-confirmed `ack`, then appends newer records. The returned cursor only advances for newer records; retrying an old unacknowledged record never marks the cursor complete by itself.
 - `POST /a2a/tasks/terminal-outbox/ack` requires receipt evidence, for example `{ "id": "...", "receipt": { "evidence": "operator_visible", "acknowledgedAt": "...", "receiptId": "message-id" } }`.
 - Valid receipt evidence values are `operator_visible`, `operator_confirmed`, and `provider_delivery_receipt`. Gateway/provider send success alone is not terminal ack evidence.
+- Receipt status is deliberately separate from task terminal status and provider send status. Broker records use the small vocabulary `accepted`, `sent`, `provider_delivered_if_known`, `operator_visible`, `timed_out`, `stale`, and `failed`. A succeeded task with `receipt.status=accepted`, `sent`, `timed_out`, `stale`, or `failed` still has an operator-visible receipt gap; only operator evidence maps to `operator_visible`.
 - Both routes require an authenticated hub/operator requester when edge identity enforcement is enabled.
 
 ## Release/deploy readiness smoke
@@ -47,7 +48,7 @@ For the #241/#168 duplicate Telegram flood closeout, use the receipt-gated canar
 - Manual `acknowledge(id, receipt)` calls are per stable event id. A later reconcile at the saved cursor replays only retained records that still lack receipt-confirmed ack evidence; already acked ids are not replayed, and no response should contain the same id twice.
 - Once every id at/before the cursor is receipt-confirmed, reconciling that cursor returns no old records. The cursor remains stable instead of moving backward, preventing notifier ACK/replay loops from generating duplicate Telegram/operator pushes.
 - Retained outbox records are included in broker state version 8 snapshots as `terminalOutbox`, so replay cursors, acknowledgements, and dedupe IDs survive JSON/SQLite snapshot restart.
-- `acknowledge(id, receipt)` stores receipt metadata in `ack`, increments attempts, removes legacy `deliveredAt`, and leaves the record replayable until retention evicts it.
+- `acknowledge(id, receipt)` stores receipt metadata in `ack`, updates the separate `receipt` projection, increments attempts, removes legacy `deliveredAt`, and leaves the record replayable until retention evicts it. `provider_delivery_receipt` maps to `receipt.status=provider_delivered_if_known`; only `operator_visible` / `operator_confirmed` map to `receipt.status=operator_visible`.
 - Older snapshots with `deliveredAt` but no `ack` are migrated to receipt-confirmed ack state on restore.
 - Duplicate enqueue of the same terminal task state returns the retained record or is suppressed if recently seen.
 - Retention is bounded by `maxTerminalTaskOutboxEvents` (default `1000`), evicting oldest records FIFO.

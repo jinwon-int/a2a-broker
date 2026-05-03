@@ -8,6 +8,15 @@ const TERMINAL_TASK_ACK_EVIDENCE = new Set<TerminalTaskOutboxAckEvidence>([
   "operator_confirmed",
   "provider_delivery_receipt",
 ]);
+const TERMINAL_TASK_RECEIPT_STATUSES = new Set<TerminalTaskReceiptStatus>([
+  "accepted",
+  "sent",
+  "provider_delivered_if_known",
+  "operator_visible",
+  "timed_out",
+  "stale",
+  "failed",
+]);
 const URL_KEYS = ["prUrl", "doneUrl", "blockUrl"] as const;
 const MAX_SUMMARY_CHARS = 500;
 const MAX_ACK_NOTE_CHARS = 240;
@@ -45,6 +54,11 @@ export interface TerminalTaskOutboxEvent {
    * provider delivery receipt evidence before the broker marks this cursor acked.
    */
   ack?: TerminalTaskOutboxAckState;
+  /**
+   * Explicit notification receipt state. This is separate from task terminal
+   * status: a task can succeed while operator-visible receipt is still pending.
+   */
+  receipt: TerminalTaskOutboxReceiptState;
   /** @deprecated Older snapshots may contain this; new acks use `ack.acknowledgedAt`. */
   deliveredAt?: string;
   attempts: number;
@@ -54,6 +68,15 @@ export type TerminalTaskOutboxAckEvidence =
   | "operator_visible"
   | "operator_confirmed"
   | "provider_delivery_receipt";
+
+export type TerminalTaskReceiptStatus =
+  | "accepted"
+  | "sent"
+  | "provider_delivered_if_known"
+  | "operator_visible"
+  | "timed_out"
+  | "stale"
+  | "failed";
 
 export interface TerminalTaskOutboxAckInput {
   evidence: TerminalTaskOutboxAckEvidence;
@@ -67,6 +90,20 @@ export interface TerminalTaskOutboxAckState {
   evidence: TerminalTaskOutboxAckEvidence;
   acknowledgedAt: string;
   receiptId?: string;
+  note?: string;
+}
+
+export interface TerminalTaskOutboxReceiptState {
+  status: TerminalTaskReceiptStatus;
+  updatedAt: string;
+  evidence?: TerminalTaskOutboxAckEvidence;
+  receiptId?: string;
+  note?: string;
+}
+
+export interface TerminalTaskOutboxReceiptUpdateInput {
+  status: TerminalTaskReceiptStatus;
+  updatedAt?: string;
   note?: string;
 }
 
@@ -127,6 +164,10 @@ export class TerminalTaskEventOutbox {
       taskEventId: taskEvent.id,
       payload: buildTerminalTaskPayload(task),
       createdAt: taskEvent.timestamp,
+      receipt: {
+        status: "accepted",
+        updatedAt: taskEvent.timestamp,
+      },
       attempts: 0,
     };
     this.events.push(event);
@@ -182,8 +223,20 @@ export class TerminalTaskEventOutbox {
     const event = this.events.find((candidate) => candidate.id === id);
     if (!event) return null;
     event.ack = buildAckState(receipt);
+    event.receipt = buildReceiptStateFromAck(event.ack);
     delete event.deliveredAt;
     event.attempts += 1;
+    return event;
+  }
+
+  /** Record provider-side send/timeout/staleness without implying operator visibility. */
+  recordReceiptStatus(id: string, receipt: TerminalTaskOutboxReceiptUpdateInput): TerminalTaskOutboxEvent | null {
+    if (!receipt || !isTerminalTaskReceiptStatus(receipt.status)) {
+      throw new TypeError("terminal outbox receipt status must be accepted, sent, provider_delivered_if_known, operator_visible, timed_out, stale, or failed");
+    }
+    const event = this.events.find((candidate) => candidate.id === id);
+    if (!event) return null;
+    event.receipt = buildReceiptState(receipt.status, receipt.updatedAt ?? new Date().toISOString(), receipt.note);
     return event;
   }
 
@@ -214,6 +267,11 @@ export class TerminalTaskEventOutbox {
         acknowledgedAt: restored.deliveredAt,
         note: "migrated legacy deliveredAt ack",
       };
+    }
+    if (!restored.receipt) {
+      restored.receipt = restored.ack
+        ? buildReceiptStateFromAck(restored.ack)
+        : buildReceiptState("accepted", restored.createdAt);
     }
     this.events.push(restored);
     this.markSeen(event.id);
@@ -269,6 +327,10 @@ export function isTerminalStatus(status: TaskStatus): status is TerminalTaskStat
 
 export function isTerminalTaskOutboxAckEvidence(value: unknown): value is TerminalTaskOutboxAckEvidence {
   return typeof value === "string" && TERMINAL_TASK_ACK_EVIDENCE.has(value as TerminalTaskOutboxAckEvidence);
+}
+
+export function isTerminalTaskReceiptStatus(value: unknown): value is TerminalTaskReceiptStatus {
+  return typeof value === "string" && TERMINAL_TASK_RECEIPT_STATUSES.has(value as TerminalTaskReceiptStatus);
 }
 
 export function formatTerminalTaskEventId(taskId: string, status: TaskStatus, completedAt: string): string {
@@ -340,6 +402,23 @@ function buildAckState(receipt: TerminalTaskOutboxAckInput): TerminalTaskOutboxA
   const note = sanitizeAckText(receipt.note, MAX_ACK_NOTE_CHARS);
   if (note) ack.note = note;
   return ack;
+}
+
+function buildReceiptStateFromAck(ack: TerminalTaskOutboxAckState): TerminalTaskOutboxReceiptState {
+  return {
+    status: ack.evidence === "provider_delivery_receipt" ? "provider_delivered_if_known" : "operator_visible",
+    updatedAt: ack.acknowledgedAt,
+    evidence: ack.evidence,
+    receiptId: ack.receiptId,
+    note: ack.note,
+  };
+}
+
+function buildReceiptState(status: TerminalTaskReceiptStatus, updatedAt: string, note?: string): TerminalTaskOutboxReceiptState {
+  const receipt: TerminalTaskOutboxReceiptState = { status, updatedAt };
+  const safeNote = sanitizeAckText(note, MAX_ACK_NOTE_CHARS);
+  if (safeNote) receipt.note = safeNote;
+  return receipt;
 }
 
 function sanitizeAckText(value: unknown, maxChars: number): string | undefined {
