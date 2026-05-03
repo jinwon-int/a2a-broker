@@ -23,6 +23,7 @@ function run(inputFile) {
 }
 
 const completeDryRunEvidence = {
+  rolloutMode: 'no-live',
   candidates: {
     broker: 'broker-sha',
     plugin: 'openclaw-plugin-a2a#164',
@@ -30,6 +31,14 @@ const completeDryRunEvidence = {
   ci: {
     command: 'npm test',
     result: 'exit 0',
+  },
+  noLiveRolloutProofMatrix: {
+    ciSafeBrokerRegression: { status: 'pass', evidence: 'npm test exit 0' },
+    readOnlyTerminalOutboxPreflight: { status: 'pass', evidence: 'terminal_outbox_preflight --json exit 0; no ACK/send attempted' },
+    receiptGateRejectsSendSuccessOnly: { status: 'pass', evidence: 'invalid ACK rejected with receipt evidence required' },
+    reconcileReplayBeforeReceipt: { status: 'pass', evidence: 'reconcile_unacked replayed same outbox id before receipt' },
+    duplicateSuppressionNoTelegram: { status: 'pass', evidence: 'dry-run planned one Telegram send for stable outbox id; live sends 0' },
+    rollbackNoLiveCleanup: { status: 'pass', evidence: 'notifier live delivery unchanged; unacknowledged records remain replayable' },
   },
   dryRunAckGate: {
     outboxId: 'terminal-outbox-1',
@@ -60,6 +69,8 @@ describe('receipt-gated-smoke-evidence collector', () => {
       assert.equal(result.status, 0, result.stderr);
       assert.match(result.stdout, /^Done: #241\/#168 receipt-gated ACK canary smoke/);
       assert.match(result.stdout, /invalid ACK rejected: yes/);
+      assert.match(result.stdout, /No-live rollout proof matrix:/);
+      assert.match(result.stdout, /duplicate suppression with no Telegram send: pass/);
       assert.match(result.stdout, /approved: no/);
       assert.match(result.stdout, /sends executed: 0/);
     });
@@ -80,29 +91,16 @@ describe('receipt-gated-smoke-evidence collector', () => {
     });
   });
 
-  it('requires exact operator approval metadata before reporting any live send', async () => {
+  it('blocks no-live rollout evidence if any live send is reported', async () => {
     await withEvidence({
       ...completeDryRunEvidence,
       liveSendGate: {
         sendsExecuted: 1,
-        approvalCommentUrl: 'https://github.com/jinwon-int/a2a-broker/issues/241#issuecomment-1',
-        approval: {
-          environment: 'staging',
-          node: 'operator-test-node',
-          brokerSha: 'broker-sha',
-          pluginSha: 'plugin-sha',
-          openclawSha: 'openclaw-sha',
-          telegramTargetClass: 'non-production operator test chat',
-          maxSends: 1,
-          rollbackOwner: 'operator',
-          stopCondition: 'any duplicate send or ACK gate failure',
-        },
       },
     }, (file) => {
       const result = run(file);
-      assert.equal(result.status, 0, result.stderr);
-      assert.match(result.stdout, /approved: https:\/\/github.com\/jinwon-int\/a2a-broker\/issues\/241#issuecomment-1/);
-      assert.match(result.stdout, /sends executed: 1/);
+      assert.equal(result.status, 1, result.stderr);
+      assert.match(result.stdout, /no-live rollout requires liveSendGate\.sendsExecuted to be 0/);
     });
   });
 });
