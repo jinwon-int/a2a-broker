@@ -170,15 +170,26 @@ node scripts/receipt-gated-smoke-evidence.mjs --input evidence.json
 ```
 
 The collector is intentionally read-only. It does not deploy, restart Gateway,
-send Telegram, or ACK terminal outbox records. If required receipt-gated proof is
-missing, or if any reported live send lacks the exact operator approval metadata
-listed above, it exits non-zero and renders a `Block:` comment instead of a false
-`Done:`. A minimal dry-run evidence file contains:
+send Telegram, or ACK terminal outbox records. For the default no-live rollout,
+it requires an explicit proof matrix covering CI, read-only preflight, ACK gate,
+replay, duplicate suppression, and rollback/cleanup cells, and it blocks if any
+live send is reported. If required receipt-gated proof is missing, it exits
+non-zero and renders a `Block:` comment instead of a false `Done:`. A minimal
+no-live dry-run evidence file contains:
 
 ```json
 {
+  "rolloutMode": "no-live",
   "candidates": { "broker": "<sha>", "plugin": "<sha-or-PR-164>" },
   "ci": { "command": "npm test", "result": "<exit-code/link>" },
+  "noLiveRolloutProofMatrix": {
+    "ciSafeBrokerRegression": { "status": "pass", "evidence": "<command/result>" },
+    "readOnlyTerminalOutboxPreflight": { "status": "pass", "evidence": "<preflight evidence; no ACK/send>" },
+    "receiptGateRejectsSendSuccessOnly": { "status": "pass", "evidence": "<invalid ACK rejection>" },
+    "reconcileReplayBeforeReceipt": { "status": "pass", "evidence": "<same id replayed before receipt>" },
+    "duplicateSuppressionNoTelegram": { "status": "pass", "evidence": "<dedupe proof; live sends 0>" },
+    "rollbackNoLiveCleanup": { "status": "pass", "evidence": "<live delivery unchanged; records replayable>" }
+  },
   "dryRunAckGate": {
     "outboxId": "<id>",
     "invalidAckRejected": true,
@@ -200,10 +211,9 @@ listed above, it exits non-zero and renders a `Block:` comment instead of a fals
 }
 ```
 
-If `liveSendGate.sendsExecuted` is greater than zero, include
-`liveSendGate.approvalCommentUrl` plus `liveSendGate.approval` fields for the
-approved environment, node, broker/plugin/OpenClaw SHAs, Telegram target class,
-maximum sends, rollback owner, and stop condition.
+For this no-live rollout matrix, `liveSendGate.sendsExecuted` must remain `0`.
+Do not include a live-send approval URL in no-live evidence; staged live-send
+approval belongs to a separate operator-approved run.
 
 ```markdown
 Done: #241/#168 receipt-gated ACK canary smoke
@@ -212,10 +222,19 @@ Candidates:
 - broker: <sha>
 - plugin: <sha-or-PR-164>
 - openclaw: <sha-if-live/staged>
+- rollout mode: no-live
 
 CI-safe proof:
 - command: npm test
 - result: <exit-code/link>
+
+No-live rollout proof matrix:
+- CI-safe broker regression: pass — <command/result>
+- read-only terminal-outbox preflight: pass — <preflight evidence; no ACK/send>
+- receipt gate rejects send-success-only ACK: pass — <invalid ACK rejection>
+- reconcile_unacked replay before receipt: pass — <same id replayed before receipt>
+- duplicate suppression with no Telegram send: pass — <dedupe proof; live sends 0>
+- rollback/cleanup leaves no-live state safe: pass — <live delivery unchanged; records replayable>
 
 Dry-run ACK gate:
 - outbox id: <id>

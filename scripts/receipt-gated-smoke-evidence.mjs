@@ -18,6 +18,14 @@ const APPROVAL_FIELDS = [
   'rollbackOwner',
   'stopCondition',
 ];
+const NO_LIVE_ROLLOUT_CELLS = [
+  ['ciSafeBrokerRegression', 'CI-safe broker regression'],
+  ['readOnlyTerminalOutboxPreflight', 'read-only terminal-outbox preflight'],
+  ['receiptGateRejectsSendSuccessOnly', 'receipt gate rejects send-success-only ACK'],
+  ['reconcileReplayBeforeReceipt', 'reconcile_unacked replay before receipt'],
+  ['duplicateSuppressionNoTelegram', 'duplicate suppression with no Telegram send'],
+  ['rollbackNoLiveCleanup', 'rollback/cleanup leaves no-live state safe'],
+];
 
 function usage() {
   return `Usage: node scripts/receipt-gated-smoke-evidence.mjs --input <evidence.json> [--format markdown]\n\nRenders the final #241/#168 receipt-gated ACK smoke evidence comment from a sanitized\nJSON evidence file. This collector is read-only: it never deploys, restarts Gateway, sends\nTelegram, or ACKs terminal outbox records. Missing receipt-gate proof renders a Block\ncomment instead of a false Done.\n`;
@@ -74,6 +82,12 @@ function validateApprovalGate(evidence, blockers) {
     return;
   }
 
+  if (evidence.rolloutMode === 'no-live') {
+    if (sendsExecuted !== 0) blockers.push('no-live rollout requires liveSendGate.sendsExecuted to be 0');
+    if (liveGate.approvalCommentUrl) blockers.push('no-live rollout must not include liveSendGate.approvalCommentUrl');
+    return;
+  }
+
   if (sendsExecuted === 0) return;
 
   if (!hasHttpUrl(liveGate.approvalCommentUrl)) {
@@ -88,6 +102,25 @@ function validateApprovalGate(evidence, blockers) {
   const maxSends = Number(approval.maxSends);
   if (!Number.isFinite(maxSends) || maxSends < sendsExecuted) {
     blockers.push('liveSendGate.approval.maxSends must cover liveSendGate.sendsExecuted');
+  }
+}
+
+function validateNoLiveRolloutProofMatrix(evidence, blockers) {
+  if (evidence.rolloutMode !== 'no-live') {
+    blockers.push('rolloutMode must be no-live for receipt-gated terminal notification rollout proof');
+  }
+
+  const matrix = evidence.noLiveRolloutProofMatrix ?? {};
+  for (const [id, label] of NO_LIVE_ROLLOUT_CELLS) {
+    const cell = matrix[id];
+    if (!cell) {
+      blockers.push(`missing noLiveRolloutProofMatrix.${id} (${label})`);
+      continue;
+    }
+    if (cell.status !== 'pass') blockers.push(`noLiveRolloutProofMatrix.${id}.status must be pass`);
+    if (!cell.evidence || typeof cell.evidence !== 'string') {
+      blockers.push(`noLiveRolloutProofMatrix.${id}.evidence is required`);
+    }
   }
 }
 
@@ -125,6 +158,7 @@ function validateEvidence(evidence) {
     blockers.push('rollbackCleanup.notifierLiveDeliveryDisabledOrUnchanged must be yes/true');
   }
 
+  validateNoLiveRolloutProofMatrix(evidence, blockers);
   validateApprovalGate(evidence, blockers);
   return blockers;
 }
@@ -136,7 +170,45 @@ function yn(value) {
 function renderDone(evidence) {
   const liveGate = evidence.liveSendGate ?? {};
   const approved = liveGate.approvalCommentUrl ? liveGate.approvalCommentUrl : 'no';
-  return `Done: #241/#168 receipt-gated ACK canary smoke\n\nCandidates:\n- broker: ${clean(evidence.candidates?.broker)}\n- plugin: ${clean(evidence.candidates?.plugin)}\n- openclaw: ${clean(evidence.candidates?.openclaw, 'not-live/staged')}\n\nCI-safe proof:\n- command: ${clean(evidence.ci?.command)}\n- result: ${clean(evidence.ci?.result)}\n\nDry-run ACK gate:\n- outbox id: ${clean(evidence.dryRunAckGate?.outboxId)}\n- invalid ACK rejected: ${yn(evidence.dryRunAckGate?.invalidAckRejected)}${evidence.dryRunAckGate?.invalidAckStatus ? ` (${evidence.dryRunAckGate.invalidAckStatus})` : ''}\n- reconcile_unacked replayed before receipt: ${yn(evidence.dryRunAckGate?.reconcileUnackedReplayedBeforeReceipt)}\n- valid receipt evidence: ${clean(evidence.dryRunAckGate?.validReceiptEvidence)}\n- ack status: ${clean(evidence.dryRunAckGate?.ackStatus)}\n\nDuplicate guard:\n- dedupe key: ${clean(evidence.duplicateGuard?.dedupeKey)}\n- planned Telegram sends for same id: ${clean(evidence.duplicateGuard?.plannedTelegramSendsForSameId)}\n- replay after receipt closed retry candidate: ${yn(evidence.duplicateGuard?.replayAfterReceiptClosedRetryCandidate)}\n\nLive-send gate:\n- approved: ${approved}\n- sends executed: ${clean(liveGate.sendsExecuted ?? 0)}\n\nRollback/cleanup:\n- notifier live delivery disabled or unchanged: ${yn(evidence.rollbackCleanup?.notifierLiveDeliveryDisabledOrUnchanged)}\n- unacknowledged records remain replayable: ${clean(evidence.rollbackCleanup?.unacknowledgedRecordsRemainReplayable, 'not-applicable')}\n\nLinks:\n- command center: ${COMMAND_CENTER_URL}\n- plugin regression: ${PLUGIN_REGRESSION_URL}\n- plugin PR: ${PLUGIN_PR_URL}`;
+  return `Done: #241/#168 receipt-gated ACK canary smoke
+
+Candidates:
+- broker: ${clean(evidence.candidates?.broker)}
+- plugin: ${clean(evidence.candidates?.plugin)}
+- openclaw: ${clean(evidence.candidates?.openclaw, 'not-live/staged')}
+- rollout mode: ${clean(evidence.rolloutMode)}
+
+CI-safe proof:
+- command: ${clean(evidence.ci?.command)}
+- result: ${clean(evidence.ci?.result)}
+
+No-live rollout proof matrix:
+${NO_LIVE_ROLLOUT_CELLS.map(([id, label]) => `- ${label}: ${clean(evidence.noLiveRolloutProofMatrix?.[id]?.status)} — ${clean(evidence.noLiveRolloutProofMatrix?.[id]?.evidence)}`).join('\n')}
+
+Dry-run ACK gate:
+- outbox id: ${clean(evidence.dryRunAckGate?.outboxId)}
+- invalid ACK rejected: ${yn(evidence.dryRunAckGate?.invalidAckRejected)}${evidence.dryRunAckGate?.invalidAckStatus ? ` (${evidence.dryRunAckGate.invalidAckStatus})` : ''}
+- reconcile_unacked replayed before receipt: ${yn(evidence.dryRunAckGate?.reconcileUnackedReplayedBeforeReceipt)}
+- valid receipt evidence: ${clean(evidence.dryRunAckGate?.validReceiptEvidence)}
+- ack status: ${clean(evidence.dryRunAckGate?.ackStatus)}
+
+Duplicate guard:
+- dedupe key: ${clean(evidence.duplicateGuard?.dedupeKey)}
+- planned Telegram sends for same id: ${clean(evidence.duplicateGuard?.plannedTelegramSendsForSameId)}
+- replay after receipt closed retry candidate: ${yn(evidence.duplicateGuard?.replayAfterReceiptClosedRetryCandidate)}
+
+Live-send gate:
+- approved: ${approved}
+- sends executed: ${clean(liveGate.sendsExecuted ?? 0)}
+
+Rollback/cleanup:
+- notifier live delivery disabled or unchanged: ${yn(evidence.rollbackCleanup?.notifierLiveDeliveryDisabledOrUnchanged)}
+- unacknowledged records remain replayable: ${clean(evidence.rollbackCleanup?.unacknowledgedRecordsRemainReplayable, 'not-applicable')}
+
+Links:
+- command center: ${COMMAND_CENTER_URL}
+- plugin regression: ${PLUGIN_REGRESSION_URL}
+- plugin PR: ${PLUGIN_PR_URL}`;
 }
 
 function renderBlock(evidence, blockers) {
