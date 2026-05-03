@@ -1,0 +1,23 @@
+{
+  "intent": "propose_patch",
+  "taskOrigin": "github",
+  "requester": {
+    "id": "github-dispatcher",
+    "kind": "service",
+    "role": "hub"
+  },
+  "target": {
+    "id": "worker-node-id",
+    "kind": "node",
+    "role": "analyst"
+  },
+  "assignedWorkerId": "worker-node-id",
+  "message": "Prepare a minimal patch for GitHub issue #291.",
+  "payload": {
+    "mode": "github-propose-patch",
+    "repo": "jinwon-int/a2a-broker",
+    "issue": "#291",
+    "issueNumber": 291,
+    "issueUrl": "https://github.com/jinwon-int/a2a-broker/issues/291"
+  }
+}

@@ -1053,48 +1053,49 @@ export class InMemoryA2ABroker {
   }
 
   createTask(request: CreateTaskRequest): TaskRecord {
-    this.assertTaskPayload(request);
+    const normalizedRequest = normalizeGitHubPatchTaskRequest(request);
+    this.assertTaskPayload(normalizedRequest);
 
     // Idempotent create: if a task with the requested id already exists, return it as-is.
-    if (request.id) {
-      const existing = this.getTask(request.id);
+    if (normalizedRequest.id) {
+      const existing = this.getTask(normalizedRequest.id);
       if (existing) {
         return existing;
       }
     }
 
-    if (request.exchangeId) {
-      this.requireExchange(request.exchangeId);
+    if (normalizedRequest.exchangeId) {
+      this.requireExchange(normalizedRequest.exchangeId);
     }
-    this.requireWorker(request.target.id);
-    if (request.assignedWorkerId) {
-      this.requireWorker(request.assignedWorkerId);
+    this.requireWorker(normalizedRequest.target.id);
+    if (normalizedRequest.assignedWorkerId) {
+      this.requireWorker(normalizedRequest.assignedWorkerId);
     }
-    this.assertTaskProposalLink(request);
+    this.assertTaskProposalLink(normalizedRequest);
 
     const now = isoNow();
-    const policyContext = normalizeTaskPolicyContext(request);
+    const policyContext = normalizeTaskPolicyContext(normalizedRequest);
     const initialStatus: TaskStatus = policyContext?.requiresApproval === true ? "blocked" : "queued";
     const task: TaskRecord = {
-      id: request.id ?? randomUUID(),
-      exchangeId: request.exchangeId,
-      parentTaskId: request.parentTaskId,
-      intent: request.intent,
-      requester: request.requester,
-      target: request.target,
-      targetNodeId: request.target.id,
-      assignedWorkerId: request.assignedWorkerId ?? request.target.id,
-      workspace: request.workspace,
-      message: request.message,
-      proposalId: request.proposalId,
-      artifactIds: uniqueIds(request.artifactIds ?? []),
-      via: request.via,
+      id: normalizedRequest.id ?? randomUUID(),
+      exchangeId: normalizedRequest.exchangeId,
+      parentTaskId: normalizedRequest.parentTaskId,
+      intent: normalizedRequest.intent,
+      requester: normalizedRequest.requester,
+      target: normalizedRequest.target,
+      targetNodeId: normalizedRequest.target.id,
+      assignedWorkerId: normalizedRequest.assignedWorkerId ?? normalizedRequest.target.id,
+      workspace: normalizedRequest.workspace,
+      message: normalizedRequest.message,
+      proposalId: normalizedRequest.proposalId,
+      artifactIds: uniqueIds(normalizedRequest.artifactIds ?? []),
+      via: normalizedRequest.via,
       policyContext,
-      payload: normalizeTaskPayload(request.payload),
+      payload: normalizeTaskPayload(normalizedRequest.payload),
       status: initialStatus,
-      createdAt: request.createdAt ?? now,
+      createdAt: normalizedRequest.createdAt ?? now,
       updatedAt: now,
-      taskOrigin: request.taskOrigin ?? "unknown",
+      taskOrigin: normalizedRequest.taskOrigin ?? "unknown",
     };
 
     this.setTaskRecord(task);
@@ -3680,6 +3681,92 @@ function normalizePolicyError(error: unknown): BrokerError {
   }
 
   return new BrokerError("policy_denied", "policy denied");
+}
+
+function normalizeGitHubPatchTaskRequest(request: CreateTaskRequest): CreateTaskRequest {
+  if (request.intent !== "propose_patch") {
+    return request;
+  }
+
+  const payload = request.payload ?? {};
+  const mode = readString(payload["mode"]);
+  const repo = readString(payload["repo"]);
+  const legacyRepo = readString(payload["githubRepo"]);
+  const issueNumber = readIssueNumber(payload["issueNumber"] ?? payload["issue"]);
+  const legacyIssueNumber = readIssueNumber(payload["githubIssueNumber"]);
+  const issueUrl = readString(payload["issueUrl"]);
+  const legacyIssueUrl = readString(payload["githubIssueUrl"]);
+  const looksLikeGithubTask =
+    mode === "github-propose-patch" ||
+    legacyRepo !== undefined ||
+    legacyIssueNumber !== undefined ||
+    legacyIssueUrl !== undefined ||
+    readString(payload["workMode"]) === "github" ||
+    readString(payload["githubWorkMode"]) === "github";
+
+  if (!looksLikeGithubTask) {
+    return request;
+  }
+
+  if (request.taskOrigin !== undefined && request.taskOrigin !== "github") {
+    throw new BrokerError("bad_request", "GitHub patch dispatch tasks require taskOrigin=github");
+  }
+
+  const normalizedMode = mode ?? (legacyRepo || legacyIssueNumber !== undefined || legacyIssueUrl ? "github-propose-patch" : undefined);
+  if (normalizedMode !== "github-propose-patch") {
+    throw new BrokerError("bad_request", "GitHub patch dispatch payload requires mode=github-propose-patch");
+  }
+
+  const normalizedRepo = repo ?? legacyRepo;
+  if (!normalizedRepo || !/^[^/\s]+\/[^/\s]+$/.test(normalizedRepo)) {
+    throw new BrokerError("bad_request", "GitHub patch dispatch payload requires repo in owner/name form");
+  }
+
+  const normalizedIssueNumber = issueNumber ?? legacyIssueNumber;
+  if (normalizedIssueNumber === undefined) {
+    throw new BrokerError("bad_request", "GitHub patch dispatch payload requires issueNumber or issue");
+  }
+
+  const normalizedIssueUrl = issueUrl ?? legacyIssueUrl ??
+    `https://github.com/${normalizedRepo}/issues/${normalizedIssueNumber}`;
+  const normalizedPayload: Record<string, unknown> = {
+    ...payload,
+    mode: normalizedMode,
+    repo: normalizedRepo,
+    issue: `#${normalizedIssueNumber}`,
+    issueNumber: normalizedIssueNumber,
+    issueUrl: normalizedIssueUrl,
+  };
+
+  if (mode === undefined || repo === undefined || issueNumber === undefined || issueUrl === undefined) {
+    normalizedPayload["githubDispatchCompatibility"] = {
+      normalizedFromLegacyPayload: true,
+      legacyFields: Object.keys(payload).filter((key) => key.startsWith("github") || key === "workMode"),
+    };
+  }
+
+  return {
+    ...request,
+    taskOrigin: "github",
+    payload: normalizedPayload,
+  };
+}
+
+function readString(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function readIssueNumber(value: unknown): number | undefined {
+  if (typeof value === "number" && Number.isInteger(value) && value > 0) {
+    return value;
+  }
+  if (typeof value === "string") {
+    const match = value.trim().match(/^#?(\d+)$/);
+    if (match) {
+      return Number(match[1]);
+    }
+  }
+  return undefined;
 }
 
 function normalizeTaskPayload(
