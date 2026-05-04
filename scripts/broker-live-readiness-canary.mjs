@@ -247,6 +247,7 @@ function sampleNoLivePayload() {
         { nodeId: 'dungae', status: 'online' },
         { nodeId: 'sogyo', status: 'online' },
         { nodeId: 'nosuk', status: 'online' },
+        { nodeId: 'yukson', status: 'online' },
       ] },
     },
     diagnostics: {
@@ -273,7 +274,7 @@ export function runNoLiveCanary(options = {}) {
   const checks = [
     ok('run mode', 'no-live synthetic proof; no broker HTTP request, deploy, Gateway restart, Telegram send, DB mutation, or terminal ACK attempted'),
     evaluateHealth(sample.health.body, sample.health.status),
-    evaluateWorkers(sample.workers.body, sample.workers.status, options.expectedWorkers ?? ['bangtong', 'dungae', 'sogyo', 'nosuk']),
+    evaluateWorkers(sample.workers.body, sample.workers.status, options.expectedWorkers ?? ['bangtong', 'dungae', 'sogyo', 'nosuk', 'yukson']),
     evaluateQueue(sample.diagnostics.body, sample.diagnostics.status),
     evaluateEvidenceAcceptance(sample.outbox.body, sample.outbox.status),
     evaluateGithubVerifyDoneRegression(),
