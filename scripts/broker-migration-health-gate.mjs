@@ -70,6 +70,29 @@ const terminalOutboxSchema = z.object({
   attempts: z.number().int().nonnegative(),
 }).passthrough();
 
+const taskCloseoutSchema = z.object({
+  id: z.string().min(1),
+  status: z.string().min(1),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+  completedAt: z.string().optional(),
+  claimedBy: z.string().min(1).optional(),
+  requeueCount: z.number().int().nonnegative().optional(),
+  error: z.unknown().optional(),
+}).passthrough();
+
+const tombstoneCloseoutSchema = z.object({
+  taskId: z.string().min(1),
+  terminalStatus: z.string().min(1),
+  tombstoneReason: z.string().min(1),
+  durationMs: z.number().nonnegative(),
+  requeueCount: z.number().int().nonnegative(),
+  tombstonedAt: z.string(),
+}).passthrough();
+
+const TERMINAL_TASK_STATUSES = new Set(['succeeded', 'failed', 'canceled']);
+const TOMBSTONE_REQUIRED_STATUSES = new Set(['failed', 'canceled']);
+
 function pass(check, detail, extra = {}) {
   return { ok: true, check, detail, ...extra };
 }
@@ -183,6 +206,67 @@ function checkWorkers(db) {
   return pass('worker hot-table quarantine', 'all worker rows validate normalized capabilities', { invalidRows: [] });
 }
 
+function checkQueueCloseoutReconciliation(db) {
+  if (!tableExists(db, 'broker_tasks') || !tableExists(db, 'broker_tombstones')) {
+    return fail('queue closeout reconciliation', 'broker_tasks or broker_tombstones table missing', { violations: [] });
+  }
+
+  const tombstones = new Map();
+  const tombstoneRows = db.prepare('SELECT task_id AS taskId, payload FROM broker_tombstones ORDER BY task_id ASC').all();
+  for (const row of tombstoneRows) {
+    const taskId = sanitizeDiagnosticValue(row.taskId);
+    const parsed = parseJsonPayload(row.payload, tombstoneCloseoutSchema);
+    if (!parsed.success) {
+      tombstones.set(row.taskId, { invalid: true, taskId, detail: parsed.error });
+    } else {
+      tombstones.set(row.taskId, parsed.data);
+    }
+  }
+
+  const violations = [];
+  const rows = db.prepare('SELECT id, payload FROM broker_tasks ORDER BY id ASC').all();
+  for (const row of rows) {
+    const id = sanitizeDiagnosticValue(row.id);
+    const parsed = parseJsonPayload(row.payload, taskCloseoutSchema);
+    if (!parsed.success) {
+      violations.push({ id, reason: 'invalid_task_payload', detail: parsed.error });
+      continue;
+    }
+
+    const task = parsed.data;
+    const status = task.status;
+    const tombstone = tombstones.get(task.id);
+    if (!TERMINAL_TASK_STATUSES.has(status) && task.completedAt) {
+      violations.push({ id, reason: 'non_terminal_task_has_completed_at', status });
+    }
+    if (!TOMBSTONE_REQUIRED_STATUSES.has(status)) {
+      continue;
+    }
+    if (!task.completedAt) {
+      violations.push({ id, reason: 'terminal_task_missing_completed_at', status });
+    }
+    if (!tombstone) {
+      violations.push({ id, reason: 'terminal_task_missing_tombstone', status });
+      continue;
+    }
+    if (tombstone.invalid) {
+      violations.push({ id, reason: 'invalid_tombstone_payload', detail: tombstone.detail });
+      continue;
+    }
+    if (tombstone.terminalStatus !== status) {
+      violations.push({ id, reason: 'tombstone_status_mismatch', status, tombstoneStatus: tombstone.terminalStatus });
+    }
+    if (tombstone.requeueCount !== (task.requeueCount ?? 0)) {
+      violations.push({ id, reason: 'tombstone_requeue_count_mismatch', requeueCount: task.requeueCount ?? 0, tombstoneRequeueCount: tombstone.requeueCount });
+    }
+  }
+
+  if (violations.length > 0) {
+    return fail('queue closeout reconciliation', `${violations.length} queue closeout violation(s); rollout blocked`, { violations });
+  }
+  return pass('queue closeout reconciliation', `${rows.length} task row(s) have reconciled terminal closeout state`, { rowCount: rows.length });
+}
+
 function checkTerminalOutbox(db, { nowMs, maxUnackedAgeMs }) {
   if (!tableExists(db, 'broker_terminal_outbox')) {
     return fail('terminal-outbox ACK invariant', 'broker_terminal_outbox table missing', { violations: [] });
@@ -243,6 +327,7 @@ export function runMigrationHealthGate(options) {
       checkSchema(db),
       checkHotTables(db),
       checkWorkers(db),
+      checkQueueCloseoutReconciliation(db),
       checkTerminalOutbox(db, {
         nowMs: options.nowMs ?? Date.now(),
         maxUnackedAgeMs: options.maxUnackedAgeMs ?? DEFAULT_MAX_UNACKED_AGE_MS,

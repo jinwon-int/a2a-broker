@@ -75,6 +75,33 @@ function terminalPayload(overrides = {}) {
   });
 }
 
+function taskPayload(overrides = {}) {
+  return JSON.stringify({
+    id: 'task-1',
+    intent: 'propose_patch',
+    status: 'queued',
+    createdAt: '2026-05-03T00:00:00.000Z',
+    updatedAt: '2026-05-03T00:00:00.000Z',
+    targetNodeId: 'worker-a',
+    requester: { id: 'requester' },
+    target: { id: 'worker-a' },
+    payload: {},
+    ...overrides,
+  });
+}
+
+function tombstonePayload(overrides = {}) {
+  return JSON.stringify({
+    taskId: 'task-1',
+    terminalStatus: 'failed',
+    tombstoneReason: 'failed',
+    durationMs: 60_000,
+    requeueCount: 0,
+    tombstonedAt: '2026-05-03T00:01:00.000Z',
+    ...overrides,
+  });
+}
+
 describe('broker migration health gate', () => {
   it('passes for current schema, normalized worker rows, and receipt-confirmed outbox ACKs', () => {
     const { db, file } = createDb();
@@ -94,8 +121,44 @@ describe('broker migration health gate', () => {
     const report = runMigrationHealthGate({ dbFile: file, nowMs: Date.parse('2026-05-03T00:05:00.000Z') });
 
     assert.equal(report.ok, true);
-    assert.equal(report.checks.length, 4);
+    assert.equal(report.checks.length, 5);
     assert.match(report.checks.find((check) => check.check === 'worker hot-table quarantine')?.detail ?? '', /normalized capabilities/);
+  });
+
+  it('fails queue closeout reconciliation for terminal task rows without matching tombstones', () => {
+    const { db, file } = createDb();
+    db.prepare('INSERT INTO broker_tasks (id, payload) VALUES (?, ?)')
+      .run('task-failed-missing-tombstone', taskPayload({
+        id: 'task-failed-missing-tombstone',
+        status: 'failed',
+        completedAt: '2026-05-03T00:01:00.000Z',
+        error: { code: 'worker_failed', message: 'failed' },
+      }));
+    db.prepare('INSERT INTO broker_tasks (id, payload) VALUES (?, ?)')
+      .run('task-canceled-mismatch', taskPayload({
+        id: 'task-canceled-mismatch',
+        status: 'canceled',
+        completedAt: '2026-05-03T00:01:00.000Z',
+        requeueCount: 2,
+      }));
+    db.prepare('INSERT INTO broker_tombstones (task_id, payload) VALUES (?, ?)')
+      .run('task-canceled-mismatch', tombstonePayload({
+        taskId: 'task-canceled-mismatch',
+        terminalStatus: 'failed',
+        requeueCount: 1,
+      }));
+    db.close();
+
+    const report = runMigrationHealthGate({ dbFile: file, nowMs: Date.parse('2026-05-03T00:05:00.000Z') });
+    const queueCheck = report.checks.find((check) => check.check === 'queue closeout reconciliation');
+
+    assert.equal(report.ok, false);
+    assert.equal(queueCheck?.ok, false);
+    assert.deepEqual(queueCheck?.violations.map((violation) => violation.reason).sort(), [
+      'terminal_task_missing_tombstone',
+      'tombstone_requeue_count_mismatch',
+      'tombstone_status_mismatch',
+    ]);
   });
 
   it('fails closed with sanitized diagnostics for invalid worker hot rows', () => {
