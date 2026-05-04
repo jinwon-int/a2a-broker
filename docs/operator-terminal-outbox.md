@@ -40,6 +40,14 @@ For a post-approval live validation, operators can use `npm run smoke:docker-bro
 
 For the #241/#168 duplicate Telegram flood closeout, use the receipt-gated canary smoke runbook in [receipt-gated-ack-canary-runbook.md](receipt-gated-ack-canary-runbook.md). It keeps dry-run/manual receipt ACK as the default path and treats any staged live Telegram send as an explicit command-center approval gate.
 
+For release-gate closeout comments or pre-remediation evidence, generate the read-only terminal receipt report directly from the SQLite hot table:
+
+```sh
+npm run terminal_receipt_closeout_report -- --db "$BROKER_SQLITE_FILE" --legacy-residue-cutoff 2026-05-04T07:10:00.000Z
+```
+
+The report groups current post-cutoff gaps separately from cutoff-quarantined legacy residue and maps each gap to terminal event id, task event id, task id, terminal status, age, receipt state, and remediation hint. It intentionally excludes raw payloads, secrets, local paths, and evidence bodies; it never sends notifications, mutates SQLite, or writes terminal ACKs.
+
 ## Replay, ack, and retention
 
 - Consumers replay with `subscribe({ afterId })`; HTTP consumers pass the same stable cursor as `after_id`.
