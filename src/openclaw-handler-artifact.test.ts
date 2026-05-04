@@ -59,7 +59,7 @@ test("versioned OpenClaw handler exposes credential-free build metadata", () => 
   assert.equal(result.status, 0, result.stderr);
   const payload = JSON.parse(result.stdout);
   assert.equal(payload.result.handler.name, "openclaw-a2a-task-handler");
-  assert.equal(payload.result.handler.version, "0.2.5");
+  assert.equal(payload.result.handler.version, "0.2.6");
   assert.match(payload.result.handler.sourceSha256, /^[a-f0-9]{64}$/);
   assert.equal(payload.result.handler.credentialFree, true);
   assert.equal(payload.result.handler.hostNeutral, true);
@@ -407,6 +407,83 @@ test("OpenClaw bridge can be disabled explicitly", () => {
   const payload = JSON.parse(result.stdout);
   assert.equal(payload.error.code, "github_executor_not_configured");
   assert.equal(payload.error.details.bridgeConfigured, false);
+});
+
+
+
+test("docker runner preserves Start marker URL alongside terminal PR evidence (#354)", () => {
+  const tempDir = mkdtempSync(join(tmpdir(), "handler-start-marker-354-"));
+  const fakeRunnerPath = join(tempDir, "fake-runner.mjs");
+  try {
+    writeFileSync(fakeRunnerPath, `
+import { readFileSync } from "node:fs";
+const taskPath = process.argv.at(-1);
+const task = JSON.parse(readFileSync(taskPath, "utf8"));
+if (!task.prompt.includes("Leave a Start marker")) throw new Error("expected Start marker instruction");
+console.log(JSON.stringify({
+  ok: true,
+  taskId: task.id,
+  status: "completed",
+  workDir: "/tmp/work-fixture",
+  artifacts: [],
+  startCommentUrl: "https://github.com/owner/repo/issues/354#issuecomment-start",
+  prUrl: "https://github.com/owner/repo/pull/354"
+}));
+`);
+
+    const result = spawnSync(process.execPath, [handlerPath], {
+      input: JSON.stringify(githubTask({ payload: { mode: "github-propose-patch", repo: "owner/repo", issue: "#354" } })),
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        A2A_EXECUTOR_MODE: "docker",
+        A2A_DOCKER_RUNNER_BIN: process.execPath,
+        A2A_DOCKER_RUNNER_ARGS_JSON: JSON.stringify([fakeRunnerPath]),
+      },
+    });
+
+    assert.equal(result.status, 0, result.stderr);
+    const payload = JSON.parse(result.stdout);
+    assert.equal(payload.result.output.startCommentUrl, "https://github.com/owner/repo/issues/354#issuecomment-start");
+    assert.equal(payload.result.output.github.startCommentUrl, "https://github.com/owner/repo/issues/354#issuecomment-start");
+    assert.equal(payload.result.output.prUrl, "https://github.com/owner/repo/pull/354");
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("docker runner Start marker alone is not terminal evidence (#354)", () => {
+  const tempDir = mkdtempSync(join(tmpdir(), "handler-start-only-354-"));
+  const fakeRunnerPath = join(tempDir, "fake-runner.mjs");
+  try {
+    writeFileSync(fakeRunnerPath, `
+console.log(JSON.stringify({
+  ok: true,
+  taskId: "task-fixture-1",
+  status: "completed",
+  workDir: "/tmp/work-fixture",
+  artifacts: [],
+  startCommentUrl: "https://github.com/owner/repo/issues/354#issuecomment-start"
+}));
+`);
+
+    const result = spawnSync(process.execPath, [handlerPath], {
+      input: JSON.stringify(githubTask({ payload: { mode: "github-propose-patch", repo: "owner/repo", issue: "#354" } })),
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        A2A_EXECUTOR_MODE: "docker",
+        A2A_DOCKER_RUNNER_BIN: process.execPath,
+        A2A_DOCKER_RUNNER_ARGS_JSON: JSON.stringify([fakeRunnerPath]),
+      },
+    });
+
+    assert.equal(result.status, 1);
+    const payload = JSON.parse(result.stdout);
+    assert.equal(payload.error.code, "docker_runner_evidence_missing");
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
 });
 
 test("docker runner failures surface as handler errors", () => {

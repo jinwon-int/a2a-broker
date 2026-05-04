@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
-const HANDLER_VERSION = "0.2.5";
+const HANDLER_VERSION = "0.2.6";
 const SOURCE_PATH = fileURLToPath(import.meta.url);
 const sourceSha256 = createHash("sha256").update(readFileSync(SOURCE_PATH)).digest("hex");
 
@@ -132,7 +132,10 @@ function buildRunnerTask(task, env = process.env) {
     id: safeText(task.id, `task-${Date.now()}`),
     intent: safeText(task.intent, "propose_patch"),
     mode: taskMode(task),
-    prompt: safeText(task.message, safeText(payload.prompt, "")),
+    prompt: [
+      safeText(task.message, safeText(payload.prompt, "")),
+      "Leave a Start marker before work begins and a PR, Done, or Block marker when work ends; return startCommentUrl plus prUrl, doneCommentUrl, or blockCommentUrl when available.",
+    ].filter(Boolean).join("\n\n"),
     timeoutMs: Number(env.A2A_DOCKER_RUNNER_TASK_TIMEOUT_MS || payload.timeoutMs || 45 * 60 * 1000),
   };
 
@@ -258,14 +261,23 @@ function normalizeStringArray(value) {
   return Array.isArray(value) ? value.map((item) => String(item).trim()).filter(Boolean) : [];
 }
 
+function startCommentUrlFromResponse(response) {
+  return safeText(response?.startCommentUrl || response?.startedCommentUrl, "");
+}
+
+function withStartEvidence(evidence, response) {
+  const startCommentUrl = startCommentUrlFromResponse(response);
+  return startCommentUrl ? { ...evidence, startCommentUrl } : evidence;
+}
+
 function githubEvidenceFromResponse(response) {
   const status = safeText(response?.status || response?.outcome, "");
   const prUrl = safeText(response?.prUrl || response?.pullRequestUrl, "");
   const doneCommentUrl = safeText(response?.doneCommentUrl || response?.commentUrl, "");
   const blockCommentUrl = safeText(response?.blockCommentUrl || response?.blockerCommentUrl, "");
-  if (prUrl) return { outcome: "pr_opened", prUrl };
-  if (blockCommentUrl) return { outcome: status || "blocked", blockCommentUrl };
-  if (doneCommentUrl) return { outcome: status || "done", doneCommentUrl };
+  if (prUrl) return withStartEvidence({ outcome: "pr_opened", prUrl }, response);
+  if (blockCommentUrl) return withStartEvidence({ outcome: status || "blocked", blockCommentUrl }, response);
+  if (doneCommentUrl) return withStartEvidence({ outcome: status || "done", doneCommentUrl }, response);
   return undefined;
 }
 
@@ -298,12 +310,13 @@ function runOpenClawBridge(task, env = process.env) {
   const sessionId = safeText(env.A2A_OPENCLAW_SESSION_ID, `a2a-${nodeId}-${safeText(task.id, String(Date.now()))}-github`);
   const prompt = [
     `You are A2A worker ${nodeId}. Complete this GitHub development assignment end-to-end.`,
+    "Leave a Start marker on the GitHub issue before work begins.",
     "Do not report success unless you opened a pull request, posted a Done comment, or posted a Block comment on GitHub.",
     "Use the local workspace and GitHub tools available in this OpenClaw session. If the repo is not present, clone/fetch it into a temporary or appropriate workspace directory.",
     "Never commit sensitive data, raw private paths, or session dumps.",
     "If implementation is unsafe, unclear, or cannot finish within the available time, post a Block comment on the issue with blocker evidence and return its URL.",
     "Return JSON only, no markdown, with exactly this shape:",
-    '{"status":"pr_opened|blocked|done","summary":"...","prUrl":"https://github.com/.../pull/123 optional","blockCommentUrl":"https://github.com/.../issues/123#issuecomment-... optional","doneCommentUrl":"https://github.com/.../issues/123#issuecomment-... optional","branch":"optional","tests":["cmd -> result"],"filesChanged":["path"],"risks":["..."]}',
+    '{"status":"pr_opened|blocked|done","summary":"...","startCommentUrl":"https://github.com/.../issues/123#issuecomment-... optional","prUrl":"https://github.com/.../pull/123 optional","blockCommentUrl":"https://github.com/.../issues/123#issuecomment-... optional","doneCommentUrl":"https://github.com/.../issues/123#issuecomment-... optional","branch":"optional","tests":["cmd -> result"],"filesChanged":["path"],"risks":["..."]}',
     "At least one of prUrl, blockCommentUrl, or doneCommentUrl is required.",
     "All human-readable text should be Korean unless quoting code/test output.",
     `Repository: ${repo}`,
@@ -424,6 +437,7 @@ function runOpenClawBridge(task, env = process.env) {
       nodeId,
       taskId: safeText(task.id, undefined),
     };
+    if (safeText(evidence.startCommentUrl, "")) output.startCommentUrl = safeText(evidence.startCommentUrl);
     if (safeText(evidence.prUrl, "")) output.prUrl = safeText(evidence.prUrl);
     if (safeText(evidence.doneCommentUrl, "")) output.doneCommentUrl = safeText(evidence.doneCommentUrl);
     if (safeText(evidence.blockCommentUrl, "")) output.blockCommentUrl = safeText(evidence.blockCommentUrl);
@@ -459,14 +473,16 @@ function buildOutputGithub(parsed) {
     ? parsed.github
     : {};
   const github = {};
-  let hasAny = false;
+  let hasTerminal = false;
+  const startCommentUrl = safeText(parsed.startCommentUrl, safeText(nested.startCommentUrl, ""));
   const prUrl = safeText(parsed.prUrl, safeText(nested.prUrl, ""));
   const doneCommentUrl = safeText(parsed.doneCommentUrl, safeText(nested.doneCommentUrl, ""));
   const blockCommentUrl = safeText(parsed.blockCommentUrl, safeText(nested.blockCommentUrl, ""));
-  if (prUrl) { github.prUrl = prUrl; hasAny = true; }
-  if (doneCommentUrl) { github.doneCommentUrl = doneCommentUrl; hasAny = true; }
-  if (blockCommentUrl) { github.blockCommentUrl = blockCommentUrl; hasAny = true; }
-  return hasAny ? github : undefined;
+  if (startCommentUrl) github.startCommentUrl = startCommentUrl;
+  if (prUrl) { github.prUrl = prUrl; hasTerminal = true; }
+  if (doneCommentUrl) { github.doneCommentUrl = doneCommentUrl; hasTerminal = true; }
+  if (blockCommentUrl) { github.blockCommentUrl = blockCommentUrl; hasTerminal = true; }
+  return hasTerminal ? github : undefined;
 }
 
 function runDockerRunner(task, env = process.env) {
@@ -564,6 +580,7 @@ function runDockerRunner(task, env = process.env) {
     if (githubEvidence) {
       output.github = githubEvidence;
     }
+    if (safeText(githubEvidence?.startCommentUrl, "")) output.startCommentUrl = safeText(githubEvidence.startCommentUrl);
     if (safeText(githubEvidence?.prUrl, "")) output.prUrl = safeText(githubEvidence.prUrl);
     if (safeText(githubEvidence?.doneCommentUrl, "")) output.doneCommentUrl = safeText(githubEvidence.doneCommentUrl);
     if (safeText(githubEvidence?.blockCommentUrl, "")) output.blockCommentUrl = safeText(githubEvidence.blockCommentUrl);
