@@ -46,6 +46,7 @@ map.
 - `docs/wake-on-task-live-canary-runbook.md` for the live Wake-on-Task canary proof, resource-warning classification, and rollback/reset checklist
 - `docs/docker-runner-rollout-runbook.md` for the A2A docker-runner worker rollout and rollback procedure: canary smoke, node expansion, feature flags, and failure rollback
 - `docs/docker-broker-live-smoke.md` for the repeatable live Docker broker no-op smoke script and seoseo run command
+- `docs/edge-secret-rotation-runbook.md` for the no-secret-values rotation checklist after an edge secret exposure
 - `docs/durable-persistence-path.md` for the recommended next persistence step beyond the phase-1 JSON snapshot backend
 - `docs/sqlite-persistence.md` and `docs/release-notes-round-34-sqlite.md` for the SQLite schema v8 operator baseline, hot-table coverage, and diagnostics hot-read release notes
 - `docs/production-stabilization-20260429.md` for the live production closeout: SQLite hot-table cutover, stale-reaper threshold, worker session isolation, active-worker scope, and 502 mitigation notes
