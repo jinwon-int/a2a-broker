@@ -115,4 +115,61 @@ describe('terminal outbox preflight', () => {
     assert.equal(report.ok, false);
     assert.match(report.checks.find((check) => check.check === 'terminal-outbox poll')?.detail ?? '', /non-HTTP evidence URLs/);
   });
+
+  it('summarizes terminal readiness counts for unacked, receipt-confirmed, and replay candidates', async () => {
+    const fetchImpl = async (url) => {
+      const parsed = new URL(String(url));
+      if (parsed.pathname === '/health') return jsonResponse({ ok: true });
+      const reconcile = parsed.searchParams.get('reconcile_unacked') === 'true';
+      return jsonResponse({
+        kind: 'task.terminal.outbox',
+        count: 2,
+        cursor: 'terminal-2',
+        reconciledUnacked: reconcile ? 1 : undefined,
+        events: [
+          {
+            id: 'terminal-1',
+            receipt: { status: 'accepted', updatedAt: '2026-05-04T00:00:00.000Z' },
+            payload: { status: 'succeeded', worker: 'sogyo', taskBrief: 'terminal readiness unacked proof', doneUrl: 'https://github.com/jinwon-int/a2a-broker/issues/323#issuecomment-1' },
+          },
+          {
+            id: 'terminal-2',
+            ack: { status: 'receipt_confirmed', evidence: 'operator_visible', acknowledgedAt: '2026-05-04T00:00:01.000Z' },
+            receipt: { status: 'operator_visible', updatedAt: '2026-05-04T00:00:01.000Z' },
+            payload: { status: 'succeeded', worker: 'bangtong', taskBrief: 'terminal readiness receipt proof', prUrl: 'https://github.com/jinwon-int/a2a-broker/pull/323' },
+          },
+        ],
+      });
+    };
+
+    const report = await runPreflight({ baseUrl: 'http://broker.local', fetchImpl });
+
+    assert.equal(report.ok, true);
+    assert.equal(report.checks[1].readiness.unackedCount, 1);
+    assert.equal(report.checks[1].readiness.receiptConfirmedCount, 1);
+    assert.equal(report.checks[2].readiness.staleCursorOrReplayCandidates, 1);
+    assert.match(report.checks[1].detail, /readiness unacked=1, receiptConfirmed=1/);
+  });
+
+  it('blocks terminal readiness when evidence, worker, or task brief is missing', async () => {
+    const fetchImpl = async (url) => {
+      const parsed = new URL(String(url));
+      if (parsed.pathname === '/health') return jsonResponse({ ok: true });
+      return jsonResponse({
+        kind: 'task.terminal.outbox',
+        count: 1,
+        cursor: 'terminal-incomplete',
+        events: [{ id: 'terminal-incomplete', payload: { status: 'blocked' } }],
+      });
+    };
+
+    const report = await runPreflight({ baseUrl: 'http://broker.local', fetchImpl });
+
+    assert.equal(report.ok, false);
+    const poll = report.checks.find((check) => check.check === 'terminal-outbox poll');
+    assert.match(poll?.detail ?? '', /missing PR\/Done\/Block evidence=1/);
+    assert.match(poll?.detail ?? '', /missing worker=1/);
+    assert.match(poll?.detail ?? '', /missing task brief=1/);
+  });
+
 });
