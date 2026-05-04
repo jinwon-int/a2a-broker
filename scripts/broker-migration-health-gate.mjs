@@ -112,11 +112,15 @@ function parseArgs(argv) {
   const maxAgeRaw = readOption('--max-unacked-age-ms') ?? process.env.BROKER_MIGRATION_GATE_MAX_UNACKED_AGE_MS;
   const maxUnackedAgeMs = maxAgeRaw === undefined ? DEFAULT_MAX_UNACKED_AGE_MS : Number(maxAgeRaw);
   const nowRaw = readOption('--now-ms');
+  const legacyResidueCutoffRaw = readOption('--legacy-residue-cutoff') ?? process.env.BROKER_MIGRATION_GATE_LEGACY_RESIDUE_CUTOFF;
+  const legacyResidueCutoffMs = legacyResidueCutoffRaw === undefined ? null : Date.parse(legacyResidueCutoffRaw);
   return {
     dbFile: readOption('--db') ?? process.env.BROKER_SQLITE_FILE ?? process.env.SQLITE_STATE_FILE,
     json: argv.includes('--json'),
     maxUnackedAgeMs: Number.isFinite(maxUnackedAgeMs) && maxUnackedAgeMs >= 0 ? maxUnackedAgeMs : DEFAULT_MAX_UNACKED_AGE_MS,
     nowMs: nowRaw === undefined ? Date.now() : Number(nowRaw),
+    legacyResidueCutoff: Number.isFinite(legacyResidueCutoffMs) ? new Date(legacyResidueCutoffMs).toISOString() : null,
+    legacyResidueCutoffMs: Number.isFinite(legacyResidueCutoffMs) ? legacyResidueCutoffMs : null,
   };
 }
 
@@ -156,6 +160,12 @@ function parseJsonPayload(payload, schema) {
   } catch (error) {
     return { success: false, error: sanitizeDiagnosticValue(error instanceof Error ? error.message : String(error)) };
   }
+}
+
+function isBeforeLegacyCutoff(isoTimestamp, cutoffMs) {
+  if (!Number.isFinite(cutoffMs)) return false;
+  const valueMs = Date.parse(isoTimestamp ?? '');
+  return Number.isFinite(valueMs) && valueMs < cutoffMs;
 }
 
 function checkSchema(db) {
@@ -206,7 +216,7 @@ function checkWorkers(db) {
   return pass('worker hot-table quarantine', 'all worker rows validate normalized capabilities', { invalidRows: [] });
 }
 
-function checkQueueCloseoutReconciliation(db) {
+function checkQueueCloseoutReconciliation(db, { legacyResidueCutoffMs } = {}) {
   if (!tableExists(db, 'broker_tasks') || !tableExists(db, 'broker_tombstones')) {
     return fail('queue closeout reconciliation', 'broker_tasks or broker_tombstones table missing', { violations: [] });
   }
@@ -224,6 +234,7 @@ function checkQueueCloseoutReconciliation(db) {
   }
 
   const violations = [];
+  const legacyResidue = [];
   const rows = db.prepare('SELECT id, payload FROM broker_tasks ORDER BY id ASC').all();
   for (const row of rows) {
     const id = sanitizeDiagnosticValue(row.id);
@@ -246,6 +257,10 @@ function checkQueueCloseoutReconciliation(db) {
       violations.push({ id, reason: 'terminal_task_missing_completed_at', status });
     }
     if (!tombstone) {
+      if (isBeforeLegacyCutoff(task.completedAt ?? task.updatedAt, legacyResidueCutoffMs)) {
+        legacyResidue.push({ id, reason: 'legacy_terminal_task_missing_tombstone', status, completedAt: task.completedAt ?? null });
+        continue;
+      }
       violations.push({ id, reason: 'terminal_task_missing_tombstone', status });
       continue;
     }
@@ -262,16 +277,37 @@ function checkQueueCloseoutReconciliation(db) {
   }
 
   if (violations.length > 0) {
-    return fail('queue closeout reconciliation', `${violations.length} queue closeout violation(s); rollout blocked`, { violations });
+    return fail('queue closeout reconciliation', `${violations.length} queue closeout violation(s); rollout blocked`, { violations, legacyResidue });
   }
-  return pass('queue closeout reconciliation', `${rows.length} task row(s) have reconciled terminal closeout state`, { rowCount: rows.length });
+  const suffix = legacyResidue.length > 0 ? `; ${legacyResidue.length} legacy residue row(s) quarantined by cutoff` : '';
+  return pass('queue closeout reconciliation', `${rows.length} task row(s) have reconciled terminal closeout state${suffix}`, { rowCount: rows.length, legacyResidue });
 }
 
-function checkTerminalOutbox(db, { nowMs, maxUnackedAgeMs }) {
+function hasCanonicalTerminalEvidence(event) {
+  const payload = event?.payload ?? {};
+  return Boolean(
+    payload.prUrl ||
+    payload.doneCommentUrl ||
+    payload.blockCommentUrl ||
+    payload.github?.prUrl ||
+    payload.github?.doneCommentUrl ||
+    payload.github?.blockCommentUrl
+  );
+}
+
+function isLegacyAcceptedOnlyOutbox(event, cutoffMs) {
+  return isBeforeLegacyCutoff(event.createdAt, cutoffMs) &&
+    !event.ack &&
+    !event.deliveredAt &&
+    event.receipt?.status === 'accepted';
+}
+
+function checkTerminalOutbox(db, { nowMs, maxUnackedAgeMs, legacyResidueCutoffMs }) {
   if (!tableExists(db, 'broker_terminal_outbox')) {
     return fail('terminal-outbox ACK invariant', 'broker_terminal_outbox table missing', { violations: [] });
   }
   const violations = [];
+  const legacyResidue = [];
   const rows = db.prepare('SELECT id, acknowledged_at AS acknowledgedAt, created_at AS createdAt, payload FROM broker_terminal_outbox ORDER BY created_at ASC, id ASC').all();
   for (const row of rows) {
     const id = sanitizeDiagnosticValue(row.id);
@@ -293,14 +329,24 @@ function checkTerminalOutbox(db, { nowMs, maxUnackedAgeMs }) {
     if (!event.ack && !event.deliveredAt) {
       const createdMs = Date.parse(event.createdAt);
       if (Number.isFinite(createdMs) && nowMs - createdMs > maxUnackedAgeMs) {
+        if (isLegacyAcceptedOnlyOutbox(event, legacyResidueCutoffMs)) {
+          legacyResidue.push({
+            id,
+            reason: 'legacy_accepted_only_unacked_terminal_outbox',
+            createdAt: event.createdAt,
+            canonicalEvidence: hasCanonicalTerminalEvidence(event),
+          });
+          continue;
+        }
         violations.push({ id, reason: 'stale_unacked_receipt_evidence', ageMs: nowMs - createdMs, maxUnackedAgeMs });
       }
     }
   }
   if (violations.length > 0) {
-    return fail('terminal-outbox ACK invariant', `${violations.length} ACK invariant violation(s); rollout blocked`, { violations });
+    return fail('terminal-outbox ACK invariant', `${violations.length} ACK invariant violation(s); rollout blocked`, { violations, legacyResidue });
   }
-  return pass('terminal-outbox ACK invariant', `${rows.length} outbox row(s) have receipt-safe ACK state or are within replay window`, { rowCount: rows.length });
+  const suffix = legacyResidue.length > 0 ? `; ${legacyResidue.length} legacy accepted-only row(s) quarantined by cutoff without ACK` : '';
+  return pass('terminal-outbox ACK invariant', `${rows.length} outbox row(s) have receipt-safe ACK state or are within replay window${suffix}`, { rowCount: rows.length, legacyResidue });
 }
 
 export function runMigrationHealthGate(options) {
@@ -327,10 +373,13 @@ export function runMigrationHealthGate(options) {
       checkSchema(db),
       checkHotTables(db),
       checkWorkers(db),
-      checkQueueCloseoutReconciliation(db),
+      checkQueueCloseoutReconciliation(db, {
+        legacyResidueCutoffMs: options.legacyResidueCutoffMs,
+      }),
       checkTerminalOutbox(db, {
         nowMs: options.nowMs ?? Date.now(),
         maxUnackedAgeMs: options.maxUnackedAgeMs ?? DEFAULT_MAX_UNACKED_AGE_MS,
+        legacyResidueCutoffMs: options.legacyResidueCutoffMs,
       }),
     ];
     return {
@@ -340,6 +389,7 @@ export function runMigrationHealthGate(options) {
         schemaVersion: REQUIRED_SCHEMA_VERSION,
         stateVersion: REQUIRED_STATE_VERSION,
         maxUnackedAgeMs: options.maxUnackedAgeMs ?? DEFAULT_MAX_UNACKED_AGE_MS,
+        legacyResidueCutoff: options.legacyResidueCutoff ?? null,
       },
       checks,
       ok: checks.every((check) => check.ok),
