@@ -23,7 +23,8 @@
     "terminal_outbox_preflight": "node scripts/terminal-outbox-preflight.mjs",
     "receipt_gate_canary": "node scripts/receipt-gate-canary.mjs",
     "lifecycle_proof_evidence": "node scripts/broker-lifecycle-proof-evidence.mjs",
-    "migration_health_gate": "node scripts/broker-migration-health-gate.mjs"
+    "migration_health_gate": "node scripts/broker-migration-health-gate.mjs",
+    "rehearsal_manifest": "node scripts/broker-rehearsal-manifest.mjs"
   },
   "engines": {
     "node": ">=22"
