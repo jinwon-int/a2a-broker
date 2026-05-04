@@ -71,6 +71,8 @@ export interface TerminalTaskOutboxEvent {
    * status: a task can succeed while operator-visible receipt is still pending.
    */
   receipt: TerminalTaskOutboxReceiptState;
+  /** Safe operator-facing explanation of the current terminal ACK decision. */
+  ackAudit?: TerminalTaskOutboxAckAudit;
   /** @deprecated Older snapshots may contain this; new acks use `ack.acknowledgedAt`. */
   deliveredAt?: string;
   attempts: number;
@@ -118,6 +120,24 @@ export interface TerminalTaskOutboxReceiptUpdateInput {
   status: TerminalTaskReceiptStatus;
   updatedAt?: string;
   note?: string;
+}
+
+export type TerminalTaskOutboxAckDecision = "pending" | "eligible" | "confirmed" | "rejected";
+
+export interface TerminalTaskOutboxAckAudit {
+  decision: TerminalTaskOutboxAckDecision;
+  reason: string;
+  updatedAt: string;
+  taskId: string;
+  worker?: string;
+  repo?: string;
+  issue?: number;
+  taskBrief?: string;
+  run?: string;
+  traceId?: string;
+  receiptStatus?: TerminalTaskReceiptStatus;
+  evidence?: TerminalTaskOutboxAckEvidence;
+  receiptId?: string;
 }
 
 export interface TerminalTaskOutboxSubscribeOptions {
@@ -171,16 +191,23 @@ export class TerminalTaskEventOutbox {
     if (existing) return existing;
     if (this.seen.has(id)) return null;
 
+    const payload = buildTerminalTaskPayload(task);
     const event: TerminalTaskOutboxEvent = {
       id,
       kind: "task.terminal",
       taskEventId: taskEvent.id,
-      payload: buildTerminalTaskPayload(task),
+      payload,
       createdAt: taskEvent.timestamp,
       receipt: {
         status: "accepted",
         updatedAt: taskEvent.timestamp,
       },
+      ackAudit: buildAckAudit(payload, {
+        decision: "pending",
+        reason: "terminal event accepted; awaiting operator-visible/provider-delivery evidence before ACK",
+        updatedAt: taskEvent.timestamp,
+        receiptStatus: "accepted",
+      }),
       attempts: 0,
     };
     this.events.push(event);
@@ -230,13 +257,29 @@ export class TerminalTaskEventOutbox {
    * repeated enqueue/ack operations idempotent.
    */
   acknowledge(id: string, receipt: TerminalTaskOutboxAckInput): TerminalTaskOutboxEvent | null {
+    const event = this.events.find((candidate) => candidate.id === id);
     if (!receipt || !isTerminalTaskOutboxAckEvidence(receipt.evidence)) {
+      if (event) {
+        event.ackAudit = buildAckAudit(event.payload, {
+          decision: "rejected",
+          reason: "terminal ACK rejected: provider send success is not operator-visible/provider-delivery evidence",
+          updatedAt: new Date().toISOString(),
+          receiptStatus: event.receipt.status,
+        });
+      }
       throw new TypeError("terminal outbox ack requires receipt/operator-visible evidence");
     }
-    const event = this.events.find((candidate) => candidate.id === id);
     if (!event) return null;
     event.ack = buildAckState(receipt);
     event.receipt = buildReceiptStateFromAck(event.ack);
+    event.ackAudit = buildAckAudit(event.payload, {
+      decision: "confirmed",
+      reason: ackConfirmedReason(event.ack.evidence),
+      updatedAt: event.ack.acknowledgedAt,
+      receiptStatus: event.receipt.status,
+      evidence: event.ack.evidence,
+      receiptId: event.ack.receiptId,
+    });
     delete event.deliveredAt;
     event.attempts += 1;
     return event;
@@ -250,6 +293,7 @@ export class TerminalTaskEventOutbox {
     const event = this.events.find((candidate) => candidate.id === id);
     if (!event) return null;
     event.receipt = buildReceiptState(receipt.status, receipt.updatedAt ?? new Date().toISOString(), receipt.note);
+    event.ackAudit = buildAckAudit(event.payload, ackAuditFromReceipt(event.receipt));
     return event;
   }
 
@@ -288,6 +332,16 @@ export class TerminalTaskEventOutbox {
     } else {
       restored.receipt = normalizeReceiptState(restored.receipt);
     }
+    restored.ackAudit = restored.ack
+      ? buildAckAudit(restored.payload, {
+        decision: "confirmed",
+        reason: ackConfirmedReason(restored.ack.evidence),
+        updatedAt: restored.ack.acknowledgedAt,
+        receiptStatus: restored.receipt.status,
+        evidence: restored.ack.evidence,
+        receiptId: restored.ack.receiptId,
+      })
+      : buildAckAudit(restored.payload, ackAuditFromReceipt(restored.receipt));
     this.events.push(restored);
     this.markSeen(event.id);
   }
@@ -514,6 +568,77 @@ function buildReceiptState(status: TerminalTaskReceiptStatus, updatedAt: string,
   const safeNote = sanitizeAckText(note, MAX_ACK_NOTE_CHARS);
   if (safeNote) receipt.note = safeNote;
   return receipt;
+}
+
+function ackAuditFromReceipt(receipt: TerminalTaskOutboxReceiptState): Omit<TerminalTaskOutboxAckAudit, "taskId"> {
+  switch (receipt.status) {
+    case "operator_visible":
+      return {
+        decision: "eligible",
+        reason: "operator-visible receipt recorded; terminal ACK is eligible with operator_visible/operator_confirmed evidence",
+        updatedAt: receipt.updatedAt,
+        receiptStatus: receipt.status,
+        evidence: receipt.evidence,
+        receiptId: receipt.receiptId,
+      };
+    case "provider_sent":
+      return {
+        decision: "pending",
+        reason: "provider send-only success recorded; awaiting provider-delivery receipt or operator-visible evidence before ACK",
+        updatedAt: receipt.updatedAt,
+        receiptStatus: receipt.status,
+        evidence: receipt.evidence,
+        receiptId: receipt.receiptId,
+      };
+    case "failed":
+    case "timed_out":
+    case "stale":
+      return {
+        decision: "pending",
+        reason: `terminal ACK pending: notification receipt is ${receipt.status} without operator-visible/provider-delivery evidence`,
+        updatedAt: receipt.updatedAt,
+        receiptStatus: receipt.status,
+        evidence: receipt.evidence,
+        receiptId: receipt.receiptId,
+      };
+    default:
+      return {
+        decision: "pending",
+        reason: "terminal ACK pending: notification has not produced operator-visible/provider-delivery evidence",
+        updatedAt: receipt.updatedAt,
+        receiptStatus: receipt.status,
+        evidence: receipt.evidence,
+        receiptId: receipt.receiptId,
+      };
+  }
+}
+
+function ackConfirmedReason(evidence: TerminalTaskOutboxAckEvidence): string {
+  return evidence === "provider_delivery_receipt"
+    ? "terminal ACK confirmed from provider-delivery receipt evidence, not provider send-only success"
+    : "terminal ACK confirmed from operator-visible evidence";
+}
+
+function buildAckAudit(
+  payload: TerminalTaskEventPayload,
+  input: Omit<TerminalTaskOutboxAckAudit, "taskId" | "worker" | "repo" | "issue" | "taskBrief" | "run" | "traceId">,
+): TerminalTaskOutboxAckAudit {
+  const audit: TerminalTaskOutboxAckAudit = {
+    decision: input.decision,
+    reason: input.reason,
+    updatedAt: input.updatedAt,
+    taskId: payload.taskId,
+  };
+  if (payload.worker) audit.worker = payload.worker;
+  if (payload.repo) audit.repo = payload.repo;
+  if (payload.issue !== undefined) audit.issue = payload.issue;
+  if (payload.taskBrief) audit.taskBrief = payload.taskBrief;
+  if (payload.run) audit.run = payload.run;
+  if (payload.traceId) audit.traceId = payload.traceId;
+  if (input.receiptStatus) audit.receiptStatus = input.receiptStatus;
+  if (input.evidence) audit.evidence = input.evidence;
+  if (input.receiptId) audit.receiptId = input.receiptId;
+  return audit;
 }
 
 function sanitizeAckText(value: unknown, maxChars: number): string | undefined {

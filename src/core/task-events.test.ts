@@ -306,6 +306,19 @@ describe("TerminalTaskEventOutbox", () => {
     assert.equal(event.payload.doneUrl, "https://github.com/jinwon-int/a2a-broker/issues/218#issuecomment-1");
     assert.equal(event.payload.blockUrl, undefined);
     assert.match(event.payload.testSummary ?? "", /tests passed from \[path\]/);
+    assert.deepEqual(event.ackAudit, {
+      decision: "pending",
+      reason: "terminal event accepted; awaiting operator-visible/provider-delivery evidence before ACK",
+      updatedAt: event.createdAt,
+      taskId: task.id,
+      worker: "worker-1",
+      repo: "jinwon-int/a2a-broker",
+      issue: 218,
+      taskBrief: "terminal outbox regression should not leak [path]",
+      run: "a2a-terminal-push-1",
+      traceId: "trace-terminal-1",
+      receiptStatus: "accepted",
+    });
 
     const serialized = JSON.stringify(event);
     assert.ok(!serialized.includes("rawLog"));
@@ -521,6 +534,14 @@ describe("TerminalTaskEventOutbox", () => {
       status: "accepted",
       updatedAt: event.createdAt,
     });
+    assert.deepEqual(event.ackAudit!, {
+      decision: "pending",
+      reason: "terminal event accepted; awaiting operator-visible/provider-delivery evidence before ACK",
+      updatedAt: event.createdAt,
+      taskId: "ack-task",
+      worker: "worker-1",
+      receiptStatus: "accepted",
+    });
 
     for (const evidence of ["gateway_send_success", "provider_send_success"]) {
       assert.throws(
@@ -529,7 +550,12 @@ describe("TerminalTaskEventOutbox", () => {
         evidence,
       );
     }
-    assert.equal(outbox.subscribe()[0]!.attempts, 0);
+    const rejected = outbox.subscribe()[0]!;
+    assert.equal(rejected.attempts, 0);
+    assert.equal(rejected.ackAudit!.decision, "rejected");
+    assert.match(rejected.ackAudit!.reason, /provider send success is not operator-visible\/provider-delivery evidence/);
+    assert.equal(rejected.ackAudit!.taskId, "ack-task");
+    assert.equal(rejected.ackAudit!.worker, "worker-1");
 
     const acknowledgedAt = "2026-05-01T00:00:00.000Z";
     const acked = outbox.acknowledge(event.id, {
@@ -553,6 +579,16 @@ describe("TerminalTaskEventOutbox", () => {
       receiptId: "receipt-123",
       note: "operator saw message at [path] token=[redacted]",
     });
+    assert.deepEqual(acked.ackAudit!, {
+      decision: "confirmed",
+      reason: "terminal ACK confirmed from provider-delivery receipt evidence, not provider send-only success",
+      updatedAt: acknowledgedAt,
+      taskId: "ack-task",
+      worker: "worker-1",
+      receiptStatus: "provider_sent",
+      evidence: "provider_delivery_receipt",
+      receiptId: "receipt-123",
+    });
     assert.equal(acked.deliveredAt, undefined);
     assert.equal(acked.attempts, 1);
     assert.equal(outbox.acknowledge("missing", { evidence: "operator_visible" }), null);
@@ -561,6 +597,7 @@ describe("TerminalTaskEventOutbox", () => {
     assert.equal(replayed!.id, event.id);
     assert.deepEqual(replayed!.ack, acked.ack);
     assert.deepEqual(replayed!.receipt, acked.receipt);
+    assert.deepEqual(replayed!.ackAudit, acked.ackAudit);
     assert.equal(replayed!.attempts, 1);
   });
 
@@ -588,6 +625,25 @@ describe("TerminalTaskEventOutbox", () => {
       updatedAt: "2026-05-02T01:55:00.000Z",
       note: "provider accepted outbound send id=telegram:123",
     });
+    assert.equal(providerSent.ackAudit!.decision, "pending");
+    assert.match(providerSent.ackAudit!.reason, /provider send-only success/);
+    assert.equal(providerSent.ackAudit!.receiptStatus, "provider_sent");
+
+    const operatorVisible = outbox.recordReceiptStatus(event.id, {
+      status: "operator_visible",
+      updatedAt: "2026-05-02T01:56:00.000Z",
+      note: "operator-facing message visible",
+    });
+    assert.ok(operatorVisible);
+    assert.equal(operatorVisible.ack, undefined);
+    assert.deepEqual(operatorVisible.ackAudit!, {
+      decision: "eligible",
+      reason: "operator-visible receipt recorded; terminal ACK is eligible with operator_visible/operator_confirmed evidence",
+      updatedAt: "2026-05-02T01:56:00.000Z",
+      taskId: "receipt-status-task",
+      worker: "worker-1",
+      receiptStatus: "operator_visible",
+    });
 
     const failed = outbox.recordReceiptStatus(event.id, {
       status: "failed",
@@ -601,6 +657,8 @@ describe("TerminalTaskEventOutbox", () => {
       updatedAt: "2026-05-02T02:00:00.000Z",
       note: "provider send failed token=[redacted]",
     });
+    assert.equal(failed.ackAudit!.decision, "pending");
+    assert.equal(failed.ackAudit!.receiptStatus, "failed");
 
     const timedOut = outbox.recordReceiptStatus(event.id, {
       status: "timed_out",
