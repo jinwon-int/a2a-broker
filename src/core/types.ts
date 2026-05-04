@@ -44,6 +44,80 @@ export type TaskStatus =
   | "succeeded"
   | "failed"
   | "canceled";
+
+/**
+ * Broker-side objective lifecycle above individual A2A tasks. Goals are
+ * bounded supervisory records: they summarize operator intent, child task
+ * attachment, budget pressure, and terminal outcome without creating loops or
+ * bypassing task approval/safety gates.
+ */
+export type GoalStatus =
+  | "pursuing"
+  | "paused"
+  | "achieved"
+  | "blocked"
+  | "unmet"
+  | "budget_limited"
+  | "cleared";
+
+export type GoalTransitionReason =
+  | "operator_requested"
+  | "child_task_progress"
+  | "child_task_terminal"
+  | "dependency_blocked"
+  | "budget_exhausted"
+  | "objective_satisfied"
+  | "objective_not_met"
+  | "retention_cleared";
+
+export interface GoalBudgetPolicy {
+  /** Maximum child task attempts the broker may attach before stopping as budget-limited. */
+  maxChildAttempts?: number;
+  /** Optional wall-clock deadline for pursuing work; ISO timestamp. */
+  deadlineAt?: string;
+  /** Optional operator-visible resource ceiling, e.g. tokens, cost units, or minutes. */
+  maxResourceUnits?: number;
+}
+
+export interface GoalTaskAttachment {
+  taskId: string;
+  /** Optional role in the objective, e.g. implementation, review, smoke, or docs. */
+  role?: string;
+  attachedAt: string;
+  detachedAt?: string;
+}
+
+export interface GoalStatusEvent {
+  id: string;
+  goalId: string;
+  from?: GoalStatus;
+  to: GoalStatus;
+  reason: GoalTransitionReason;
+  createdAt: string;
+  actor?: A2APartyRef;
+  taskId?: string;
+  note?: string;
+}
+
+export interface GoalRecord {
+  id: string;
+  title: string;
+  objective: string;
+  requester: A2APartyRef;
+  status: GoalStatus;
+  createdAt: string;
+  updatedAt: string;
+  completedAt?: string;
+  budget?: GoalBudgetPolicy;
+  taskAttachments: GoalTaskAttachment[];
+  history: GoalStatusEvent[];
+  outcome?: {
+    summary: string;
+    /** True only for non-budget failures. Budget exhaustion uses status=budget_limited. */
+    failed: boolean;
+    artifactIds?: string[];
+  };
+}
 export type AuditAction =
   | "proposal.created"
   | "artifact.attached"

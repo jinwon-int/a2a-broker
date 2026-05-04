@@ -13,6 +13,7 @@ import type {
   ChangeProposal,
   ProposalListFilters,
   TaskListFilters,
+  GoalRecord,
   TaskRecord,
   TaskTombstone,
   TombstoneListFilters,
@@ -43,6 +44,7 @@ export interface BrokerSnapshot {
   auditEvents: AuditEvent[];
   workers: WorkerRecord[];
   tasks: TaskRecord[];
+  goals?: GoalRecord[];
   tombstones?: TaskTombstone[];
   terminalOutbox?: TerminalTaskOutboxEvent[];
 }
