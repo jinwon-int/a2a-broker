@@ -85,6 +85,8 @@ export interface TerminalTaskEvent {
   worker?: string;
   repo?: string;
   issue?: number;
+  /** Short operator-safe task description for terminal notices. */
+  taskBrief?: string;
   prUrl?: string;
   doneUrl?: string;
   blockUrl?: string;
