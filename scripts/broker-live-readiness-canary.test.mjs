@@ -92,4 +92,34 @@ describe('broker live-readiness canary', () => {
     assert.equal(calls[3].query, 'limit=7');
     assert.equal(calls.some((call) => call.path.endsWith('/ack') || call.method !== 'GET'), false);
   });
+
+  it('blocks readiness when diagnostics report non-zero queue or stale tasks', async () => {
+    const fetchImpl = async (url) => {
+      const parsed = new URL(String(url));
+      if (parsed.pathname === '/health') {
+        return jsonResponse({ ok: true, service: 'a2a-broker', version: '0.1.0', build: 'test-build' });
+      }
+      if (parsed.pathname === '/workers') {
+        return jsonResponse({ items: [{ nodeId: 'sogyo', status: 'online' }] });
+      }
+      if (parsed.pathname === '/tasks/diagnostics') {
+        return jsonResponse({ tasks: { byStatus: { queued: 1, claimed: 0, running: 0 }, stale: 1 } });
+      }
+      if (parsed.pathname === '/a2a/tasks/terminal-outbox') {
+        return jsonResponse({
+          kind: 'task.terminal.outbox',
+          events: [{ id: 'terminal-1', payload: { worker: 'sogyo', prUrl: 'https://github.com/jinwon-int/a2a-broker/pull/334', receiptStatus: 'accepted' } }],
+        });
+      }
+      throw new Error(`unexpected path ${parsed.pathname}`);
+    };
+
+    const report = await runLiveReadinessCanary({ baseUrl: 'http://broker.local', fetchImpl });
+    const queueCheck = report.checks.find((check) => check.check === 'queue emptiness and stale tasks');
+
+    assert.equal(report.ok, false);
+    assert.equal(queueCheck?.ok, false);
+    assert.match(queueCheck?.detail ?? '', /queued=1/);
+    assert.match(queueCheck?.detail ?? '', /stale=1/);
+  });
 });
