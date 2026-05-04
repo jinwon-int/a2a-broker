@@ -176,6 +176,61 @@ describe('broker migration health gate', () => {
     assert.match(workerCheck?.invalidRows[0].schemaError ?? '', /capabilities/);
   });
 
+
+
+  it('classifies current post-cutoff terminal receipt gaps into operator-safe buckets without ACKing provider acceptance', () => {
+    const { db, file } = createDb();
+    const base = '2026-05-03T00:00:00.000Z';
+    const rows = [
+      ['terminal-no-config', { id: 'terminal-no-config', attempts: 0, receipt: { status: 'accepted', updatedAt: base } }],
+      ['terminal-provider-sent', { id: 'terminal-provider-sent', taskEventId: 2, attempts: 1, receipt: { status: 'provider_sent', updatedAt: base, note: 'provider accepted' } }],
+      ['terminal-send-failed', { id: 'terminal-send-failed', taskEventId: 3, attempts: 1, receipt: { status: 'failed', updatedAt: base, note: 'provider failed' } }],
+      ['terminal-stale', { id: 'terminal-stale', taskEventId: 4, attempts: 1, receipt: { status: 'timed_out', updatedAt: base } }],
+      ['terminal-duplicate', { id: 'terminal-duplicate', taskEventId: 5, attempts: 1, receipt: { status: 'accepted', updatedAt: base }, duplicateOf: 'terminal-provider-sent' }],
+      ['terminal-receipt-confirmed', {
+        id: 'terminal-receipt-confirmed',
+        taskEventId: 6,
+        ack: {
+          status: 'receipt_confirmed',
+          evidence: 'operator_visible',
+          acknowledgedAt: '2026-05-03T00:01:00.000Z',
+        },
+        receipt: { status: 'operator_visible', updatedAt: '2026-05-03T00:01:00.000Z', evidence: 'operator_visible' },
+      }],
+    ];
+    for (const [id, overrides] of rows) {
+      db.prepare('INSERT INTO broker_terminal_outbox (id, task_event_id, acknowledged_at, created_at, payload) VALUES (?, ?, ?, ?, ?)')
+        .run(id, overrides.taskEventId ?? 1, overrides.ack ? overrides.ack.acknowledgedAt : null, base, terminalPayload(overrides));
+    }
+    db.close();
+
+    const report = runMigrationHealthGate({
+      dbFile: file,
+      nowMs: Date.parse('2026-05-03T00:30:00.000Z'),
+      maxUnackedAgeMs: 5 * 60 * 1000,
+      legacyResidueCutoffMs: Date.parse('2026-05-02T23:59:00.000Z'),
+      legacyResidueCutoff: '2026-05-02T23:59:00.000Z',
+    });
+    const outboxCheck = report.checks.find((check) => check.check === 'terminal-outbox ACK invariant');
+
+    assert.equal(report.ok, false);
+    assert.equal(outboxCheck?.violations.length, 5);
+    assert.deepEqual(outboxCheck?.currentGapBuckets, {
+      no_notification_config: 1,
+      send_accepted_no_receipt: 1,
+      send_failed: 1,
+      stale_timed_out: 1,
+      duplicate_suppressed: 1,
+    });
+    const byId = new Map(outboxCheck?.receiptGapClassifications.map((item) => [item.id, item]));
+    assert.equal(byId.get('terminal-receipt-confirmed')?.bucket, 'receipt_confirmed');
+    assert.equal(byId.get('terminal-receipt-confirmed')?.releaseBlocking, false);
+    assert.equal(byId.get('terminal-provider-sent')?.bucket, 'send_accepted_no_receipt');
+    assert.match(byId.get('terminal-provider-sent')?.action ?? '', /Provider send acceptance is not an ACK/);
+    assert.equal(byId.get('terminal-duplicate')?.bucket, 'duplicate_suppressed');
+    assert.equal(byId.get('terminal-duplicate')?.releaseBlocking, true);
+  });
+
   it('fails stale unacknowledged or provider-send-only terminal outbox rows', () => {
     const { db, file } = createDb();
     db.prepare('INSERT INTO broker_terminal_outbox (id, task_event_id, acknowledged_at, created_at, payload) VALUES (?, ?, ?, ?, ?)')
