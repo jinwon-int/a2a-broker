@@ -87,8 +87,17 @@ function summarizeEvent(event) {
     repo: typeof payload.repo === 'string' ? payload.repo : undefined,
     issue: Number.isInteger(payload.issue) ? payload.issue : undefined,
     taskBrief: typeof payload.taskBrief === 'string' ? payload.taskBrief : undefined,
+    evidenceUrl: firstEvidenceUrl(payload) ?? undefined,
     ackStatus: typeof event?.ack?.status === 'string' ? event.ack.status : 'unacknowledged',
   };
+}
+
+function firstEvidenceUrl(payload) {
+  for (const key of ['prUrl', 'doneUrl', 'blockUrl']) {
+    const value = payload?.[key];
+    if (typeof value === 'string' && value.length > 0) return value;
+  }
+  return null;
 }
 
 function containsUnsafeEvidenceUrl(event) {
@@ -97,6 +106,38 @@ function containsUnsafeEvidenceUrl(event) {
     const value = payload[key];
     return typeof value === 'string' && value.length > 0 && !/^https?:\/\//.test(value);
   });
+}
+
+function isReceiptConfirmed(event) {
+  return event?.ack?.status === 'receipt_confirmed';
+}
+
+function terminalReadiness(body, { reconcile }) {
+  const events = Array.isArray(body?.events) ? body.events : [];
+  const unacked = events.filter((event) => !isReceiptConfirmed(event));
+  const receiptConfirmed = events.filter(isReceiptConfirmed);
+  const staleReceipt = events.filter((event) => event?.receipt?.status === 'stale');
+  const missingEvidence = events.filter((event) => !firstEvidenceUrl(event?.payload));
+  const missingWorker = events.filter((event) => typeof event?.payload?.worker !== 'string' || event.payload.worker.length === 0);
+  const missingTaskBrief = events.filter((event) => typeof event?.payload?.taskBrief !== 'string' || event.payload.taskBrief.length === 0);
+  const unsafeEvidence = events.filter(containsUnsafeEvidenceUrl);
+  const replayCandidates = Number.isInteger(body?.reconciledUnacked) ? body.reconciledUnacked : 0;
+  const blockers = [];
+  if (unsafeEvidence.length > 0) blockers.push(`unsafe/non-HTTP evidence URLs=${unsafeEvidence.length}`);
+  if (missingEvidence.length > 0) blockers.push(`missing PR/Done/Block evidence=${missingEvidence.length}`);
+  if (missingWorker.length > 0) blockers.push(`missing worker=${missingWorker.length}`);
+  if (missingTaskBrief.length > 0) blockers.push(`missing task brief=${missingTaskBrief.length}`);
+  const staleCursorOrReplayCandidates = reconcile ? replayCandidates + staleReceipt.length : staleReceipt.length;
+  return {
+    unackedCount: unacked.length,
+    receiptConfirmedCount: receiptConfirmed.length,
+    staleCursorOrReplayCandidates,
+    missingEvidenceCount: missingEvidence.length,
+    missingWorkerCount: missingWorker.length,
+    missingTaskBriefCount: missingTaskBrief.length,
+    unsafeEvidenceUrlCount: unsafeEvidence.length,
+    blockers,
+  };
 }
 
 function evaluateHealth(body, status) {
@@ -114,17 +155,20 @@ function evaluateOutbox(body, status, { reconcile }) {
   if (status !== 200) return fail(label, `expected HTTP 200, got ${status}`);
   if (body?.kind !== 'task.terminal.outbox') return fail(label, 'unexpected outbox kind');
   if (!Array.isArray(body.events)) return fail(label, 'outbox events must be an array');
+  const readiness = terminalReadiness(body, { reconcile });
   const unsafe = body.events.filter(containsUnsafeEvidenceUrl).map((event) => event.id ?? '<missing-id>');
-  if (unsafe.length > 0) return fail(label, `found non-HTTP evidence URLs in ${unsafe.join(', ')}`);
+  if (unsafe.length > 0) return fail(label, `found non-HTTP evidence URLs in ${unsafe.join(', ')}`, { readiness });
   const missingIds = body.events.filter((event) => typeof event?.id !== 'string' || event.id.length === 0).length;
-  if (missingIds > 0) return fail(label, `${missingIds} event(s) missing stable id`);
+  if (missingIds > 0) return fail(label, `${missingIds} event(s) missing stable id`, { readiness });
+  if (readiness.blockers.length > 0) return fail(label, `terminal readiness blocked: ${readiness.blockers.join('; ')}`, { readiness });
 
   const summaries = body.events.map(summarizeEvent);
   const count = Number.isInteger(body.count) ? body.count : body.events.length;
   const replayNote = reconcile && Number.isInteger(body.reconciledUnacked)
     ? `; reconciledUnacked=${body.reconciledUnacked}`
     : '';
-  return ok(label, `${count} event(s), cursor=${body.cursor ?? 'null'}${replayNote}`, { count, cursor: body.cursor ?? null, events: summaries });
+  const readyNote = `; readiness unacked=${readiness.unackedCount}, receiptConfirmed=${readiness.receiptConfirmedCount}, staleReplay=${readiness.staleCursorOrReplayCandidates}`;
+  return ok(label, `${count} event(s), cursor=${body.cursor ?? 'null'}${replayNote}${readyNote}`, { count, cursor: body.cursor ?? null, events: summaries, readiness });
 }
 
 function sampleNoLiveOutboxBody() {
