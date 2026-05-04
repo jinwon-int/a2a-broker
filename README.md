@@ -34,6 +34,7 @@ map.
 ## Design docs
 
 - `docs/a2a-protocol.md` for the canonical A2A task protocol: envelope shape, lifecycle, cancel semantics, event/state model, and the migration map from the retired legacy library entrypoints
+- `docs/protocol-compatibility.md` for the public A2A compatibility matrix, current supported profile, non-goals, and conformance/golden gate
 - `docs/v1-acceptance-handoff.md` for the v1 acceptance gate, the plugin-facing contract, and the cross-repo handoff bar for `openclaw-plugin-a2a`
 - `docs/trading-partner-refactor-design.md` for the broker evolution plan that supports stateful trading-partner workers such as `bangtong` and `dengae`
 - `docs/phase-1-implementation-checklist.md` for the first implementation slice
