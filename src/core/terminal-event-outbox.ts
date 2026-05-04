@@ -10,13 +10,15 @@ const TERMINAL_TASK_ACK_EVIDENCE = new Set<TerminalTaskOutboxAckEvidence>([
 ]);
 const TERMINAL_TASK_RECEIPT_STATUSES = new Set<TerminalTaskReceiptStatus>([
   "accepted",
-  "sent",
-  "provider_delivered_if_known",
+  "started",
+  "produced",
+  "provider_sent",
   "operator_visible",
   "timed_out",
   "stale",
   "failed",
 ]);
+const LEGACY_TERMINAL_TASK_RECEIPT_STATUSES = new Set(["sent", "provider_delivered_if_known"]);
 const URL_KEYS = ["prUrl", "doneUrl", "blockUrl"] as const;
 const MAX_SUMMARY_CHARS = 500;
 const MAX_ACK_NOTE_CHARS = 240;
@@ -71,8 +73,9 @@ export type TerminalTaskOutboxAckEvidence =
 
 export type TerminalTaskReceiptStatus =
   | "accepted"
-  | "sent"
-  | "provider_delivered_if_known"
+  | "started"
+  | "produced"
+  | "provider_sent"
   | "operator_visible"
   | "timed_out"
   | "stale"
@@ -232,7 +235,7 @@ export class TerminalTaskEventOutbox {
   /** Record provider-side send/timeout/staleness without implying operator visibility. */
   recordReceiptStatus(id: string, receipt: TerminalTaskOutboxReceiptUpdateInput): TerminalTaskOutboxEvent | null {
     if (!receipt || !isTerminalTaskReceiptStatus(receipt.status)) {
-      throw new TypeError("terminal outbox receipt status must be accepted, sent, provider_delivered_if_known, operator_visible, timed_out, stale, or failed");
+      throw new TypeError("terminal outbox receipt status must be accepted, started, produced, provider_sent, operator_visible, timed_out, stale, or failed");
     }
     const event = this.events.find((candidate) => candidate.id === id);
     if (!event) return null;
@@ -272,6 +275,8 @@ export class TerminalTaskEventOutbox {
       restored.receipt = restored.ack
         ? buildReceiptStateFromAck(restored.ack)
         : buildReceiptState("accepted", restored.createdAt);
+    } else {
+      restored.receipt = normalizeReceiptState(restored.receipt);
     }
     this.events.push(restored);
     this.markSeen(event.id);
@@ -331,6 +336,13 @@ export function isTerminalTaskOutboxAckEvidence(value: unknown): value is Termin
 
 export function isTerminalTaskReceiptStatus(value: unknown): value is TerminalTaskReceiptStatus {
   return typeof value === "string" && TERMINAL_TASK_RECEIPT_STATUSES.has(value as TerminalTaskReceiptStatus);
+}
+
+export function normalizeTerminalTaskReceiptStatus(value: unknown): TerminalTaskReceiptStatus | undefined {
+  if (isTerminalTaskReceiptStatus(value)) return value;
+  return typeof value === "string" && LEGACY_TERMINAL_TASK_RECEIPT_STATUSES.has(value)
+    ? "provider_sent"
+    : undefined;
 }
 
 export function formatTerminalTaskEventId(taskId: string, status: TaskStatus, completedAt: string): string {
@@ -406,12 +418,17 @@ function buildAckState(receipt: TerminalTaskOutboxAckInput): TerminalTaskOutboxA
 
 function buildReceiptStateFromAck(ack: TerminalTaskOutboxAckState): TerminalTaskOutboxReceiptState {
   return {
-    status: ack.evidence === "provider_delivery_receipt" ? "provider_delivered_if_known" : "operator_visible",
+    status: ack.evidence === "provider_delivery_receipt" ? "provider_sent" : "operator_visible",
     updatedAt: ack.acknowledgedAt,
     evidence: ack.evidence,
     receiptId: ack.receiptId,
     note: ack.note,
   };
+}
+
+function normalizeReceiptState(receipt: TerminalTaskOutboxReceiptState): TerminalTaskOutboxReceiptState {
+  const status = normalizeTerminalTaskReceiptStatus(receipt.status) ?? "accepted";
+  return { ...receipt, status };
 }
 
 function buildReceiptState(status: TerminalTaskReceiptStatus, updatedAt: string, note?: string): TerminalTaskOutboxReceiptState {

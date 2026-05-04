@@ -97,7 +97,9 @@ import { projectAlerts, type Alert, type AlertScanResult } from "./core/alert-pr
 import { buildOperatorTaskReport } from "./core/operator-task-report.js";
 import {
   isTerminalTaskOutboxAckEvidence,
+  isTerminalTaskReceiptStatus,
   type TerminalTaskOutboxAckInput,
+  type TerminalTaskOutboxReceiptUpdateInput,
 } from "./core/terminal-event-outbox.js";
 
 interface ThreadedExchangeMessage extends A2AExchangeMessageRecord {
@@ -778,6 +780,27 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
           cursor: events.at(-1)?.id ?? afterId ?? null,
           events,
         });
+      }
+
+      if (
+        req.method === "POST" &&
+        path === "/a2a/tasks/terminal-outbox/receipt"
+      ) {
+        if (enforceRequesterIdentity) {
+          assertRequesterHasRole(requesterIdentity, ["hub", "operator"], "task-terminal-outbox.receipt");
+        }
+
+        const body = await readJson<{ id?: unknown; receipt?: unknown }>(req);
+        const id = body?.id;
+        if (typeof id !== "string" || id.length === 0) {
+          throw new BrokerError("bad_request", "terminal outbox receipt update requires a non-empty id");
+        }
+        const receipt = parseTerminalOutboxReceiptUpdate(body?.receipt);
+        const event = broker.getTerminalTaskEventOutbox().recordReceiptStatus(id, receipt);
+        if (!event) {
+          throw new BrokerError("not_found", "terminal outbox event not found");
+        }
+        return sendJson(res, 200, { event });
       }
 
       if (
@@ -2223,6 +2246,24 @@ function parseTerminalOutboxAckReceipt(value: unknown): TerminalTaskOutboxAckInp
     evidence: receipt.evidence,
     acknowledgedAt: typeof receipt.acknowledgedAt === "string" ? receipt.acknowledgedAt : undefined,
     receiptId: typeof receipt.receiptId === "string" ? receipt.receiptId : undefined,
+    note: typeof receipt.note === "string" ? receipt.note : undefined,
+  };
+}
+
+function parseTerminalOutboxReceiptUpdate(value: unknown): TerminalTaskOutboxReceiptUpdateInput {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new BrokerError("bad_request", "terminal outbox receipt update requires a receipt object");
+  }
+  const receipt = value as Record<string, unknown>;
+  if (!isTerminalTaskReceiptStatus(receipt.status)) {
+    throw new BrokerError(
+      "bad_request",
+      "terminal outbox receipt status must be accepted, started, produced, provider_sent, operator_visible, timed_out, stale, or failed",
+    );
+  }
+  return {
+    status: receipt.status,
+    updatedAt: typeof receipt.updatedAt === "string" ? receipt.updatedAt : undefined,
     note: typeof receipt.note === "string" ? receipt.note : undefined,
   };
 }

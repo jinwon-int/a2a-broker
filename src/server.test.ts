@@ -3428,6 +3428,24 @@ test("GET/POST /a2a/tasks/terminal-outbox replays and acknowledges compact recor
       assert.equal(sendSuccessAckRes.status, 400, evidence);
     }
 
+    const providerSentAt = "2026-05-01T23:59:00.000Z";
+    const providerSentRes = await fetch(`${server.baseUrl}/a2a/tasks/terminal-outbox/receipt`, {
+      method: "POST",
+      headers: hubHeaders,
+      body: JSON.stringify({
+        id: event.id,
+        receipt: { status: "provider_sent", updatedAt: providerSentAt, note: "provider accepted message-id=abc" },
+      }),
+    });
+    assert.equal(providerSentRes.status, 200);
+    const providerSent = await providerSentRes.json();
+    assert.equal(providerSent.event.ack, undefined);
+    assert.deepEqual(providerSent.event.receipt, {
+      status: "provider_sent",
+      updatedAt: providerSentAt,
+      note: "provider accepted message-id=abc",
+    });
+
     const acknowledgedAt = "2026-05-02T00:00:00.000Z";
     const ackRes = await fetch(`${server.baseUrl}/a2a/tasks/terminal-outbox/ack`, {
       method: "POST",
@@ -3447,6 +3465,12 @@ test("GET/POST /a2a/tasks/terminal-outbox replays and acknowledges compact recor
       status: "receipt_confirmed",
       evidence: "operator_visible",
       acknowledgedAt,
+      receiptId: "operator-message-246",
+    });
+    assert.deepEqual(ack.event.receipt, {
+      status: "operator_visible",
+      updatedAt: acknowledgedAt,
+      evidence: "operator_visible",
       receiptId: "operator-message-246",
     });
     assert.equal(ack.event.deliveredAt, undefined);

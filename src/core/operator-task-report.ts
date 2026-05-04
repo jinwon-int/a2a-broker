@@ -1,5 +1,5 @@
 import type { TaskRecord, TaskStatus } from "./types.js";
-import { isTerminalTaskReceiptStatus, type TerminalTaskReceiptStatus } from "./terminal-event-outbox.js";
+import { normalizeTerminalTaskReceiptStatus, type TerminalTaskReceiptStatus } from "./terminal-event-outbox.js";
 
 export type OperatorTaskReportStage = "queued" | "claimed" | "running" | "terminal";
 export type OperatorTaskReportKind = "progress" | "stale" | "result";
@@ -155,7 +155,7 @@ function buildReportLine(
     const evidence = context.github?.prUrl ?? context.github?.doneCommentUrl ?? context.github?.blockCommentUrl;
     if (task.status === "succeeded") {
       const receiptGap = context.receiptStatus && context.receiptStatus !== "operator_visible"
-        ? ` — receipt: ${context.receiptStatus}`
+        ? ` — receipt gap: ${context.receiptStatus}`
         : "";
       const suffix = evidence ? ` — ${evidence}` : context.resultSummary ? ` — ${context.resultSummary}` : "";
       return `완료: ${subject}${evidenceLabel}${receiptGap}${suffix}`;
@@ -197,8 +197,7 @@ function extractReceiptStatus(task: TaskRecord, final: boolean): TerminalTaskRec
   const output = asRecord(task.result?.output);
   const nested = asRecord(output?.receipt);
   const candidate = output?.receiptStatus ?? nested?.status;
-  if (isTerminalTaskReceiptStatus(candidate)) return candidate;
-  return "accepted";
+  return normalizeTerminalTaskReceiptStatus(candidate) ?? "accepted";
 }
 
 function extractGithubEvidence(task: TaskRecord): OperatorTaskReportItem["github"] | undefined {

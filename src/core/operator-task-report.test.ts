@@ -83,7 +83,7 @@ test("operator task report exposes terminal receipt gap as first-class status", 
   const item = report.items[0];
   assert.equal(item.status, "succeeded");
   assert.equal(item.receiptStatus, "accepted");
-  assert.match(item.reportLine, /receipt: accepted/);
+  assert.match(item.reportLine, /receipt gap: accepted/);
 });
 
 test("operator task report distinguishes receipt confirmed and failed or stale receipt states", () => {
@@ -124,9 +124,9 @@ test("operator task report distinguishes receipt confirmed and failed or stale r
   assert.equal(byId.get("receipt-timedout-1")?.receiptStatus, "timed_out");
   assert.equal(byId.get("receipt-stale-1")?.receiptStatus, "stale");
   assert.doesNotMatch(byId.get("receipt-visible-1")!.reportLine, /receipt:/);
-  assert.match(byId.get("receipt-failed-1")!.reportLine, /receipt: failed/);
-  assert.match(byId.get("receipt-timedout-1")!.reportLine, /receipt: timed_out/);
-  assert.match(byId.get("receipt-stale-1")!.reportLine, /receipt: stale/);
+  assert.match(byId.get("receipt-failed-1")!.reportLine, /receipt gap: failed/);
+  assert.match(byId.get("receipt-timedout-1")!.reportLine, /receipt gap: timed_out/);
+  assert.match(byId.get("receipt-stale-1")!.reportLine, /receipt gap: stale/);
 });
 
 test("extracts enriched docker-runner evidence from result output", () => {

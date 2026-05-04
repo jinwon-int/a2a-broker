@@ -508,7 +508,7 @@ describe("TerminalTaskEventOutbox", () => {
       note: "operator saw message at [path] token=[redacted]",
     });
     assert.deepEqual(acked.receipt, {
-      status: "provider_delivered_if_known",
+      status: "provider_sent",
       updatedAt: acknowledgedAt,
       evidence: "provider_delivery_receipt",
       receiptId: "receipt-123",
@@ -536,6 +536,19 @@ describe("TerminalTaskEventOutbox", () => {
     const outbox = broker.getTerminalTaskEventOutbox();
     const [event] = outbox.subscribe();
     assert.ok(event);
+
+    const providerSent = outbox.recordReceiptStatus(event.id, {
+      status: "provider_sent",
+      updatedAt: "2026-05-02T01:55:00.000Z",
+      note: "provider accepted outbound send id=telegram:123",
+    });
+    assert.ok(providerSent);
+    assert.equal(providerSent.ack, undefined);
+    assert.deepEqual(providerSent.receipt, {
+      status: "provider_sent",
+      updatedAt: "2026-05-02T01:55:00.000Z",
+      note: "provider accepted outbound send id=telegram:123",
+    });
 
     const failed = outbox.recordReceiptStatus(event.id, {
       status: "failed",
