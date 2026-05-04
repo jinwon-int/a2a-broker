@@ -19,14 +19,27 @@ Run from the broker checkout.
    npm test -- --test-name-pattern "operator terminal push envelopes|terminal-outbox"
    ```
 
-2. Run the standard release gate in CI-safe mode:
+2. For release dry-runs where no live broker may be contacted, produce the
+   deterministic no-live terminal payload proof:
+
+   ```sh
+   npm run terminal_outbox_preflight -- --no-live --json
+   ```
+
+   Pass evidence must include `mode: "no-live"`, `providerCalled: false`,
+   `productionAckAttempted: false`, `brokerHttpRequested: false`, and a
+   `terminal payload dry-run` preview. This mode is synthetic and must not
+   contact a broker, deploy, restart Gateway, send Telegram, mutate a DB, or ACK
+   a terminal-outbox record.
+
+3. Run the standard release gate in CI-safe mode:
 
    ```sh
    npm run docker_runtime_preflight -- --dry-run
    npm run release_gate
    ```
 
-3. Before any smoke that could hand off to a notifier, run the read-only broker
+4. Before any smoke that could hand off to a notifier, run the read-only broker
    preflight against the candidate broker. This checks `/health`, polls the
    terminal outbox, and replays with `reconcile_unacked=true` without calling
    the ACK endpoint or any Telegram transport:
@@ -42,13 +55,13 @@ Run from the broker checkout.
    acceptable for a no-op preflight; any non-HTTP evidence URL, missing stable
    outbox id, auth failure, or failed replay is a Block.
 
-4. If validating the Round 3 worker cohort against a disposable or approved broker, require only the active workers:
+5. If validating the Round 3 worker cohort against a disposable or approved broker, require only the active workers:
 
    ```sh
    npm run smoke:docker-broker:fleet -- --require-workers bangtong,dungae,sogyo,nosuk
    ```
 
-4. Capture pass evidence in the PR/Done comment: commands, exit codes, and the sanitized release-gate summary. Do not paste secrets, raw logs, private paths, or session transcripts.
+6. Capture pass evidence in the PR/Done comment: commands, exit codes, and the sanitized release-gate summary. Do not paste secrets, raw logs, private paths, or session transcripts.
 
 ## Telegram-safe dry-run notification
 

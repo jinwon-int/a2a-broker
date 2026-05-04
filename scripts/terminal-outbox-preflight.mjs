@@ -35,6 +35,7 @@ function parseArgs(argv) {
     afterId: readOption('--after-id') ?? process.env.TERMINAL_OUTBOX_AFTER_ID,
     limit: Number.isInteger(limit) && limit > 0 ? limit : DEFAULT_LIMIT,
     json: argv.includes('--json'),
+    noLive: argv.includes('--no-live') || argv.includes('--dry-run'),
   };
 }
 
@@ -126,7 +127,77 @@ function evaluateOutbox(body, status, { reconcile }) {
   return ok(label, `${count} event(s), cursor=${body.cursor ?? 'null'}${replayNote}`, { count, cursor: body.cursor ?? null, events: summaries });
 }
 
+function sampleNoLiveOutboxBody() {
+  return {
+    kind: 'task.terminal.outbox',
+    count: 1,
+    cursor: 'terminal:no-live-task:succeeded:2026-05-04T00%3A00%3A00.000Z',
+    events: [{
+      id: 'terminal:no-live-task:succeeded:2026-05-04T00%3A00%3A00.000Z',
+      kind: 'task.terminal',
+      taskEventId: 1,
+      createdAt: '2026-05-04T00:00:00.000Z',
+      attempts: 0,
+      receipt: { status: 'accepted', updatedAt: '2026-05-04T00:00:00.000Z' },
+      payload: {
+        taskId: 'no-live-task',
+        status: 'succeeded',
+        run: 'release-dryrun',
+        worker: 'sogyo',
+        repo: 'jinwon-int/a2a-broker',
+        issue: 318,
+        taskBrief: 'broker terminal payload no-live proof',
+        doneUrl: 'https://github.com/jinwon-int/a2a-broker/issues/318#issuecomment-example',
+        testSummary: 'synthetic broker payload; no provider call; no terminal ACK',
+        createdAt: '2026-05-04T00:00:00.000Z',
+        updatedAt: '2026-05-04T00:00:00.000Z',
+        completedAt: '2026-05-04T00:00:00.000Z',
+      },
+    }],
+  };
+}
+
+export function runNoLiveProof(options = {}) {
+  const body = options.body ?? sampleNoLiveOutboxBody();
+  const poll = evaluateOutbox(body, 200, { reconcile: false });
+  const replay = evaluateOutbox({ ...body, reconciledUnacked: body.events?.length ?? 0 }, 200, { reconcile: true });
+  const terminalPreviews = Array.isArray(body.events)
+    ? body.events.map((event) => ({
+        dryRun: true,
+        wouldSendTo: 'operator-terminal-notifier',
+        cursor: event.id,
+        status: event.payload?.status,
+        worker: event.payload?.worker,
+        repo: event.payload?.repo,
+        issue: event.payload?.issue,
+        prUrl: event.payload?.prUrl,
+        doneUrl: event.payload?.doneUrl,
+        blockUrl: event.payload?.blockUrl,
+        testSummary: event.payload?.testSummary,
+      }))
+    : [];
+  const checks = [
+    ok('run mode', 'no-live proof; no broker HTTP request, deploy, Gateway restart, Telegram send, DB mutation, or terminal ACK attempted'),
+    poll,
+    replay,
+    ok('terminal payload dry-run', `${terminalPreviews.length} notifier preview(s); providerCalled=false; productionAckAttempted=false`, { terminalPreviews }),
+    ok('ack safety', 'read-only synthetic proof only; no terminal-outbox ACK or notifier send attempted'),
+  ];
+  return {
+    kind: 'terminal-outbox.no-live-proof',
+    mode: 'no-live',
+    providerCalled: false,
+    productionAckAttempted: false,
+    brokerHttpRequested: false,
+    limit: options.limit ?? DEFAULT_LIMIT,
+    checks,
+    ok: checks.every((check) => check.ok),
+  };
+}
+
 export async function runPreflight(options = {}) {
+  if (options.noLive) return runNoLiveProof(options);
+
   const fetchImpl = options.fetchImpl ?? globalThis.fetch;
   if (typeof fetchImpl !== 'function') throw new Error('fetch is not available in this Node runtime');
 
