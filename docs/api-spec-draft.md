@@ -742,7 +742,9 @@ Response:
 
 ## A2A surface
 
-The broker exposes an A2A-compatible surface alongside the legacy REST routes.
+The broker exposes an A2A-compatible surface alongside the legacy REST routes. See
+`docs/protocol-compatibility.md` for the supported A2A profile, compatibility
+matrix, and current non-goals.
 
 ### `GET /.well-known/agent-card.json`
 

@@ -24,7 +24,8 @@ without a schema bump:
 - `GET /.well-known/agent-card.json` — A2A discovery, public.
 - `POST /a2a/jsonrpc` — JSON-RPC facade with
   `SendMessage`, `GetTask`, `ListTasks`, `CancelTask`,
-  `GetExtendedAgentCard`.
+  `SubscribeToTask`, `GetExtendedAgentCard`. The public compatibility
+  profile and non-goals are fixed in `docs/protocol-compatibility.md`.
 - `POST /workers/register`, `POST /workers/:id/heartbeat`,
   `GET /workers/:id`.
 - `POST /tasks`, `GET /tasks`, `GET /tasks/:id`,
@@ -166,9 +167,15 @@ and a plugin-side release note.
 
 ## 6. Blockers before split production-ready
 
-The broker can be cut as a standalone release today. Before the plugin
-is cut on its own release cadence, these items should be landed or
-explicitly accepted as deferred:
+The broker can be cut as a standalone release today only while it is described
+as the A2A 1.0-compatible broker alpha profile in
+`docs/protocol-compatibility.md`. Before public/open-source readiness, keep the
+compatibility matrix and `src/a2a/protocol-compatibility.test.ts` conformance
+gate green so clients can distinguish supported A2A behavior from broker-specific
+extensions.
+
+Before the plugin is cut on its own release cadence, these items should be
+landed or explicitly accepted as deferred:
 
 1. Durable persistence. The JSON file store is sufficient for phase 1
    and survives restarts, but it is still not a multi-writer store.
@@ -192,6 +199,8 @@ externally operated broker.
 
 - `docs/api-spec-draft.md` — route-by-route contract, requester
   match rules, and request examples.
+- `docs/protocol-compatibility.md` — A2A compatibility matrix,
+  current supported profile, non-goals, and conformance/golden gate.
 - `docs/smoke-compose.md` plus `examples/docker-compose.smoke.yml`
   — runnable broker + built-in echo worker smoke path.
 - `docs/docker-compose-trading-partners.md` plus
