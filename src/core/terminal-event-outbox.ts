@@ -20,7 +20,9 @@ const TERMINAL_TASK_RECEIPT_STATUSES = new Set<TerminalTaskReceiptStatus>([
 ]);
 const LEGACY_TERMINAL_TASK_RECEIPT_STATUSES = new Set(["sent", "provider_delivered_if_known"]);
 const URL_KEYS = ["prUrl", "doneUrl", "blockUrl"] as const;
+const TASK_BRIEF_KEYS = ["githubIssueTitle", "taskTitle", "title", "taskBrief"] as const;
 const MAX_SUMMARY_CHARS = 500;
+const MAX_TASK_BRIEF_CHARS = 160;
 const MAX_ACK_NOTE_CHARS = 240;
 
 export const DEFAULT_TERMINAL_TASK_OUTBOX_RETENTION = 1000;
@@ -40,6 +42,8 @@ export interface TerminalTaskEventPayload {
   worker?: string;
   repo?: string;
   issue?: number;
+  /** Short operator-safe task description for terminal notices. */
+  taskBrief?: string;
   prUrl?: string;
   doneUrl?: string;
   blockUrl?: string;
@@ -386,6 +390,8 @@ function buildTerminalTaskPayload(task: TaskRecord): TerminalTaskEventPayload {
   if (typeof repo === "string" && repo.length > 0) payload.repo = repo;
   const issue = task.payload["githubIssueNumber"];
   if (typeof issue === "number" && Number.isFinite(issue)) payload.issue = issue;
+  const taskBrief = buildTaskBrief(task, output);
+  if (taskBrief) payload.taskBrief = taskBrief;
   for (const key of URL_KEYS) {
     const value = firstSafeHttpUrl(output[key], task.payload[key]);
     if (value) payload[key] = value;
@@ -395,6 +401,30 @@ function buildTerminalTaskPayload(task: TaskRecord): TerminalTaskEventPayload {
   if (safeSummary) payload.testSummary = safeSummary;
   if (task.completedAt) payload.completedAt = task.completedAt;
   return payload;
+}
+
+function buildTaskBrief(task: TaskRecord, output: Record<string, unknown>): string | undefined {
+  const candidates: unknown[] = [];
+  for (const key of TASK_BRIEF_KEYS) candidates.push(task.payload[key], output[key]);
+  for (const candidate of candidates) {
+    const brief = sanitizeTaskBrief(candidate);
+     if (brief) return brief;
+  }
+  return sanitizeTaskMessageBrief(task.message);
+}
+
+function sanitizeTaskMessageBrief(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  if (!/^[-\w.]+\/[-\w.]+#\d+\s*:\s*/.test(value)) return undefined;
+  return sanitizeTaskBrief(value);
+}
+
+function sanitizeTaskBrief(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const withoutIssuePrefix = value.replace(/^[-\w.]+\/[-\w.]+#\d+\s*:\s*/, "");
+  const sanitized = sanitizeSummary(withoutIssuePrefix);
+  if (!sanitized) return undefined;
+  return sanitized.slice(0, MAX_TASK_BRIEF_CHARS);
 }
 
 function firstSafeHttpUrl(...values: unknown[]): string | undefined {

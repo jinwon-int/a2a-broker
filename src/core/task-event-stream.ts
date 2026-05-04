@@ -58,6 +58,8 @@ const NOTIFIABLE_TERMINAL_STATUSES = new Set<TerminalTaskEventStatus>([
   "canceled",
   "blocked",
 ]);
+const TASK_BRIEF_KEYS = ["githubIssueTitle", "taskTitle", "title", "taskBrief"] as const;
+const MAX_TASK_BRIEF_CHARS = 160;
 
 export type TerminalTaskEventListener = (event: TerminalTaskEvent) => void;
 
@@ -220,6 +222,9 @@ export class TaskEventStream {
     const issue = firstFiniteNumber(task.payload?.["githubIssueNumber"], task.payload?.["issue"], output["issue"]);
     if (issue !== undefined) event.issue = issue;
 
+    const taskBrief = buildTaskBrief(task, output);
+    if (taskBrief) event.taskBrief = taskBrief;
+
     const prUrl = firstHttpUrl(output["prUrl"], output["pullRequestUrl"], task.payload?.["prUrl"]);
     if (prUrl) event.prUrl = prUrl;
     const doneUrl = firstHttpUrl(output["doneUrl"], task.payload?.["doneUrl"]);
@@ -231,6 +236,26 @@ export class TaskEventStream {
     if (testSummary) event.testSummary = testSummary;
     return event;
   }
+}
+
+function buildTaskBrief(task: TaskRecord, output: Record<string, unknown>): string | undefined {
+  const candidates: unknown[] = [];
+  for (const key of TASK_BRIEF_KEYS) candidates.push(task.payload?.[key], output[key]);
+  for (const candidate of candidates) {
+    const brief = sanitizeTaskBrief(candidate);
+    if (brief) return brief;
+  }
+  if (typeof task.message === "string" && /^[-\w.]+\/[-\w.]+#\d+\s*:\s*/.test(task.message)) {
+    return sanitizeTaskBrief(task.message);
+  }
+  return undefined;
+}
+
+function sanitizeTaskBrief(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const withoutIssuePrefix = value.replace(/^[-\w.]+\/[-\w.]+#\d+\s*:\s*/, "");
+  const brief = sanitizeOperatorText(withoutIssuePrefix).slice(0, MAX_TASK_BRIEF_CHARS);
+  return brief || undefined;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
