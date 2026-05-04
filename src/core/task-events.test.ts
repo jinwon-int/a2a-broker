@@ -259,7 +259,13 @@ describe("TerminalTaskEventOutbox", () => {
     const broker = new InMemoryA2ABroker();
     registerWorker(broker);
     const task = createTask(broker, {
-      payload: { githubRepo: "jinwon-int/a2a-broker", githubIssueNumber: 218 },
+      payload: {
+        githubRepo: "jinwon-int/a2a-broker",
+        githubIssueNumber: 218,
+        run: "a2a-terminal-push-1",
+        traceId: "trace-terminal-1",
+        taskDescription: "Fix terminal closeout from /work/private token=ghp_secretvalue",
+      },
     });
 
     broker.claimTask(task.id, "worker-1");
@@ -285,6 +291,9 @@ describe("TerminalTaskEventOutbox", () => {
     assert.equal(event.payload.taskId, task.id);
     assert.equal(event.payload.status, "succeeded");
     assert.equal(event.payload.worker, "worker-1");
+    assert.equal(event.payload.run, "a2a-terminal-push-1");
+    assert.equal(event.payload.traceId, "trace-terminal-1");
+    assert.equal(event.payload.taskDescription, "Fix terminal closeout from [path] token=[redacted]");
     assert.equal(event.payload.repo, "jinwon-int/a2a-broker");
     assert.equal(event.payload.issue, 218);
     assert.equal(event.payload.prUrl, "https://github.com/jinwon-int/a2a-broker/pull/999");

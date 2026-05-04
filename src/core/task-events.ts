@@ -79,6 +79,9 @@ export interface TerminalTaskEvent {
   id: number;
   taskId: string;
   status: TerminalTaskEventStatus;
+  run?: string;
+  traceId?: string;
+  taskDescription?: string;
   worker?: string;
   repo?: string;
   issue?: number;
