@@ -16,6 +16,9 @@ npm run docker_runtime_preflight
 # Run the default gate (compose smoke; recovery is marked non-blocking unless BROKER_URL is set)
 npm run release_gate
 
+# Render the consolidated read-only closeout report from sanitized evidence
+npm run closeout_release_report -- --input closeout-evidence.json --markdown
+
 # Run only compose smoke
 node scripts/release-gate.mjs --skip-recovery
 
@@ -31,6 +34,33 @@ BROKER_PERSISTENCE_BACKEND=sqlite npm run release_gate -- --skip-recovery
 ```
 
 ## What the Gate Covers
+
+### Consolidated Read-only Closeout Report
+
+`npm run closeout_release_report -- --input closeout-evidence.json --markdown`
+renders the operator-facing closeout for #342/#294 from a sanitized evidence
+bundle. The renderer is intentionally read-only: it does not query production by
+itself, deploy, restart Gateway, send Telegram, mutate SQLite, or ACK terminal
+outbox rows. It fails closed instead of producing a false Done when any required
+proof is missing.
+
+The evidence bundle should contain:
+
+1. edge-secret presence proof as a boolean only (`edgeSecret.present: true`),
+   never the secret value
+2. health revision evidence (`ok/status` plus `build`, `revision`, or `version`)
+3. worker capacity matrix with all expected workers online:
+   `bangtong,dungae,sogyo,nosuk,yukson`
+4. queue/stale closeout counts: `queued=0`, `claimed=0`, `running=0`, `stale=0`
+5. migration health gate output (`npm run migration_health_gate -- --json`)
+6. live-readiness canary output (`npm run live_readiness_canary -- --no-live --json`
+   for this release-dryrun lane, or read-only GET output when approved)
+7. canonical PR/Done/Block terminal evidence using HTTPS URLs only
+8. receipt no-live matrix output (`npm run receipt_gate_canary -- --json`)
+
+Focused fail-closed coverage lives in `scripts/closeout-release-report.test.mjs`
+and proves missing edge-secret proof, non-zero queue/stale counts, and receipt
+evidence gaps all render Block evidence.
 
 ### Docker Runtime Preflight
 
