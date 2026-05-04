@@ -1,12 +1,50 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { runPreflight } from './terminal-outbox-preflight.mjs';
+import { runNoLiveProof, runPreflight } from './terminal-outbox-preflight.mjs';
 
 function jsonResponse(body, status = 200) {
   return new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
 }
 
 describe('terminal outbox preflight', () => {
+  it('produces no-live terminal payload proof without broker calls or ACK attempts', async () => {
+    let called = false;
+    const fetchImpl = async () => {
+      called = true;
+      throw new Error('no-live proof must not call fetch');
+    };
+
+    const report = await runPreflight({ noLive: true, fetchImpl });
+
+    assert.equal(report.ok, true);
+    assert.equal(report.mode, 'no-live');
+    assert.equal(report.providerCalled, false);
+    assert.equal(report.productionAckAttempted, false);
+    assert.equal(report.brokerHttpRequested, false);
+    assert.equal(called, false);
+    assert.match(report.checks[0].detail, /no broker HTTP request/);
+    const dryRun = report.checks.find((check) => check.check === 'terminal payload dry-run');
+    assert.ok(dryRun);
+    assert.equal(dryRun.terminalPreviews[0].dryRun, true);
+    assert.equal(dryRun.terminalPreviews[0].repo, 'jinwon-int/a2a-broker');
+    assert.equal(dryRun.terminalPreviews[0].issue, 318);
+    assert.doesNotMatch(JSON.stringify(report), /token|secret|chat_id|\/work\/repo/);
+  });
+
+  it('fails no-live proof when synthetic payload includes non-HTTP evidence URL', () => {
+    const report = runNoLiveProof({
+      body: {
+        kind: 'task.terminal.outbox',
+        count: 1,
+        cursor: 'terminal-unsafe',
+        events: [{ id: 'terminal-unsafe', payload: { status: 'blocked', blockUrl: 'file:///work/repo/private.log' } }],
+      },
+    });
+
+    assert.equal(report.ok, false);
+    assert.match(report.checks.find((check) => check.check === 'terminal-outbox poll')?.detail ?? '', /non-HTTP evidence URLs/);
+  });
+
   it('polls health and replay state without acknowledging outbox records', async () => {
     const calls = [];
     const fetchImpl = async (url, init) => {
