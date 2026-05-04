@@ -51,6 +51,82 @@ function createWorkerTask(broker: InMemoryA2ABroker, id: string, workerId: strin
   });
 }
 
+function createGithubPatchTask(broker: InMemoryA2ABroker, id: string, workerId: string) {
+  return broker.createTask({
+    id,
+    intent: "propose_patch",
+    requester: { id: "github", kind: "service", role: "hub" },
+    target: { id: workerId, kind: "node", role: "analyst" },
+    assignedWorkerId: workerId,
+    message: `github task ${id}`,
+    payload: {
+      mode: "github-propose-patch",
+      githubRepo: "jinwon-int/a2a-broker",
+      githubIssueNumber: 310,
+    },
+    taskOrigin: "github",
+  });
+}
+
+test("broker fail-closes GitHub patch completion when evidence is missing", () => {
+  const broker = new InMemoryA2ABroker();
+  registerWorker(broker, "worker-github-evidence");
+  const task = createGithubPatchTask(broker, "task-github-evidence-missing", "worker-github-evidence");
+  broker.claimTask(task.id, "worker-github-evidence");
+  broker.startTask(task.id, "worker-github-evidence");
+
+  assert.throws(
+    () => broker.completeTask(task.id, "worker-github-evidence", { summary: "done without public evidence" }),
+    {
+      name: "BrokerError",
+      code: "github_completion_evidence_missing",
+    },
+  );
+
+  assert.equal(broker.getTask(task.id)?.status, "running");
+});
+
+test("broker rejects provider send success as GitHub task receipt evidence", () => {
+  const broker = new InMemoryA2ABroker();
+  registerWorker(broker, "worker-github-receipt");
+  const task = createGithubPatchTask(broker, "task-github-receipt-invalid", "worker-github-receipt");
+  broker.claimTask(task.id, "worker-github-receipt");
+
+  assert.throws(
+    () => broker.completeTask(task.id, "worker-github-receipt", {
+      summary: "PR opened",
+      output: {
+        github: { prUrl: "https://github.com/jinwon-int/a2a-broker/pull/311" },
+        receipt: { status: "operator_visible", evidence: "provider_send_success" },
+      },
+    }),
+    {
+      name: "BrokerError",
+      code: "github_completion_receipt_invalid",
+    },
+  );
+
+  assert.equal(broker.getTask(task.id)?.status, "claimed");
+});
+
+test("broker keeps sent receipt state distinct from operator-visible GitHub evidence", () => {
+  const broker = new InMemoryA2ABroker();
+  registerWorker(broker, "worker-github-sent");
+  const task = createGithubPatchTask(broker, "task-github-sent", "worker-github-sent");
+  broker.claimTask(task.id, "worker-github-sent");
+
+  const completed = broker.completeTask(task.id, "worker-github-sent", {
+    summary: "Done evidence posted",
+    output: {
+      github: { doneCommentUrl: "https://github.com/jinwon-int/a2a-broker/issues/310#issuecomment-1" },
+      receipt: { status: "sent" },
+    },
+  });
+
+  assert.equal(completed.status, "succeeded");
+  assert.deepEqual(completed.result?.output?.receipt, { status: "sent" });
+});
+
 test("broker returns compact worker capacity counts for queued claimed and running tasks", () => {
   const broker = new InMemoryA2ABroker();
   registerWorker(broker, "worker-capacity");

@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { setTimeout as delay } from "node:timers/promises";
 
+import { validateGithubTaskCompletionEvidence } from "./core/github-task-completion.js";
 import type {
   A2APartyKind,
   A2APartyRole,
@@ -407,66 +408,7 @@ export class A2ABrokerWorker {
 }
 
 export function validateTaskCompletionEvidence(task: TaskRecord, result?: TaskResult): TaskError | null {
-  if (!requiresGithubCompletionEvidence(task)) {
-    return null;
-  }
-
-  if (hasGithubCompletionEvidence(result)) {
-    return null;
-  }
-
-  return {
-    code: "github_completion_evidence_missing",
-    message:
-      "github-origin propose_patch tasks must return PR, Done-comment, or Block-comment evidence before they can succeed",
-    details: {
-      taskId: task.id,
-      taskOrigin: task.taskOrigin,
-      mode: typeof task.payload?.mode === "string" ? task.payload.mode : undefined,
-      requiredEvidence: [
-        "result.output.github.prUrl",
-        "result.output.github.doneCommentUrl",
-        "result.output.github.blockCommentUrl",
-        "result.output.prUrl",
-        "result.output.doneCommentUrl",
-        "result.output.blockCommentUrl",
-      ],
-    },
-  };
-}
-
-function requiresGithubCompletionEvidence(task: TaskRecord): boolean {
-  const mode = typeof task.payload?.mode === "string" ? task.payload.mode : undefined;
-  return task.intent === "propose_patch" && (task.taskOrigin === "github" || isGithubTaskMode(mode));
-}
-
-function isGithubTaskMode(mode: string | undefined): boolean {
-  return mode === "github-propose-patch" || mode === "github-issue-instruction";
-}
-
-function hasGithubCompletionEvidence(result?: TaskResult): boolean {
-  const output = result?.output;
-  if (!output || typeof output !== "object" || Array.isArray(output)) {
-    return false;
-  }
-
-  const github = output.github;
-  if (github && typeof github === "object" && !Array.isArray(github)) {
-    const record = github as Record<string, unknown>;
-    if (isHttpUrl(record.prUrl) || isHttpUrl(record.doneCommentUrl) || isHttpUrl(record.blockCommentUrl)) {
-      return true;
-    }
-  }
-
-  return (
-    isHttpUrl(output.prUrl) ||
-    isHttpUrl(output.doneCommentUrl) ||
-    isHttpUrl(output.blockCommentUrl)
-  );
-}
-
-function isHttpUrl(value: unknown): value is string {
-  return typeof value === "string" && /^https?:\/\//.test(value);
+  return validateGithubTaskCompletionEvidence(task, result);
 }
 
 export function createBuiltinWorkerHandler(kind: BuiltinWorkerHandlerKind): WorkerTaskHandler {
