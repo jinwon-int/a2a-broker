@@ -121,7 +121,7 @@ describe('broker migration health gate', () => {
     const report = runMigrationHealthGate({ dbFile: file, nowMs: Date.parse('2026-05-03T00:05:00.000Z') });
 
     assert.equal(report.ok, true);
-    assert.equal(report.checks.length, 5);
+    assert.equal(report.checks.length, 6);
     assert.match(report.checks.find((check) => check.check === 'worker hot-table quarantine')?.detail ?? '', /normalized capabilities/);
   });
 
@@ -279,8 +279,40 @@ describe('broker migration health gate legacy residue cutoff', () => {
 
     assert.equal(cutoffReport.ok, true);
     assert.equal(cutoffOutboxCheck?.ok, true);
+    const policyCheck = cutoffReport.checks.find((check) => check.check === 'legacy residue lifecycle policy');
+
     assert.equal(cutoffOutboxCheck?.legacyResidue.length, 1);
     assert.equal(cutoffOutboxCheck?.legacyResidue[0].canonicalEvidence, true);
+    assert.equal(policyCheck?.ok, true);
+    assert.equal(policyCheck?.totalLegacyResidue, 1);
+    assert.match(policyCheck?.policy.lifecycle ?? '', /post-cutoff rows remain blocking|Rows at or after the cutoff are current regressions/);
+    assert.equal(cutoffReport.required.legacyResidueExpires, '2026-05-10T00:10:00.000Z');
+  });
+
+  it('expires legacy residue quarantine instead of allowing an unbounded cutoff', () => {
+    const { db, file } = createDb();
+    db.prepare('INSERT INTO broker_terminal_outbox (id, task_event_id, acknowledged_at, created_at, payload) VALUES (?, ?, ?, ?, ?)')
+      .run('terminal-legacy', 1, null, '2026-05-03T00:00:00.000Z', terminalPayload({
+        id: 'terminal-legacy',
+        receipt: { status: 'accepted', updatedAt: '2026-05-03T00:00:00.000Z' },
+      }));
+    db.close();
+
+    const report = runMigrationHealthGate({
+      dbFile: file,
+      nowMs: Date.parse('2026-05-03T00:31:00.000Z'),
+      maxUnackedAgeMs: 5 * 60 * 1000,
+      legacyResidueCutoffMs: Date.parse('2026-05-03T00:10:00.000Z'),
+      legacyResidueCutoff: '2026-05-03T00:10:00.000Z',
+      legacyResidueExpiresMs: Date.parse('2026-05-03T00:30:00.000Z'),
+      legacyResidueExpires: '2026-05-03T00:30:00.000Z',
+    });
+    const expiredPolicyCheck = report.checks.find((check) => check.check === 'legacy residue lifecycle policy');
+
+    assert.equal(report.ok, false);
+    assert.equal(expiredPolicyCheck?.ok, false);
+    assert.equal(expiredPolicyCheck?.reason, 'legacy_residue_policy_expired');
+    assert.equal(expiredPolicyCheck?.totalLegacyResidue, 1);
   });
 
   it('quarantines pre-cutoff terminal task tombstone gaps without hiding current gaps', () => {

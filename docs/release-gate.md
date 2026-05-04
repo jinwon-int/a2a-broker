@@ -62,6 +62,31 @@ Focused fail-closed coverage lives in `scripts/closeout-release-report.test.mjs`
 and proves missing edge-secret proof, non-zero queue/stale counts, and receipt
 evidence gaps all render Block evidence.
 
+#### Current-vs-legacy residue lifecycle
+
+For the May 2026 stabilization gate, run the read-only migration gate with:
+
+```bash
+npm run migration_health_gate -- \
+  --db <sqlite-state-file> \
+  --legacy-residue-cutoff 2026-05-04T07:10:00.000Z \
+  --json
+```
+
+The cutoff is a bounded quarantine, not a greenwash:
+
+- rows **before** `2026-05-04T07:10:00.000Z` are reported as legacy residue and
+  never converted into ACK/tombstone proof by the gate
+- rows **at or after** the cutoff are current regressions and block release
+- terminal-outbox legacy residue remains unacknowledged unless independent
+  operator-visible/provider-delivery evidence is later recorded through the
+  normal ACK path
+- the default quarantine expires seven days after the cutoff
+  (`2026-05-11T07:10:00.000Z` for this policy); after expiry, remaining legacy
+  residue makes the migration gate fail until cleaned up or the cutoff is removed
+- operators may set `--legacy-residue-expires <iso>` only to shorten or explicitly
+  document the bounded exception window
+
 ### Docker Runtime Preflight
 
 `npm run docker_runtime_preflight -- --dry-run` validates the repo-local Compose file before a release. It fails if the production service no longer defines:
