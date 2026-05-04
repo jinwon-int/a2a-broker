@@ -207,3 +207,100 @@ describe('broker migration health gate', () => {
     ]);
   });
 });
+
+describe('broker migration health gate legacy residue cutoff', () => {
+  it('quarantines pre-cutoff accepted-only terminal outbox rows without marking them ACKed', () => {
+    const { db, file } = createDb();
+    db.prepare('INSERT INTO broker_terminal_outbox (id, task_event_id, acknowledged_at, created_at, payload) VALUES (?, ?, ?, ?, ?)')
+      .run('terminal-legacy', 1, null, '2026-05-03T00:00:00.000Z', terminalPayload({
+        id: 'terminal-legacy',
+        receipt: { status: 'accepted', updatedAt: '2026-05-03T00:00:00.000Z' },
+      }));
+    db.prepare('INSERT INTO broker_terminal_outbox (id, task_event_id, acknowledged_at, created_at, payload) VALUES (?, ?, ?, ?, ?)')
+      .run('terminal-current', 2, null, '2026-05-03T00:20:00.000Z', terminalPayload({
+        id: 'terminal-current',
+        taskEventId: 2,
+        receipt: { status: 'accepted', updatedAt: '2026-05-03T00:20:00.000Z' },
+      }));
+    db.close();
+
+    const report = runMigrationHealthGate({
+      dbFile: file,
+      nowMs: Date.parse('2026-05-03T00:40:00.000Z'),
+      maxUnackedAgeMs: 5 * 60 * 1000,
+      legacyResidueCutoffMs: Date.parse('2026-05-03T00:10:00.000Z'),
+      legacyResidueCutoff: '2026-05-03T00:10:00.000Z',
+    });
+    const outboxCheck = report.checks.find((check) => check.check === 'terminal-outbox ACK invariant');
+
+    assert.equal(report.ok, false);
+    assert.equal(outboxCheck?.legacyResidue.length, 1);
+    assert.equal(outboxCheck?.legacyResidue[0].id, 'terminal-legacy');
+    assert.equal(outboxCheck?.violations.length, 1);
+    assert.equal(outboxCheck?.violations[0].id, 'terminal-current');
+  });
+
+  it('passes when all stale accepted-only terminal outbox rows are before the legacy cutoff', () => {
+    const { db, file } = createDb();
+    db.prepare('INSERT INTO broker_terminal_outbox (id, task_event_id, acknowledged_at, created_at, payload) VALUES (?, ?, ?, ?, ?)')
+      .run('terminal-legacy', 1, null, '2026-05-03T00:00:00.000Z', terminalPayload({
+        id: 'terminal-legacy',
+        receipt: { status: 'accepted', updatedAt: '2026-05-03T00:00:00.000Z' },
+        payload: {
+          taskId: 'task-1',
+          status: 'succeeded',
+          createdAt: '2026-05-03T00:00:00.000Z',
+          updatedAt: '2026-05-03T00:00:00.000Z',
+          prUrl: 'https://github.com/jinwon-int/a2a-broker/pull/1',
+        },
+      }));
+    db.close();
+
+    const report = runMigrationHealthGate({
+      dbFile: file,
+      nowMs: Date.parse('2026-05-03T00:40:00.000Z'),
+      maxUnackedAgeMs: 5 * 60 * 1000,
+      legacyResidueCutoffMs: Date.parse('2026-05-03T00:10:00.000Z'),
+      legacyResidueCutoff: '2026-05-03T00:10:00.000Z',
+    });
+    const outboxCheck = report.checks.find((check) => check.check === 'terminal-outbox ACK invariant');
+
+    assert.equal(report.ok, true);
+    assert.equal(outboxCheck?.ok, true);
+    assert.equal(outboxCheck?.legacyResidue.length, 1);
+    assert.equal(outboxCheck?.legacyResidue[0].canonicalEvidence, true);
+  });
+
+  it('quarantines pre-cutoff terminal task tombstone gaps without hiding current gaps', () => {
+    const { db, file } = createDb();
+    db.prepare('INSERT INTO broker_tasks (id, payload) VALUES (?, ?)')
+      .run('task-legacy', taskPayload({
+        id: 'task-legacy',
+        status: 'canceled',
+        completedAt: '2026-05-03T00:00:00.000Z',
+        updatedAt: '2026-05-03T00:00:00.000Z',
+      }));
+    db.prepare('INSERT INTO broker_tasks (id, payload) VALUES (?, ?)')
+      .run('task-current', taskPayload({
+        id: 'task-current',
+        status: 'canceled',
+        completedAt: '2026-05-03T00:20:00.000Z',
+        updatedAt: '2026-05-03T00:20:00.000Z',
+      }));
+    db.close();
+
+    const report = runMigrationHealthGate({
+      dbFile: file,
+      nowMs: Date.parse('2026-05-03T00:40:00.000Z'),
+      legacyResidueCutoffMs: Date.parse('2026-05-03T00:10:00.000Z'),
+      legacyResidueCutoff: '2026-05-03T00:10:00.000Z',
+    });
+    const queueCheck = report.checks.find((check) => check.check === 'queue closeout reconciliation');
+
+    assert.equal(report.ok, false);
+    assert.equal(queueCheck?.legacyResidue.length, 1);
+    assert.equal(queueCheck?.legacyResidue[0].id, 'task-legacy');
+    assert.equal(queueCheck?.violations.length, 1);
+    assert.equal(queueCheck?.violations[0].id, 'task-current');
+  });
+});
