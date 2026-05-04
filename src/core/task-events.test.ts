@@ -26,6 +26,7 @@ function createTask(
     id?: string;
     parentTaskId?: string;
     targetNodeId?: string;
+    message?: string;
     payload?: Record<string, unknown>;
     policyContext?: { requiresApproval?: boolean };
   } = {},
@@ -37,6 +38,7 @@ function createTask(
     requester: { id: "hub", kind: "node", role: "hub" },
     target: { id: overrides.targetNodeId ?? "worker-1", kind: "node", role: "operator" },
     policyContext: overrides.policyContext,
+    message: overrides.message,
     payload: overrides.payload ?? {},
   });
 }
@@ -213,6 +215,7 @@ describe("TaskEventStream", () => {
       payload: {
         githubRepo: "acme/example",
         githubIssueNumber: 217,
+        githubIssueTitle: "Broker receipt/evidence gate token=ghp_do_not_leak /home/alice/secret",
         sessionPrompt: "do-not-leak",
       },
     });
@@ -238,6 +241,7 @@ describe("TaskEventStream", () => {
       worker: "worker-1",
       repo: "acme/example",
       issue: 217,
+      taskBrief: "Broker receipt/evidence gate token=[redacted] [path]",
       prUrl: "https://github.com/acme/example/pull/9",
       doneUrl: "https://github.com/acme/example/issues/217#issuecomment-1",
       testSummary: { status: "passed", total: 3, passed: 3, summary: "npm test ok no raw logs" },
@@ -259,7 +263,14 @@ describe("TerminalTaskEventOutbox", () => {
     const broker = new InMemoryA2ABroker();
     registerWorker(broker);
     const task = createTask(broker, {
-      payload: { githubRepo: "jinwon-int/a2a-broker", githubIssueNumber: 218 },
+      message: "jinwon-int/a2a-broker#218: terminal outbox regression should not leak /work/repo",
+      payload: {
+        githubRepo: "jinwon-int/a2a-broker",
+        githubIssueNumber: 218,
+        run: "a2a-terminal-push-1",
+        traceId: "trace-terminal-1",
+        taskDescription: "Fix terminal closeout from /work/private token=ghp_secretvalue",
+      },
     });
 
     broker.claimTask(task.id, "worker-1");
@@ -285,8 +296,12 @@ describe("TerminalTaskEventOutbox", () => {
     assert.equal(event.payload.taskId, task.id);
     assert.equal(event.payload.status, "succeeded");
     assert.equal(event.payload.worker, "worker-1");
+    assert.equal(event.payload.run, "a2a-terminal-push-1");
+    assert.equal(event.payload.traceId, "trace-terminal-1");
+    assert.equal(event.payload.taskDescription, "Fix terminal closeout from [path] token=[redacted]");
     assert.equal(event.payload.repo, "jinwon-int/a2a-broker");
     assert.equal(event.payload.issue, 218);
+    assert.equal(event.payload.taskBrief, "terminal outbox regression should not leak [path]");
     assert.equal(event.payload.prUrl, "https://github.com/jinwon-int/a2a-broker/pull/999");
     assert.equal(event.payload.doneUrl, "https://github.com/jinwon-int/a2a-broker/issues/218#issuecomment-1");
     assert.equal(event.payload.blockUrl, undefined);
@@ -297,6 +312,30 @@ describe("TerminalTaskEventOutbox", () => {
     assert.ok(!serialized.includes("secret token"));
     assert.ok(!serialized.includes("/work/repo"));
     assert.ok(!serialized.includes("sessionPrompt"));
+  });
+
+  it("includes worker task brief in fake operator terminal line", () => {
+    const broker = new InMemoryA2ABroker();
+    registerWorker(broker, "sogyo");
+    const task = createTask(broker, {
+      id: "brief-line",
+      targetNodeId: "sogyo",
+      payload: {
+        githubRepo: "jinwon-int/a2a-broker",
+        githubIssueNumber: 310,
+        githubIssueTitle: "broker receipt/evidence gate",
+      },
+    });
+
+    broker.claimTask(task.id, "sogyo");
+    broker.completeTask(task.id, "sogyo", { summary: "npm test passed" });
+
+    const [event] = broker.getTerminalTaskEventOutbox().subscribe();
+    assert.ok(event);
+    const envelope = toFakeOperatorEnvelope(event);
+    assert.equal(envelope.body.worker, "sogyo");
+    assert.equal(envelope.body.taskBrief, "broker receipt/evidence gate");
+    assert.equal(renderFakeOperatorLine(envelope.body), "sogyo completed jinwon-int/a2a-broker#310 — broker receipt/evidence gate");
   });
 
   it("replays terminal outbox events after a stable event id", () => {
@@ -692,6 +731,14 @@ describe("TerminalTaskEventOutbox", () => {
     assert.equal(broker.getTerminalTaskEventOutbox().subscribe().length, 0);
   });
 });
+
+function renderFakeOperatorLine(payload: TerminalTaskOutboxEvent["payload"]): string {
+  const worker = payload.worker ?? "worker";
+  const verb = payload.status === "succeeded" ? "completed" : payload.status;
+  const issue = payload.repo && payload.issue !== undefined ? `${payload.repo}#${payload.issue}` : payload.taskId;
+  const brief = payload.taskBrief ? ` — ${payload.taskBrief}` : "";
+  return `${worker} ${verb} ${issue}${brief}`;
+}
 
 function toFakeOperatorEnvelope(event: TerminalTaskOutboxEvent) {
   return {

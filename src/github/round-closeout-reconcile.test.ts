@@ -2,6 +2,8 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
   reconcileRoundCloseout,
+  reconcileRoundCloseoutFromTerminalOutbox,
+  terminalRoundKey,
   type RoundWorkerObservation,
 } from "./round-closeout-reconcile.js";
 
@@ -26,6 +28,47 @@ function reconcile(observations: RoundWorkerObservation[]) {
     nowMs: NOW,
     staleAfterMs: 30 * 60 * 1000,
   });
+}
+
+function terminalEvent(
+  worker: string,
+  status: "succeeded" | "failed" | "canceled" | "blocked",
+  overrides: Record<string, unknown> = {},
+) {
+  const run = typeof overrides.run === "string" ? overrides.run : "a2a-terminal-push-20260504015650";
+  return {
+    id: `terminal:${worker}:${status}`,
+    kind: "task.terminal",
+    taskEventId: 1,
+    payload: {
+      taskId: `task-${worker}`,
+      status,
+      worker,
+      run,
+      traceId: "trace-round-315",
+      repo: "jinwon-int/a2a-broker",
+      issue: 315,
+      createdAt: FRESH,
+      updatedAt: FRESH,
+      completedAt: FRESH,
+      ...overrides,
+    },
+    createdAt: FRESH,
+    receipt: { status: "accepted", updatedAt: FRESH },
+    attempts: 0,
+  } as const;
+}
+
+function reportToPayloadSample() {
+  return {
+    taskId: "task-bangtong",
+    status: "succeeded",
+    worker: "bangtong",
+    repo: "jinwon-int/a2a-broker",
+    issue: 315,
+    createdAt: FRESH,
+    updatedAt: FRESH,
+  } as const;
 }
 
 describe("round closeout reconciliation", () => {
@@ -84,6 +127,59 @@ describe("round closeout reconciliation", () => {
 
     assert.equal(report.state, "ready");
     assert.equal(report.workers.find((worker) => worker.workerId === "bangtong")?.state, "completed");
+  });
+
+  it("aggregates terminal outbox events into a mixed round closeout without cron", () => {
+    const report = reconcileRoundCloseoutFromTerminalOutbox([
+      terminalEvent("bangtong", "succeeded", {
+        taskDescription: "Patch terminal push projection",
+        prUrl: "https://github.com/jinwon-int/a2a-broker/pull/3151",
+      }),
+      terminalEvent("dungae", "succeeded", {
+        taskDescription: "Add operator summary tests",
+        doneUrl: "https://github.com/jinwon-int/a2a-broker/issues/315#issuecomment-done",
+      }),
+      terminalEvent("sogyo", "blocked", {
+        taskDescription: "Validate notifier ACK path",
+        blockUrl: "https://github.com/jinwon-int/a2a-broker/issues/315#issuecomment-block",
+      }),
+      terminalEvent("unrelated", "succeeded", { run: "other-round", prUrl: "https://github.com/jinwon-int/a2a-broker/pull/999" }),
+    ], {
+      expectedWorkers: ["bangtong", "dungae", "sogyo", "nosuk"],
+      run: "a2a-terminal-push-20260504015650",
+      nowMs: NOW,
+      staleAfterMs: 30 * 60 * 1000,
+    });
+
+    assert.equal(report.state, "blocked");
+    assert.equal(report.counts.completed, 2);
+    assert.equal(report.counts.blocked, 1);
+    assert.equal(report.counts.waiting, 1);
+    assert.deepEqual(report.workerSummaries.map((worker) => `${worker.workerId}:${worker.status}`), [
+      "bangtong:completed",
+      "dungae:completed",
+      "sogyo:blocked",
+      "nosuk:pending",
+    ]);
+    assert.equal(report.workerSummaries.find((worker) => worker.workerId === "sogyo")?.taskDescription, "Validate notifier ACK path");
+  });
+
+  it("marks a terminal outbox round ready only when all workers have PR evidence", () => {
+    const report = reconcileRoundCloseoutFromTerminalOutbox([
+      terminalEvent("bangtong", "succeeded", { prUrl: "https://github.com/jinwon-int/a2a-broker/pull/401", taskDescription: "Fix fan-in" }),
+      terminalEvent("dungae", "succeeded", { prUrl: "https://github.com/jinwon-int/a2a-broker/pull/402", taskDescription: "Fix projection" }),
+      terminalEvent("sogyo", "succeeded", { prUrl: "https://github.com/jinwon-int/a2a-broker/pull/403", taskDescription: "Fix summary" }),
+    ], {
+      expectedWorkers: ["bangtong", "dungae", "sogyo"],
+      traceId: "trace-round-315",
+      nowMs: NOW,
+    });
+
+    assert.equal(report.state, "ready");
+    assert.equal(report.counts.completed, 3);
+    assert.equal(report.counts.waiting, 0);
+    assert.deepEqual(report.workerSummaries.map((worker) => worker.status), ["completed", "completed", "completed"]);
+    assert.equal(terminalRoundKey(reportToPayloadSample()), "issue:jinwon-int/a2a-broker#315");
   });
 
   it("scopes observations by task id prefix or issue set", () => {

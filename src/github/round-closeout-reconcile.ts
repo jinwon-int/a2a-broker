@@ -1,3 +1,5 @@
+import type { TerminalTaskOutboxEvent, TerminalTaskEventPayload } from "../core/terminal-event-outbox.js";
+
 /**
  * Round closeout reconciliation helpers (issue #243).
  *
@@ -7,7 +9,7 @@
  * blocked closeout states.
  */
 
-export type RoundWorkerStatus = "queued" | "claimed" | "running" | "succeeded" | "failed" | "canceled";
+export type RoundWorkerStatus = "queued" | "claimed" | "running" | "succeeded" | "failed" | "canceled" | "blocked";
 export type RoundWorkerState = "completed" | "blocked" | "missing-evidence" | "stuck" | "waiting" | "excluded";
 export type RoundCloseoutState = "ready" | "blocked" | "needs-evidence" | "stuck" | "waiting";
 
@@ -23,7 +25,10 @@ export interface RoundWorkerObservation {
   status: RoundWorkerStatus;
   updatedAt: string;
   taskId?: string;
+  run?: string;
+  traceId?: string;
   issueNumber?: number;
+  taskDescription?: string;
   summary?: string;
   evidence?: RoundEvidence;
 }
@@ -47,11 +52,24 @@ export interface RoundWorkerReconciliation {
   state: RoundWorkerState;
   status?: RoundWorkerStatus;
   taskId?: string;
+  run?: string;
+  traceId?: string;
   issueNumber?: number;
+  taskDescription?: string;
   ageMs?: number;
   evidenceUrl?: string;
   reason: string;
   action: string;
+}
+
+export type RoundWorkerSummaryStatus = "completed" | "blocked" | "failed" | "pending";
+
+export interface RoundWorkerSummary {
+  workerId: string;
+  status: RoundWorkerSummaryStatus;
+  taskId?: string;
+  taskDescription?: string;
+  evidenceUrl?: string;
 }
 
 export interface RoundCloseoutReconciliation {
@@ -72,11 +90,13 @@ export interface RoundCloseoutReconciliation {
   };
   summary: string;
   action: string;
+  /** Compact operator closeout lines, one per required worker. */
+  workerSummaries: RoundWorkerSummary[];
   workers: RoundWorkerReconciliation[];
 }
 
 const DEFAULT_STALE_AFTER_MS = 30 * 60 * 1000;
-const TERMINAL_STATUSES = new Set<RoundWorkerStatus>(["succeeded", "failed", "canceled"]);
+const TERMINAL_STATUSES = new Set<RoundWorkerStatus>(["succeeded", "failed", "canceled", "blocked"]);
 
 /**
  * Build a deterministic closeout view for one A2A round.
@@ -121,6 +141,7 @@ export function reconcileRoundCloseout(
 
   const state = classifyRoundState(counts);
   const { summary, action } = roundMessage(state, counts);
+  const workerSummaries = required.map(buildWorkerSummary);
 
   return {
     state,
@@ -132,7 +153,64 @@ export function reconcileRoundCloseout(
     counts,
     summary,
     action,
+    workerSummaries,
     workers,
+  };
+}
+
+export interface TerminalRoundCloseoutOptions extends RoundCloseoutOptions {
+  /** Match terminal events for a specific payload.run/round id. */
+  run?: string;
+  /** Match terminal events for a specific A2A trace id. */
+  traceId?: string;
+  /** Match terminal events for a specific GitHub repo, usually with issueNumbers. */
+  repo?: string;
+}
+
+export function reconcileRoundCloseoutFromTerminalOutbox(
+  events: TerminalTaskOutboxEvent[],
+  options: TerminalRoundCloseoutOptions,
+): RoundCloseoutReconciliation {
+  return reconcileRoundCloseout(
+    events
+      .map((event) => event.payload)
+      .filter((payload) => terminalPayloadMatchesRound(payload, options))
+      .map(terminalPayloadToObservation),
+    options,
+  );
+}
+
+export function terminalRoundKey(payload: TerminalTaskEventPayload): string {
+  if (payload.run) return `run:${payload.run}`;
+  if (payload.traceId) return `trace:${payload.traceId}`;
+  if (payload.repo && payload.issue !== undefined) return `issue:${payload.repo}#${payload.issue}`;
+  return `task:${payload.taskId}`;
+}
+
+function terminalPayloadMatchesRound(payload: TerminalTaskEventPayload, options: TerminalRoundCloseoutOptions): boolean {
+  if (options.run && payload.run !== options.run) return false;
+  if (options.traceId && payload.traceId !== options.traceId) return false;
+  if (options.repo && payload.repo !== options.repo) return false;
+  if (options.issueNumbers?.length && (payload.issue === undefined || !options.issueNumbers.includes(payload.issue))) return false;
+  return true;
+}
+
+function terminalPayloadToObservation(payload: TerminalTaskEventPayload): RoundWorkerObservation {
+  return {
+    workerId: payload.worker ?? payload.taskId,
+    status: payload.status,
+    updatedAt: payload.completedAt ?? payload.updatedAt,
+    taskId: payload.taskId,
+    run: payload.run,
+    traceId: payload.traceId,
+    issueNumber: payload.issue,
+    taskDescription: payload.taskDescription,
+    summary: payload.testSummary,
+    evidence: {
+      prUrl: payload.prUrl,
+      doneCommentUrl: payload.doneUrl,
+      blockCommentUrl: payload.blockUrl,
+    },
   };
 }
 
@@ -249,15 +327,35 @@ function baseWorker(
   observation?: RoundWorkerObservation,
   ageMs?: number,
   evidenceUrl?: string,
-): Pick<RoundWorkerReconciliation, "workerId" | "status" | "taskId" | "issueNumber" | "ageMs" | "evidenceUrl"> {
+): Pick<RoundWorkerReconciliation, "workerId" | "status" | "taskId" | "run" | "traceId" | "issueNumber" | "taskDescription" | "ageMs" | "evidenceUrl"> {
   return {
     workerId,
     status: observation?.status,
     taskId: observation?.taskId,
+    run: observation?.run,
+    traceId: observation?.traceId,
     issueNumber: observation?.issueNumber,
+    taskDescription: observation?.taskDescription,
     ageMs,
     evidenceUrl,
   };
+}
+
+function buildWorkerSummary(worker: RoundWorkerReconciliation): RoundWorkerSummary {
+  return {
+    workerId: worker.workerId,
+    status: summarizeWorkerStatus(worker),
+    taskId: worker.taskId,
+    taskDescription: worker.taskDescription,
+    evidenceUrl: worker.evidenceUrl,
+  };
+}
+
+function summarizeWorkerStatus(worker: RoundWorkerReconciliation): RoundWorkerSummaryStatus {
+  if (worker.status === "failed" || worker.status === "canceled") return "failed";
+  if (worker.status === "blocked" || worker.state === "blocked") return "blocked";
+  if (worker.state === "completed") return "completed";
+  return "pending";
 }
 
 function pickEvidenceUrl(evidence?: RoundEvidence): string | undefined {
