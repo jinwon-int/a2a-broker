@@ -15,6 +15,7 @@ import {
   type BrokerStateSaveHints,
   type BrokerStateStore,
 } from "./store.js";
+import { validateGithubTaskCompletionEvidence } from "./github-task-completion.js";
 import { TaskEventStream } from "./task-event-stream.js";
 import { TerminalTaskEventOutbox } from "./terminal-event-outbox.js";
 import { ConferenceRoomManager } from "./conference-room.js";
@@ -86,6 +87,8 @@ export type BrokerErrorCode =
   | "not_found"
   | "policy_denied"
   | "invalid_transition"
+  | "github_completion_evidence_missing"
+  | "github_completion_receipt_invalid"
   | "unauthorized"
   | "rate_limited";
 
@@ -1506,6 +1509,15 @@ export class InMemoryA2ABroker {
     }
 
     const normalizedResult = normalizeTaskResult(result);
+    const completionEvidenceError = validateGithubTaskCompletionEvidence(task, normalizedResult);
+    if (completionEvidenceError) {
+      throw new BrokerError(
+        completionEvidenceError.code === "github_completion_receipt_invalid"
+          ? "github_completion_receipt_invalid"
+          : "github_completion_evidence_missing",
+        completionEvidenceError.message,
+      );
+    }
     this.applyTaskCompletion(task, workerId, normalizedResult);
 
     const now = isoNow();
