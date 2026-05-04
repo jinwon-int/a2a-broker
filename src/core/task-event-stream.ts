@@ -197,6 +197,20 @@ export class TaskEventStream {
       createdAt: task.createdAt,
       updatedAt: task.updatedAt,
     };
+    const run = firstOperatorText(task.payload?.["run"], task.payload?.["runId"], task.payload?.["round"], task.payload?.["roundId"], output["run"], output["runId"]);
+    if (run) event.run = run;
+    const traceId = firstOperatorText(task.via?.traceId, task.payload?.["traceId"], output["traceId"]);
+    if (traceId) event.traceId = traceId;
+    const taskDescription = firstOperatorText(
+      task.payload?.["taskDescription"],
+      task.payload?.["taskSummary"],
+      task.payload?.["issueTitle"],
+      task.payload?.["title"],
+      task.payload?.["description"],
+      output["taskDescription"],
+      output["taskSummary"],
+    );
+    if (taskDescription) event.taskDescription = taskDescription;
     if (task.completedAt) event.completedAt = task.completedAt;
     if (task.claimedBy) event.worker = task.claimedBy;
     else if (task.assignedWorkerId) event.worker = task.assignedWorkerId;
@@ -228,6 +242,15 @@ function firstString(...values: unknown[]): string | undefined {
     if (typeof value === "string" && value.length > 0 && value.length <= 200) {
       return value;
     }
+  }
+  return undefined;
+}
+
+function firstOperatorText(...values: unknown[]): string | undefined {
+  for (const value of values) {
+    if (typeof value !== "string" || !value.trim()) continue;
+    const sanitized = sanitizeOperatorText(value).slice(0, 160);
+    if (sanitized) return sanitized;
   }
   return undefined;
 }

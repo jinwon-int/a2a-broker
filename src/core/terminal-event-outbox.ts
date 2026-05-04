@@ -31,6 +31,12 @@ export type TerminalTaskStatus = Extract<TaskStatus, "succeeded" | "failed" | "c
 export interface TerminalTaskEventPayload {
   taskId: string;
   status: TerminalTaskStatus;
+  /** Operator-safe round/run key for grouping worker terminal notifications. */
+  run?: string;
+  /** Transport trace id when the assignment came through an A2A exchange. */
+  traceId?: string;
+  /** Brief, sanitized task label suitable for operator closeout summaries. */
+  taskDescription?: string;
   worker?: string;
   repo?: string;
   issue?: number;
@@ -361,6 +367,19 @@ function buildTerminalTaskPayload(task: TaskRecord): TerminalTaskEventPayload {
     createdAt: task.createdAt,
     updatedAt: task.updatedAt,
   };
+  const run = firstSafeText(
+    task.payload["run"],
+    task.payload["runId"],
+    task.payload["round"],
+    task.payload["roundId"],
+    output["run"],
+    output["runId"],
+  );
+  if (run) payload.run = run;
+  const traceId = firstSafeText(task.via?.traceId, task.payload["traceId"], output["traceId"]);
+  if (traceId) payload.traceId = traceId;
+  const taskDescription = buildTaskDescription(task, output);
+  if (taskDescription) payload.taskDescription = taskDescription;
   if (task.claimedBy) payload.worker = task.claimedBy;
   else if (task.assignedWorkerId) payload.worker = task.assignedWorkerId;
   const repo = task.payload["githubRepo"];
@@ -389,6 +408,35 @@ function firstSafeHttpUrl(...values: unknown[]): string | undefined {
     }
   }
   return undefined;
+}
+
+function firstSafeText(...values: unknown[]): string | undefined {
+  for (const value of values) {
+    const sanitized = sanitizeSummary(value);
+    if (sanitized) return sanitized.slice(0, 160);
+  }
+  return undefined;
+}
+
+function buildTaskDescription(task: TaskRecord, output: Record<string, unknown>): string | undefined {
+  const explicit = firstSafeText(
+    task.payload["taskDescription"],
+    task.payload["taskSummary"],
+    task.payload["issueTitle"],
+    task.payload["title"],
+    task.payload["description"],
+    output["taskDescription"],
+    output["taskSummary"],
+  );
+  if (explicit) return explicit;
+
+  const repo = typeof task.payload["githubRepo"] === "string" ? task.payload["githubRepo"] : undefined;
+  const issue = typeof task.payload["githubIssueNumber"] === "number" && Number.isFinite(task.payload["githubIssueNumber"])
+    ? task.payload["githubIssueNumber"]
+    : undefined;
+  if (repo && issue !== undefined) return `${repo}#${issue}`;
+  if (repo) return repo;
+  return firstSafeText(task.result?.summary, task.result?.note, task.error?.message, task.intent);
 }
 
 function sanitizeSummary(value: unknown): string | undefined {
