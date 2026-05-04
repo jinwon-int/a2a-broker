@@ -85,6 +85,7 @@ function summarizeEvent(event) {
     worker: typeof payload.worker === 'string' ? payload.worker : undefined,
     repo: typeof payload.repo === 'string' ? payload.repo : undefined,
     issue: Number.isInteger(payload.issue) ? payload.issue : undefined,
+    taskBrief: typeof payload.taskBrief === 'string' ? payload.taskBrief : undefined,
     ackStatus: typeof event?.ack?.status === 'string' ? event.ack.status : 'unacknowledged',
   };
 }

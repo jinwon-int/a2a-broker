@@ -20,7 +20,9 @@ const TERMINAL_TASK_RECEIPT_STATUSES = new Set<TerminalTaskReceiptStatus>([
 ]);
 const LEGACY_TERMINAL_TASK_RECEIPT_STATUSES = new Set(["sent", "provider_delivered_if_known"]);
 const URL_KEYS = ["prUrl", "doneUrl", "blockUrl"] as const;
+const TASK_BRIEF_KEYS = ["githubIssueTitle", "taskTitle", "title", "taskBrief"] as const;
 const MAX_SUMMARY_CHARS = 500;
+const MAX_TASK_BRIEF_CHARS = 160;
 const MAX_ACK_NOTE_CHARS = 240;
 
 export const DEFAULT_TERMINAL_TASK_OUTBOX_RETENTION = 1000;
@@ -31,9 +33,17 @@ export type TerminalTaskStatus = Extract<TaskStatus, "succeeded" | "failed" | "c
 export interface TerminalTaskEventPayload {
   taskId: string;
   status: TerminalTaskStatus;
+  /** Operator-safe round/run key for grouping worker terminal notifications. */
+  run?: string;
+  /** Transport trace id when the assignment came through an A2A exchange. */
+  traceId?: string;
+  /** Brief, sanitized task label suitable for operator closeout summaries. */
+  taskDescription?: string;
   worker?: string;
   repo?: string;
   issue?: number;
+  /** Short operator-safe task description for terminal notices. */
+  taskBrief?: string;
   prUrl?: string;
   doneUrl?: string;
   blockUrl?: string;
@@ -361,12 +371,27 @@ function buildTerminalTaskPayload(task: TaskRecord): TerminalTaskEventPayload {
     createdAt: task.createdAt,
     updatedAt: task.updatedAt,
   };
+  const run = firstSafeText(
+    task.payload["run"],
+    task.payload["runId"],
+    task.payload["round"],
+    task.payload["roundId"],
+    output["run"],
+    output["runId"],
+  );
+  if (run) payload.run = run;
+  const traceId = firstSafeText(task.via?.traceId, task.payload["traceId"], output["traceId"]);
+  if (traceId) payload.traceId = traceId;
+  const taskDescription = buildTaskDescription(task, output);
+  if (taskDescription) payload.taskDescription = taskDescription;
   if (task.claimedBy) payload.worker = task.claimedBy;
   else if (task.assignedWorkerId) payload.worker = task.assignedWorkerId;
   const repo = task.payload["githubRepo"];
   if (typeof repo === "string" && repo.length > 0) payload.repo = repo;
   const issue = task.payload["githubIssueNumber"];
   if (typeof issue === "number" && Number.isFinite(issue)) payload.issue = issue;
+  const taskBrief = buildTaskBrief(task, output);
+  if (taskBrief) payload.taskBrief = taskBrief;
   for (const key of URL_KEYS) {
     const value = firstSafeHttpUrl(output[key], task.payload[key]);
     if (value) payload[key] = value;
@@ -376,6 +401,30 @@ function buildTerminalTaskPayload(task: TaskRecord): TerminalTaskEventPayload {
   if (safeSummary) payload.testSummary = safeSummary;
   if (task.completedAt) payload.completedAt = task.completedAt;
   return payload;
+}
+
+function buildTaskBrief(task: TaskRecord, output: Record<string, unknown>): string | undefined {
+  const candidates: unknown[] = [];
+  for (const key of TASK_BRIEF_KEYS) candidates.push(task.payload[key], output[key]);
+  for (const candidate of candidates) {
+    const brief = sanitizeTaskBrief(candidate);
+     if (brief) return brief;
+  }
+  return sanitizeTaskMessageBrief(task.message);
+}
+
+function sanitizeTaskMessageBrief(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  if (!/^[-\w.]+\/[-\w.]+#\d+\s*:\s*/.test(value)) return undefined;
+  return sanitizeTaskBrief(value);
+}
+
+function sanitizeTaskBrief(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const withoutIssuePrefix = value.replace(/^[-\w.]+\/[-\w.]+#\d+\s*:\s*/, "");
+  const sanitized = sanitizeSummary(withoutIssuePrefix);
+  if (!sanitized) return undefined;
+  return sanitized.slice(0, MAX_TASK_BRIEF_CHARS);
 }
 
 function firstSafeHttpUrl(...values: unknown[]): string | undefined {
@@ -389,6 +438,35 @@ function firstSafeHttpUrl(...values: unknown[]): string | undefined {
     }
   }
   return undefined;
+}
+
+function firstSafeText(...values: unknown[]): string | undefined {
+  for (const value of values) {
+    const sanitized = sanitizeSummary(value);
+    if (sanitized) return sanitized.slice(0, 160);
+  }
+  return undefined;
+}
+
+function buildTaskDescription(task: TaskRecord, output: Record<string, unknown>): string | undefined {
+  const explicit = firstSafeText(
+    task.payload["taskDescription"],
+    task.payload["taskSummary"],
+    task.payload["issueTitle"],
+    task.payload["title"],
+    task.payload["description"],
+    output["taskDescription"],
+    output["taskSummary"],
+  );
+  if (explicit) return explicit;
+
+  const repo = typeof task.payload["githubRepo"] === "string" ? task.payload["githubRepo"] : undefined;
+  const issue = typeof task.payload["githubIssueNumber"] === "number" && Number.isFinite(task.payload["githubIssueNumber"])
+    ? task.payload["githubIssueNumber"]
+    : undefined;
+  if (repo && issue !== undefined) return `${repo}#${issue}`;
+  if (repo) return repo;
+  return firstSafeText(task.result?.summary, task.result?.note, task.error?.message, task.intent);
 }
 
 function sanitizeSummary(value: unknown): string | undefined {

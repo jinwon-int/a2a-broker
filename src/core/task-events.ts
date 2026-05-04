@@ -79,9 +79,14 @@ export interface TerminalTaskEvent {
   id: number;
   taskId: string;
   status: TerminalTaskEventStatus;
+  run?: string;
+  traceId?: string;
+  taskDescription?: string;
   worker?: string;
   repo?: string;
   issue?: number;
+  /** Short operator-safe task description for terminal notices. */
+  taskBrief?: string;
   prUrl?: string;
   doneUrl?: string;
   blockUrl?: string;

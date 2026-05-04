@@ -34,6 +34,7 @@ describe('terminal outbox preflight', () => {
               worker: 'bangtong',
               repo: 'jinwon-int/a2a-broker',
               issue: 276,
+              taskBrief: 'broker receipt/evidence gate',
               prUrl: 'https://github.com/jinwon-int/a2a-broker/pull/1',
               createdAt: '2026-05-02T00:00:00.000Z',
               updatedAt: '2026-05-02T00:00:00.000Z',
@@ -55,6 +56,7 @@ describe('terminal outbox preflight', () => {
     assert.equal(calls.some((call) => call.path.endsWith('/ack')), false);
     assert.equal(calls[2].query.includes('reconcile_unacked=true'), true);
     assert.equal(calls[1].headers['x-a2a-requester-role'], 'operator');
+    assert.equal(report.checks[1].events[0].taskBrief, 'broker receipt/evidence gate');
     assert.equal(calls[1].headers['x-a2a-edge-secret'], 'redacted');
   });
 
