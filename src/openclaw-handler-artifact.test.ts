@@ -12,7 +12,7 @@ const handlerPath = "scripts/openclaw-a2a-task-handler.mjs";
 
 interface GithubTaskFixture {
   id: string;
-  intent: "propose_patch" | "analyze";
+  intent: "propose_patch" | "analyze" | "verify";
   message: string;
   payload: Record<string, unknown>;
   proposalId: string;
@@ -34,7 +34,7 @@ function githubTask(overrides?: Partial<GithubTaskFixture>): GithubTaskFixture {
 function makeTaskRecord(task: GithubTaskFixture): TaskRecord {
   return {
     id: task.id,
-    intent: task.intent,
+    intent: task.intent as TaskRecord["intent"],
     requester: { id: "test-requester", role: "hub" },
     target: { id: "test-target", role: "operator" },
     message: task.message,
@@ -614,6 +614,54 @@ console.log(JSON.stringify({
     assert.equal(payload.error.code, "docker_runner_evidence_missing");
     assert.match(payload.error.message, /docker runner completed but produced no PR\/Done\/Block evidence/);
     assert.deepEqual(payload.error.details.requiredEvidence, ["prUrl", "doneCommentUrl", "blockCommentUrl"]);
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+
+test("github-verify tasks route through docker runner instead of built-in generic success", () => {
+  const tempDir = mkdtempSync(join(tmpdir(), "handler-github-verify-test-"));
+  const fakeRunnerPath = join(tempDir, "fake-runner.mjs");
+  try {
+    writeFileSync(fakeRunnerPath, `
+import { readFileSync } from "node:fs";
+const taskPath = process.argv.at(-1);
+const task = JSON.parse(readFileSync(taskPath, "utf8"));
+if (process.argv[2] !== "run") throw new Error("expected run subcommand");
+if (task.intent !== "verify") throw new Error("expected verify intent propagation");
+if (task.mode !== "github-verify") throw new Error("expected github-verify mode propagation");
+if (task.repo !== "owner/repo") throw new Error("expected repo mapping");
+console.log(JSON.stringify({
+  ok: true,
+  taskId: task.id,
+  status: "completed",
+  workDir: "/tmp/work-fixture",
+  artifacts: [],
+  doneCommentUrl: "https://github.com/owner/repo/issues/1#issuecomment-789"
+}));
+`);
+
+    const result = spawnSync(process.execPath, [handlerPath], {
+      input: JSON.stringify(githubTask({ intent: "verify", payload: { mode: "github-verify", repo: "owner/repo", issue: "#1" } })),
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        A2A_DOCKER_RUNNER_ENABLED: "1",
+        A2A_DOCKER_RUNNER_ALL_GITHUB: "1",
+        A2A_DOCKER_RUNNER_SCOPE: "all-github",
+        A2A_DOCKER_RUNNER_BIN: process.execPath,
+        A2A_DOCKER_RUNNER_ARGS_JSON: JSON.stringify([fakeRunnerPath]),
+      },
+    });
+
+    assert.equal(result.status, 0, result.stderr);
+    const payload = JSON.parse(result.stdout);
+    assert.equal(payload.result.summary, "docker runner completed task-fixture-1");
+    assert.equal(payload.result.lifecycle.intent, "verify");
+    assert.equal(payload.result.lifecycle.mode, "github-verify");
+    assert.equal(payload.result.output.doneCommentUrl, "https://github.com/owner/repo/issues/1#issuecomment-789");
+    assert.doesNotMatch(payload.result.summary, /generic github-verify/);
   } finally {
     rmSync(tempDir, { recursive: true, force: true });
   }

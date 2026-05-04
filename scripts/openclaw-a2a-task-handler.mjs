@@ -165,7 +165,9 @@ function buildRunnerTask(task, env = process.env) {
 function isGithubEvidenceTask(task) {
   const mode = taskMode(task);
   const intent = safeText(task.intent, "");
-  return intent === "propose_patch" && (mode === "github-propose-patch" || mode === "github-issue-instruction");
+  if (intent === "propose_patch" && (mode === "github-propose-patch" || mode === "github-issue-instruction")) return true;
+  if (intent === "verify" && mode === "github-verify") return true;
+  return false;
 }
 
 
