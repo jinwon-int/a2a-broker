@@ -424,7 +424,7 @@ test("E2E: terminal notification outbox enforces auth and replays compact ack-sa
       receiptId: "delivery-receipt-250",
     });
     assert.deepEqual(ack.event.receipt, {
-      status: "provider_delivered_if_known",
+      status: "provider_sent",
       updatedAt: acknowledgedAt,
       evidence: "provider_delivery_receipt",
       receiptId: "delivery-receipt-250",
