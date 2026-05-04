@@ -696,6 +696,65 @@ describe("TerminalTaskEventOutbox", () => {
     assert.equal(outbox.subscribe().length, 3, "acknowledged records remain retained for audit/dedupe");
   });
 
+  it("replays unacked terminal records after notifier restart without duplicating receipt-confirmed records", () => {
+    const broker = new InMemoryA2ABroker(undefined, undefined, { maxTerminalTaskOutboxEvents: 10 });
+    registerWorker(broker, "nosuk");
+
+    for (const id of ["restart-acked", "restart-unacked"]) {
+      const task = createTask(broker, {
+        id,
+        targetNodeId: "nosuk",
+        payload: {
+          githubRepo: "jinwon-int/a2a-broker",
+          githubIssueNumber: 319,
+          githubIssueTitle: "terminal outbox cursor recovery proof",
+        },
+      });
+      broker.claimTask(task.id, "nosuk");
+      broker.completeTask(task.id, "nosuk", { summary: `done ${id}` });
+    }
+
+    const outbox = broker.getTerminalTaskEventOutbox();
+    const firstPoll = outbox.subscribeWithCursor();
+    const [acked, unacked] = firstPoll.events;
+    assert.ok(acked);
+    assert.ok(unacked);
+    assert.equal(firstPoll.cursor, unacked.id);
+
+    outbox.acknowledge(acked.id, {
+      evidence: "operator_visible",
+      acknowledgedAt: "2026-05-04T02:00:00.000Z",
+      receiptId: "operator-terminal-visible-1",
+    });
+
+    // Simulate a notifier crash/restart that persisted its cursor after seeing both
+    // records, but only receipt-confirmed the first terminal notice.
+    const restarted = new InMemoryA2ABroker(undefined, broker.exportSnapshot(), {
+      maxTerminalTaskOutboxEvents: 10,
+    });
+    const replay = restarted.getTerminalTaskEventOutbox().reconcile({ afterId: firstPoll.cursor ?? undefined });
+
+    assert.deepEqual(replay.events.map((event) => event.id), [unacked.id]);
+    assert.equal(replay.cursor, unacked.id, "stale-cursor recovery must not move the notifier cursor backward");
+    assert.equal(replay.reconciledUnacked, 1);
+    const replayed = replay.events[0]!;
+    assert.equal(replayed.payload.worker, "nosuk");
+    assert.equal(replayed.payload.taskBrief, "terminal outbox cursor recovery proof");
+    assert.equal(
+      renderFakeOperatorLine(replayed.payload),
+      "nosuk completed jinwon-int/a2a-broker#319 — terminal outbox cursor recovery proof",
+    );
+
+    restarted.getTerminalTaskEventOutbox().acknowledge(replayed.id, {
+      evidence: "provider_delivery_receipt",
+      acknowledgedAt: "2026-05-04T02:01:00.000Z",
+      receiptId: "provider-receipt-replayed",
+    });
+    const settled = restarted.getTerminalTaskEventOutbox().reconcile({ afterId: firstPoll.cursor ?? undefined });
+    assert.deepEqual(settled.events, []);
+    assert.equal(settled.reconciledUnacked, 0);
+  });
+
   it("keeps terminal outbox retention bounded", () => {
     const broker = new InMemoryA2ABroker(undefined, undefined, { maxTerminalTaskOutboxEvents: 2 });
     registerWorker(broker);
