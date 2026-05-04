@@ -11,6 +11,7 @@ import { z } from 'zod';
 const REQUIRED_SCHEMA_VERSION = 9;
 const REQUIRED_STATE_VERSION = 8;
 const DEFAULT_MAX_UNACKED_AGE_MS = 15 * 60 * 1000;
+const DEFAULT_LEGACY_RESIDUE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
 const HOT_TABLES = [
   'broker_exchanges',
@@ -114,6 +115,13 @@ function parseArgs(argv) {
   const nowRaw = readOption('--now-ms');
   const legacyResidueCutoffRaw = readOption('--legacy-residue-cutoff') ?? process.env.BROKER_MIGRATION_GATE_LEGACY_RESIDUE_CUTOFF;
   const legacyResidueCutoffMs = legacyResidueCutoffRaw === undefined ? null : Date.parse(legacyResidueCutoffRaw);
+  const legacyResidueExpiresRaw = readOption('--legacy-residue-expires') ?? process.env.BROKER_MIGRATION_GATE_LEGACY_RESIDUE_EXPIRES;
+  const legacyResidueExpiresMs = legacyResidueExpiresRaw === undefined || !Number.isFinite(legacyResidueCutoffMs)
+    ? null
+    : Date.parse(legacyResidueExpiresRaw);
+  const defaultLegacyResidueExpiresMs = Number.isFinite(legacyResidueCutoffMs)
+    ? legacyResidueCutoffMs + DEFAULT_LEGACY_RESIDUE_TTL_MS
+    : null;
   return {
     dbFile: readOption('--db') ?? process.env.BROKER_SQLITE_FILE ?? process.env.SQLITE_STATE_FILE,
     json: argv.includes('--json'),
@@ -121,6 +129,12 @@ function parseArgs(argv) {
     nowMs: nowRaw === undefined ? Date.now() : Number(nowRaw),
     legacyResidueCutoff: Number.isFinite(legacyResidueCutoffMs) ? new Date(legacyResidueCutoffMs).toISOString() : null,
     legacyResidueCutoffMs: Number.isFinite(legacyResidueCutoffMs) ? legacyResidueCutoffMs : null,
+    legacyResidueExpires: Number.isFinite(legacyResidueExpiresMs)
+      ? new Date(legacyResidueExpiresMs).toISOString()
+      : Number.isFinite(defaultLegacyResidueExpiresMs) ? new Date(defaultLegacyResidueExpiresMs).toISOString() : null,
+    legacyResidueExpiresMs: Number.isFinite(legacyResidueExpiresMs)
+      ? legacyResidueExpiresMs
+      : Number.isFinite(defaultLegacyResidueExpiresMs) ? defaultLegacyResidueExpiresMs : null,
   };
 }
 
@@ -166,6 +180,62 @@ function isBeforeLegacyCutoff(isoTimestamp, cutoffMs) {
   if (!Number.isFinite(cutoffMs)) return false;
   const valueMs = Date.parse(isoTimestamp ?? '');
   return Number.isFinite(valueMs) && valueMs < cutoffMs;
+}
+
+function normalizeOptions(options = {}) {
+  const legacyResidueCutoffMs = Number.isFinite(options.legacyResidueCutoffMs)
+    ? options.legacyResidueCutoffMs
+    : Date.parse(options.legacyResidueCutoff ?? '');
+  const legacyResidueExpiresMs = Number.isFinite(options.legacyResidueExpiresMs)
+    ? options.legacyResidueExpiresMs
+    : Date.parse(options.legacyResidueExpires ?? '');
+  const defaultLegacyResidueExpiresMs = Number.isFinite(legacyResidueCutoffMs)
+    ? legacyResidueCutoffMs + DEFAULT_LEGACY_RESIDUE_TTL_MS
+    : null;
+  return {
+    ...options,
+    legacyResidueCutoffMs: Number.isFinite(legacyResidueCutoffMs) ? legacyResidueCutoffMs : null,
+    legacyResidueCutoff: Number.isFinite(legacyResidueCutoffMs) ? new Date(legacyResidueCutoffMs).toISOString() : null,
+    legacyResidueExpiresMs: Number.isFinite(legacyResidueExpiresMs)
+      ? legacyResidueExpiresMs
+      : Number.isFinite(defaultLegacyResidueExpiresMs) ? defaultLegacyResidueExpiresMs : null,
+    legacyResidueExpires: Number.isFinite(legacyResidueExpiresMs)
+      ? new Date(legacyResidueExpiresMs).toISOString()
+      : Number.isFinite(defaultLegacyResidueExpiresMs) ? new Date(defaultLegacyResidueExpiresMs).toISOString() : null,
+  };
+}
+
+function buildLegacyResiduePolicy({ legacyResidueCutoff, legacyResidueExpires }) {
+  if (!legacyResidueCutoff) return null;
+  return {
+    cutoff: legacyResidueCutoff,
+    expiresAt: legacyResidueExpires ?? null,
+    lifecycle: 'Rows older than the cutoff are legacy residue: report-only quarantine, never forged ACK/tombstone evidence. Rows at or after the cutoff are current regressions and block release. Legacy residue must be cleaned or the cutoff removed before expiry.',
+  };
+}
+
+function checkLegacyResidueLifecycle(checks, { nowMs, legacyResidueCutoff, legacyResidueExpiresMs, legacyResidueExpires }) {
+  const legacyResidueCounts = checks
+    .filter((check) => Array.isArray(check.legacyResidue))
+    .map((check) => ({ check: check.check, count: check.legacyResidue.length }))
+    .filter((item) => item.count > 0);
+  const totalLegacyResidue = legacyResidueCounts.reduce((sum, item) => sum + item.count, 0);
+  const policy = buildLegacyResiduePolicy({ legacyResidueCutoff, legacyResidueExpires });
+  if (!policy) {
+    return pass('legacy residue lifecycle policy', 'no legacy residue cutoff configured; all residue is treated as current', { legacyResidueCounts, totalLegacyResidue, policy });
+  }
+  if (totalLegacyResidue === 0) {
+    return pass('legacy residue lifecycle policy', `legacy residue cutoff active until ${policy.expiresAt ?? 'manual removal'}; no quarantined residue found`, { legacyResidueCounts, totalLegacyResidue, policy });
+  }
+  if (Number.isFinite(legacyResidueExpiresMs) && Number.isFinite(nowMs) && nowMs >= legacyResidueExpiresMs) {
+    return fail('legacy residue lifecycle policy', `${totalLegacyResidue} legacy residue row(s) remain after cutoff policy expiry; remove/resolve residue or remove --legacy-residue-cutoff`, {
+      reason: 'legacy_residue_policy_expired',
+      legacyResidueCounts,
+      totalLegacyResidue,
+      policy,
+    });
+  }
+  return pass('legacy residue lifecycle policy', `${totalLegacyResidue} legacy residue row(s) quarantined by cutoff until ${policy.expiresAt ?? 'manual removal'}; post-cutoff rows remain blocking`, { legacyResidueCounts, totalLegacyResidue, policy });
 }
 
 function checkSchema(db) {
@@ -295,8 +365,8 @@ function hasCanonicalTerminalEvidence(event) {
   );
 }
 
-function isLegacyAcceptedOnlyOutbox(event, cutoffMs) {
-  return isBeforeLegacyCutoff(event.createdAt, cutoffMs) &&
+function isLegacyAcceptedOnlyOutbox(event, createdAt, cutoffMs) {
+  return isBeforeLegacyCutoff(createdAt, cutoffMs) &&
     !event.ack &&
     !event.deliveredAt &&
     event.receipt?.status === 'accepted';
@@ -327,18 +397,20 @@ function checkTerminalOutbox(db, { nowMs, maxUnackedAgeMs, legacyResidueCutoffMs
       }
     }
     if (!event.ack && !event.deliveredAt) {
-      const createdMs = Date.parse(event.createdAt);
+      const createdAt = typeof row.createdAt === 'string' ? row.createdAt : event.createdAt;
+      const createdMs = Date.parse(createdAt);
       if (Number.isFinite(createdMs) && nowMs - createdMs > maxUnackedAgeMs) {
-        if (isLegacyAcceptedOnlyOutbox(event, legacyResidueCutoffMs)) {
+        if (isLegacyAcceptedOnlyOutbox(event, createdAt, legacyResidueCutoffMs)) {
           legacyResidue.push({
             id,
             reason: 'legacy_accepted_only_unacked_terminal_outbox',
-            createdAt: event.createdAt,
+            createdAt,
+            payloadCreatedAt: event.createdAt,
             canonicalEvidence: hasCanonicalTerminalEvidence(event),
           });
           continue;
         }
-        violations.push({ id, reason: 'stale_unacked_receipt_evidence', ageMs: nowMs - createdMs, maxUnackedAgeMs });
+        violations.push({ id, reason: 'stale_unacked_receipt_evidence', ageMs: nowMs - createdMs, maxUnackedAgeMs, createdAt });
       }
     }
   }
@@ -349,7 +421,8 @@ function checkTerminalOutbox(db, { nowMs, maxUnackedAgeMs, legacyResidueCutoffMs
   return pass('terminal-outbox ACK invariant', `${rows.length} outbox row(s) have receipt-safe ACK state or are within replay window${suffix}`, { rowCount: rows.length, legacyResidue });
 }
 
-export function runMigrationHealthGate(options) {
+export function runMigrationHealthGate(rawOptions) {
+  const options = normalizeOptions(rawOptions);
   if (!options?.dbFile) {
     return {
       kind: 'broker.migration-health-gate',
@@ -369,6 +442,7 @@ export function runMigrationHealthGate(options) {
 
   const db = new DatabaseSync(options.dbFile, { readOnly: true });
   try {
+    const nowMs = options.nowMs ?? Date.now();
     const checks = [
       checkSchema(db),
       checkHotTables(db),
@@ -377,11 +451,17 @@ export function runMigrationHealthGate(options) {
         legacyResidueCutoffMs: options.legacyResidueCutoffMs,
       }),
       checkTerminalOutbox(db, {
-        nowMs: options.nowMs ?? Date.now(),
+        nowMs,
         maxUnackedAgeMs: options.maxUnackedAgeMs ?? DEFAULT_MAX_UNACKED_AGE_MS,
         legacyResidueCutoffMs: options.legacyResidueCutoffMs,
       }),
     ];
+    checks.push(checkLegacyResidueLifecycle(checks, {
+      nowMs,
+      legacyResidueCutoff: options.legacyResidueCutoff ?? null,
+      legacyResidueExpiresMs: options.legacyResidueExpiresMs,
+      legacyResidueExpires: options.legacyResidueExpires ?? null,
+    }));
     return {
       kind: 'broker.migration-health-gate',
       dbFile: sanitizeDiagnosticValue(options.dbFile),
@@ -390,6 +470,11 @@ export function runMigrationHealthGate(options) {
         stateVersion: REQUIRED_STATE_VERSION,
         maxUnackedAgeMs: options.maxUnackedAgeMs ?? DEFAULT_MAX_UNACKED_AGE_MS,
         legacyResidueCutoff: options.legacyResidueCutoff ?? null,
+        legacyResidueExpires: options.legacyResidueExpires ?? null,
+        legacyResiduePolicy: buildLegacyResiduePolicy({
+          legacyResidueCutoff: options.legacyResidueCutoff ?? null,
+          legacyResidueExpires: options.legacyResidueExpires ?? null,
+        }),
       },
       checks,
       ok: checks.every((check) => check.ok),
