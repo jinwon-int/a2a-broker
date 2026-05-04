@@ -457,6 +457,173 @@ test("E2E: terminal notification outbox enforces auth and replays compact ack-sa
   }
 });
 
+test("E2E: no-live replay drill requeues stale claimed/running tasks and replays terminal evidence", async () => {
+  const server = await startTestServer({ edgeSecret: "s", staleReaperEnabled: false, workerOfflineAfterSec: 0 });
+  try {
+    const hubHeaders = h("s", { "x-a2a-requester-id": "hub-1", "x-a2a-requester-role": "hub" });
+    const workerHeaders = h("s", { "x-a2a-requester-id": "nosuk", "x-a2a-requester-role": "analyst" });
+    const operatorHeaders = h("s", { "x-a2a-requester-id": "ops", "x-a2a-requester-role": "operator" });
+
+    const regRes = await fetch(`${server.baseUrl}/workers/register`, {
+      method: "POST",
+      headers: workerHeaders,
+      body: JSON.stringify({
+        nodeId: "nosuk",
+        role: "analyst",
+        capabilities: {
+          canAnalyze: true,
+          canBackfill: false,
+          canPatchWorkspace: true,
+          canPromoteLive: false,
+          workspaceIds: ["dryrun"],
+          environments: ["research"],
+        },
+      }),
+    });
+    assert.equal(regRes.status, 201);
+
+    const heartbeatRes = await fetch(`${server.baseUrl}/workers/nosuk/heartbeat`, {
+      method: "POST",
+      headers: workerHeaders,
+      body: JSON.stringify({ status: "online" }),
+    });
+    assert.equal(heartbeatRes.status, 200);
+
+    async function createDrillTask(id: string, brief: string) {
+      const res = await fetch(`${server.baseUrl}/tasks`, {
+        method: "POST",
+        headers: hubHeaders,
+        body: JSON.stringify({
+          id,
+          intent: "analyze",
+          requester: { id: "hub-1", kind: "node", role: "hub" },
+          target: { id: "nosuk", kind: "node", role: "analyst" },
+          assignedWorkerId: "nosuk",
+          via: { transport: "openclaw", channel: "github", traceId: "trace-329" },
+          payload: {
+            githubRepo: "jinwon-int/a2a-broker",
+            githubIssueNumber: 329,
+            run: "a2a-no-live-integration-20260504035026",
+            taskBrief: brief,
+          },
+          message: `jinwon-int/a2a-broker#329: ${brief}`,
+        }),
+      });
+      assert.equal(res.status, 201);
+      return res.json();
+    }
+
+    const claimedTask = await createDrillTask("task-no-live-claimed", "claimed stale replay drill");
+    const runningTask = await createDrillTask("task-no-live-running", "running stale replay drill");
+
+    assert.equal((await fetch(`${server.baseUrl}/tasks/${claimedTask.id}/claim`, {
+      method: "POST",
+      headers: workerHeaders,
+      body: JSON.stringify({ workerId: "nosuk" }),
+    })).status, 200);
+    assert.equal((await fetch(`${server.baseUrl}/tasks/${runningTask.id}/claim`, {
+      method: "POST",
+      headers: workerHeaders,
+      body: JSON.stringify({ workerId: "nosuk" }),
+    })).status, 200);
+    assert.equal((await fetch(`${server.baseUrl}/tasks/${runningTask.id}/start`, {
+      method: "POST",
+      headers: workerHeaders,
+      body: JSON.stringify({ workerId: "nosuk" }),
+    })).status, 200);
+
+    const sweepRes = await fetch(`${server.baseUrl}/tasks/requeue_stale?older_than_seconds=0`, {
+      method: "POST",
+      headers: operatorHeaders,
+    });
+    assert.equal(sweepRes.status, 200);
+    const sweep = await sweepRes.json();
+    assert.equal(sweep.requeued, 2);
+    assert.equal(sweep.deadLettered, 0);
+    assert.deepEqual(sweep.items.map((item: { id: string }) => item.id).sort(), [claimedTask.id, runningTask.id]);
+
+    for (const id of [claimedTask.id, runningTask.id]) {
+      const replayed = await (await fetch(`${server.baseUrl}/tasks/${id}`, { headers: hubHeaders })).json();
+      assert.equal(replayed.id, id);
+      assert.equal(replayed.status, "queued", "stale task must be replayed instead of silently succeeding");
+      assert.equal(replayed.assignedWorkerId, "nosuk");
+      assert.equal(replayed.claimedBy, undefined);
+      assert.equal(replayed.requeueCount, 1);
+      assert.equal(replayed.payload.githubRepo, "jinwon-int/a2a-broker");
+      assert.equal(replayed.payload.githubIssueNumber, 329);
+      assert.equal(replayed.payload.run, "a2a-no-live-integration-20260504035026");
+      assert.equal(replayed.via.traceId, "trace-329");
+      assert.match(replayed.message, /broker#329:/);
+    }
+
+    assert.equal((await fetch(`${server.baseUrl}/tasks/${runningTask.id}/claim`, {
+      method: "POST",
+      headers: workerHeaders,
+      body: JSON.stringify({ workerId: "nosuk" }),
+    })).status, 200);
+    assert.equal((await fetch(`${server.baseUrl}/tasks/${runningTask.id}/start`, {
+      method: "POST",
+      headers: workerHeaders,
+      body: JSON.stringify({ workerId: "nosuk" }),
+    })).status, 200);
+
+    const doneBody = {
+      workerId: "nosuk",
+      result: {
+        summary: "Done: no-live replay/requeue drill passed",
+        output: {
+          prUrl: "https://github.com/jinwon-int/a2a-broker/pull/330",
+          doneUrl: "https://github.com/jinwon-int/a2a-broker/issues/329#issuecomment-done",
+        },
+      },
+    };
+    const firstDone = await fetch(`${server.baseUrl}/tasks/${runningTask.id}/complete`, {
+      method: "POST",
+      headers: workerHeaders,
+      body: JSON.stringify(doneBody),
+    });
+    assert.equal(firstDone.status, 200);
+    const firstDoneBody = await firstDone.json();
+    const duplicateDone = await fetch(`${server.baseUrl}/tasks/${runningTask.id}/complete`, {
+      method: "POST",
+      headers: workerHeaders,
+      body: JSON.stringify({ ...doneBody, result: { summary: "Done: duplicate should be idempotent" } }),
+    });
+    assert.equal(duplicateDone.status, 200);
+    assert.deepEqual((await duplicateDone.json()).result, firstDoneBody.result);
+
+    const outbox = await (await fetch(`${server.baseUrl}/a2a/tasks/terminal-outbox`, { headers: hubHeaders })).json();
+    assert.equal(outbox.count, 1, "duplicate Done evidence must not enqueue duplicate terminal records");
+    const [event] = outbox.events;
+    assert.equal(event.payload.taskId, runningTask.id);
+    assert.equal(event.payload.worker, "nosuk");
+    assert.equal(event.payload.repo, "jinwon-int/a2a-broker");
+    assert.equal(event.payload.issue, 329);
+    assert.equal(event.payload.run, "a2a-no-live-integration-20260504035026");
+    assert.equal(event.payload.traceId, "trace-329");
+    assert.equal(event.payload.taskBrief, "running stale replay drill");
+
+    const replay = await (await fetch(
+      `${server.baseUrl}/a2a/tasks/terminal-outbox?after_id=${encodeURIComponent(outbox.cursor)}&reconcile_unacked=true`,
+      { headers: hubHeaders },
+    )).json();
+    assert.equal(replay.reconciledUnacked, 1);
+    assert.equal(replay.count, 1);
+    assert.equal(replay.events[0].id, event.id);
+    assert.deepEqual(replay.events[0].payload, event.payload);
+
+    const providerSendOnlyAck = await fetch(`${server.baseUrl}/a2a/tasks/terminal-outbox/ack`, {
+      method: "POST",
+      headers: operatorHeaders,
+      body: JSON.stringify({ id: event.id, receipt: { evidence: "provider_send_success" } }),
+    });
+    assert.equal(providerSendOnlyAck.status, 400);
+    assert.equal(server.runtime.broker.getTerminalTaskEventOutbox().subscribe()[0]!.attempts, 0);
+  } finally {
+    await server.close();
+  }
+});
+
 // ---------------------------------------------------------------------------
 // E2E: Full failure lifecycle
 // ---------------------------------------------------------------------------
