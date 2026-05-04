@@ -55,6 +55,14 @@ const terminalAckSchema = z.object({
   note: z.string().optional(),
 }).passthrough();
 
+const terminalReceiptSchema = z.object({
+  status: z.enum(['accepted', 'started', 'produced', 'provider_sent', 'operator_visible', 'timed_out', 'stale', 'failed', 'sent', 'provider_delivered_if_known']),
+  updatedAt: z.string(),
+  evidence: z.enum(['operator_visible', 'operator_confirmed', 'provider_delivery_receipt']).optional(),
+  receiptId: z.string().optional(),
+  note: z.string().optional(),
+}).passthrough();
+
 const terminalOutboxSchema = z.object({
   id: z.string().min(1),
   kind: z.literal('task.terminal'),
@@ -67,6 +75,11 @@ const terminalOutboxSchema = z.object({
   }).passthrough(),
   createdAt: z.string(),
   ack: terminalAckSchema.optional(),
+  receipt: terminalReceiptSchema.optional(),
+  ackAudit: z.object({
+    decision: z.string().optional(),
+    reason: z.string().optional(),
+  }).passthrough().optional(),
   deliveredAt: z.string().optional(),
   attempts: z.number().int().nonnegative(),
 }).passthrough();
@@ -365,11 +378,85 @@ function hasCanonicalTerminalEvidence(event) {
   );
 }
 
+function normalizeTerminalReceiptStatus(status) {
+  if (status === 'sent' || status === 'provider_delivered_if_known') return 'provider_sent';
+  return typeof status === 'string' ? status : 'accepted';
+}
+
+function hasDuplicateSuppressionHint(event) {
+  const reason = typeof event.ackAudit?.reason === 'string' ? event.ackAudit.reason : '';
+  return Boolean(
+    event.duplicateOf ||
+    event.duplicateSuppressed === true ||
+    event.receipt?.duplicateOf ||
+    /duplicate|suppress/i.test(reason)
+  );
+}
+
+function terminalReceiptGapClassification(event, { ageMs, maxUnackedAgeMs } = {}) {
+  if (event.ack || event.deliveredAt) {
+    return {
+      bucket: 'receipt_confirmed',
+      releaseBlocking: false,
+      action: 'No remediation required; ACK is backed by receipt-confirmed evidence.',
+    };
+  }
+  if (hasDuplicateSuppressionHint(event)) {
+    return {
+      bucket: 'duplicate_suppressed',
+      releaseBlocking: true,
+      action: 'Suppress duplicate notification, but keep the row unacked/release-blocking until the original receipt evidence or operator-approved duplicate policy is recorded.',
+    };
+  }
+  const receiptStatus = normalizeTerminalReceiptStatus(event.receipt?.status);
+  if (receiptStatus === 'operator_visible') {
+    return {
+      bucket: 'receipt_confirmed',
+      releaseBlocking: true,
+      action: 'Operator-visible receipt is recorded; convert to receipt-confirmed ACK only through the terminal ACK endpoint with real receipt evidence.',
+    };
+  }
+  if (receiptStatus === 'failed') {
+    return {
+      bucket: 'send_failed',
+      releaseBlocking: true,
+      action: 'Investigate notification provider failure, retry delivery, and ACK only after operator-visible/provider-delivery evidence exists.',
+    };
+  }
+  if (receiptStatus === 'timed_out' || receiptStatus === 'stale' || (Number.isFinite(ageMs) && Number.isFinite(maxUnackedAgeMs) && ageMs > maxUnackedAgeMs && event.attempts > 0 && receiptStatus === 'accepted')) {
+    return {
+      bucket: 'stale_timed_out',
+      releaseBlocking: true,
+      action: 'Replay/reconcile the terminal event; stale or timed-out send state is not ACK evidence.',
+    };
+  }
+  if (receiptStatus === 'provider_sent' || receiptStatus === 'started' || receiptStatus === 'produced') {
+    return {
+      bucket: 'send_accepted_no_receipt',
+      releaseBlocking: true,
+      action: 'Provider send acceptance is not an ACK; wait for provider-delivery/operator-visible receipt evidence.',
+    };
+  }
+  return {
+    bucket: 'no_notification_config',
+    releaseBlocking: true,
+    action: 'Configure/repair the operator notification path and replay; no send/receipt evidence exists.',
+  };
+}
+
+function summarizeGapBuckets(classifications) {
+  const buckets = {};
+  for (const item of classifications) {
+    buckets[item.bucket] = (buckets[item.bucket] ?? 0) + 1;
+  }
+  return buckets;
+}
+
 function isLegacyAcceptedOnlyOutbox(event, createdAt, cutoffMs) {
   return isBeforeLegacyCutoff(createdAt, cutoffMs) &&
     !event.ack &&
     !event.deliveredAt &&
-    event.receipt?.status === 'accepted';
+    normalizeTerminalReceiptStatus(event.receipt?.status) === 'accepted';
 }
 
 function checkTerminalOutbox(db, { nowMs, maxUnackedAgeMs, legacyResidueCutoffMs }) {
@@ -378,6 +465,7 @@ function checkTerminalOutbox(db, { nowMs, maxUnackedAgeMs, legacyResidueCutoffMs
   }
   const violations = [];
   const legacyResidue = [];
+  const classifications = [];
   const rows = db.prepare('SELECT id, acknowledged_at AS acknowledgedAt, created_at AS createdAt, payload FROM broker_terminal_outbox ORDER BY created_at ASC, id ASC').all();
   for (const row of rows) {
     const id = sanitizeDiagnosticValue(row.id);
@@ -396,29 +484,56 @@ function checkTerminalOutbox(db, { nowMs, maxUnackedAgeMs, legacyResidueCutoffMs
         violations.push({ id, reason: 'invalid_ack_receipt', detail: zodMessage(ackParsed.error) });
       }
     }
+    const createdAt = typeof row.createdAt === 'string' ? row.createdAt : event.createdAt;
+    const createdMs = Date.parse(createdAt);
+    const ageMs = Number.isFinite(createdMs) && Number.isFinite(nowMs) ? nowMs - createdMs : null;
+    const classification = terminalReceiptGapClassification(event, { ageMs, maxUnackedAgeMs });
+    if (!event.ack || row.acknowledgedAt || event.deliveredAt) {
+      classifications.push({
+        id,
+        bucket: classification.bucket,
+        releaseBlocking: classification.releaseBlocking,
+        action: classification.action,
+        receiptStatus: normalizeTerminalReceiptStatus(event.receipt?.status),
+        createdAt,
+        ageMs,
+      });
+    }
     if (!event.ack && !event.deliveredAt) {
-      const createdAt = typeof row.createdAt === 'string' ? row.createdAt : event.createdAt;
-      const createdMs = Date.parse(createdAt);
       if (Number.isFinite(createdMs) && nowMs - createdMs > maxUnackedAgeMs) {
         if (isLegacyAcceptedOnlyOutbox(event, createdAt, legacyResidueCutoffMs)) {
           legacyResidue.push({
             id,
             reason: 'legacy_accepted_only_unacked_terminal_outbox',
+            bucket: classification.bucket,
+            action: classification.action,
+            releaseBlocking: false,
             createdAt,
             payloadCreatedAt: event.createdAt,
             canonicalEvidence: hasCanonicalTerminalEvidence(event),
           });
           continue;
         }
-        violations.push({ id, reason: 'stale_unacked_receipt_evidence', ageMs: nowMs - createdMs, maxUnackedAgeMs, createdAt });
+        violations.push({
+          id,
+          reason: 'stale_unacked_receipt_evidence',
+          bucket: classification.bucket,
+          releaseBlocking: true,
+          action: classification.action,
+          ageMs: nowMs - createdMs,
+          maxUnackedAgeMs,
+          createdAt,
+        });
       }
     }
   }
+  const currentGapBuckets = summarizeGapBuckets(violations.filter((violation) => violation.releaseBlocking));
+  const receiptGapClassifications = classifications;
   if (violations.length > 0) {
-    return fail('terminal-outbox ACK invariant', `${violations.length} ACK invariant violation(s); rollout blocked`, { violations, legacyResidue });
+    return fail('terminal-outbox ACK invariant', `${violations.length} ACK invariant violation(s); rollout blocked; current receipt gaps=${JSON.stringify(currentGapBuckets)}`, { violations, legacyResidue, receiptGapClassifications, currentGapBuckets });
   }
   const suffix = legacyResidue.length > 0 ? `; ${legacyResidue.length} legacy accepted-only row(s) quarantined by cutoff without ACK` : '';
-  return pass('terminal-outbox ACK invariant', `${rows.length} outbox row(s) have receipt-safe ACK state or are within replay window${suffix}`, { rowCount: rows.length, legacyResidue });
+  return pass('terminal-outbox ACK invariant', `${rows.length} outbox row(s) have receipt-safe ACK state or are within replay window${suffix}`, { rowCount: rows.length, legacyResidue, receiptGapClassifications, currentGapBuckets });
 }
 
 export function runMigrationHealthGate(rawOptions) {
