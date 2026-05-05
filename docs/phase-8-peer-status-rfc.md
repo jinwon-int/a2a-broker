@@ -29,7 +29,7 @@ Non-goals:
 
 ```ts
 interface PeerStatusRequest {
-  target: string;              // canonical node id, e.g. "seoseo", "yukson"
+  target: string;              // canonical node id, e.g. "<worker-a>", "<worker-b>"
   maxCacheAgeMs?: number;      // caller's tolerance for cached answer; default 5000
   verbose?: boolean;           // requires elevated scope; default false
 }
@@ -203,7 +203,7 @@ Note: target unreachability is a **data condition**, not an error — callers sh
 2. Implement in `a2a-broker` standalone first (mode=standalone path).
 3. Implement in `openclaw-plugin-a2a` gateway handler for internal mode.
 4. Gate behind feature flag `a2a.peerStatus.enabled=false` by default.
-5. Phase 1–5 green → enable on one non-critical node pair (yukson ↔ seoseo) for canary.
+5. Phase 1–5 green → enable on one non-critical node pair (<worker-a> ↔ <worker-b>) for canary.
 6. Regression lock on bangtong held throughout; bangtong never serves or polls peer.status until final sign-off.
 
 ## 11. Open questions

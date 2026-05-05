@@ -1,6 +1,6 @@
 # Operator Terminal Outbox Contract
 
-The broker projects terminal task lifecycle events into a compact `task.terminal` outbox for an external notifier such as `seoseo/OpenClaw` `plugin-notifier`.
+The broker projects terminal task lifecycle events into a compact `task.terminal` outbox for an external notifier such as `<notifier-host>/OpenClaw` `plugin-notifier`.
 
 The broker does **not** call Telegram, OpenClaw main-session delivery, or any other operator transport directly. It only exposes replayable, operator-safe records; the notifier owns polling/SSE consumption, dedupe, acknowledgement, and Telegram/main-session push.
 

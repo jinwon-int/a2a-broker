@@ -29,7 +29,8 @@
     "migration_health_gate": "node scripts/broker-migration-health-gate.mjs",
     "terminal_receipt_closeout_report": "node scripts/terminal-receipt-closeout-report.mjs",
     "closeout_release_report": "node scripts/closeout-release-report.mjs",
-    "rehearsal_manifest": "node scripts/broker-rehearsal-manifest.mjs"
+    "rehearsal_manifest": "node scripts/broker-rehearsal-manifest.mjs",
+    "scan:public-readiness": "node scripts/public-readiness-scan.mjs"
   },
   "engines": {
     "node": ">=22"

@@ -29,7 +29,7 @@ npm run closeout_release_report -- --input closeout-evidence.json --markdown
 node scripts/release-gate.mjs --skip-recovery
 
 # Run recovery against a running broker
-BROKER_URL=http://127.0.0.1:8787 BROKER_EDGE_SECRET=xxx \
+BROKER_URL=http://127.0.0.1:8787 BROKER_EDGE_SECRET=<edge-secret-placeholder> \
   node scripts/release-gate.mjs --skip-compose
 
 # Run compose smoke on a specific port

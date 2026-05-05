@@ -39,7 +39,7 @@ proves the live OpenClaw session wake/resume path above.
 ## 2. Resource-only warnings vs candidate failures
 
 Round 9 produced a false NO-GO on `yukson` because VPS2 memory pressure blocked
-local proof execution while the same candidate passed on a healthier seoseo
+local proof execution while the same candidate passed on a healthier <worker-host>
 rerun. Round 10 operators should classify outcomes this way:
 
 ### Resource-only warning
