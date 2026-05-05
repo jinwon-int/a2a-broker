@@ -1215,12 +1215,13 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
           assertRequesterHasRole(requesterIdentity, ["hub", "operator"], "operator.task-report");
         }
         const taskIds = taskIdsFromUrl(url);
+        const parentIssue = optionalString(url.searchParams.get("parent_issue"));
         const staleAfterMs = numberQueryParam(url, "stale_after_ms") ?? 15 * 60 * 1000;
         const updatedAfter = optionalString(url.searchParams.get("updated_after"));
         const tasks = taskIds.length
           ? taskIds.map((id) => getTaskForReadPath(stateStore, broker, id)).filter((task): task is TaskRecord => Boolean(task))
           : listTasksForReadPath(stateStore, broker, {});
-        return sendJson(res, 200, buildOperatorTaskReport(tasks, { taskIds, staleAfterMs, updatedAfter }));
+        return sendJson(res, 200, buildOperatorTaskReport(tasks, { taskIds, parentIssue, staleAfterMs, updatedAfter }));
       }
 
       if (req.method === "GET" && path === "/tasks/diagnostics") {
