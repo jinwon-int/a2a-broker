@@ -1088,8 +1088,60 @@ test("SqliteAuditRuntimeRepository coalesces worker heartbeats and enforces hot-
       total: 3,
       workerHeartbeat: 0,
       workerHeartbeatRatio: 0,
+      recentWindowMs: 600_000,
+      recentTotal: 0,
+      recentWorkerHeartbeat: 0,
+      recentWorkerHeartbeatRatio: 0,
       warnings: [],
     });
+    store.close();
+  } finally {
+    temp.cleanup();
+  }
+});
+
+test("hot audit diagnostics separate historical heartbeat residue from recent churn", () => {
+  const temp = withTempFile("state.sqlite");
+  try {
+    const store = new SqliteBrokerStateStore(temp.filePath);
+    const oldHeartbeatEvents = Array.from({ length: 24 }, (_, index) => ({
+      ...makeAuditEvent(`old-heartbeat-${index}`, "worker.heartbeat", "worker-runtime", `2026-04-27T00:${String(index).padStart(2, "0")}:00.000Z`),
+      actorId: "worker-runtime",
+      targetType: "worker" as const,
+    }));
+    store.save({
+      ...emptySnapshot(),
+      auditEvents: [
+        ...oldHeartbeatEvents,
+        makeAuditEvent("old-task-created", "task.created", "task-runtime", "2026-04-27T00:30:00.000Z"),
+      ],
+    });
+
+    const historical = store.readHotAuditDiagnostics();
+    assert.equal(historical.total, 25);
+    assert.equal(historical.workerHeartbeat, 24);
+    assert.equal(historical.recentWorkerHeartbeat, 0);
+    assert.deepEqual(historical.warnings, [], "historical heartbeat-heavy residue should not look like active churn");
+
+    const now = Date.now();
+    const recentHeartbeatEvents = Array.from({ length: 20 }, (_, index) => ({
+      ...makeAuditEvent(`recent-heartbeat-${index}`, "worker.heartbeat", "worker-runtime", new Date(now - index * 1000).toISOString()),
+      actorId: "worker-runtime",
+      targetType: "worker" as const,
+    }));
+    store.save({
+      ...emptySnapshot(),
+      auditEvents: [
+        ...oldHeartbeatEvents,
+        ...recentHeartbeatEvents,
+        makeAuditEvent("recent-task-created", "task.created", "task-runtime", new Date(now).toISOString()),
+      ],
+    });
+
+    const active = store.readHotAuditDiagnostics();
+    assert.equal(active.recentWorkerHeartbeat, 20);
+    assert.ok(active.recentWorkerHeartbeatRatio > 0.8);
+    assert.match(active.warnings.join("\n"), /worker\.heartbeat audit events are \d+% of broker_audit_events in the last 10 minutes/);
     store.close();
   } finally {
     temp.cleanup();

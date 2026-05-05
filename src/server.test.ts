@@ -539,6 +539,10 @@ test("server reports SQLite persistence metadata when SQLite backend is enabled"
       total: 0,
       workerHeartbeat: 0,
       workerHeartbeatRatio: 0,
+      recentWindowMs: 600_000,
+      recentTotal: 0,
+      recentWorkerHeartbeat: 0,
+      recentWorkerHeartbeatRatio: 0,
       warnings: [],
     });
   } finally {
