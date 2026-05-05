@@ -6,7 +6,7 @@
 
 import process from 'node:process';
 
-const ISSUE = '#385';
+const ISSUE = '#392';
 const PARENT = '#383';
 const HTTP_URL = /^https?:\/\//;
 
@@ -14,37 +14,51 @@ const GATES = [
   {
     id: 'codeMerged',
     title: 'Code merged',
-    evidenceFlag: '--code-merged-evidence',
-    passDetail: 'merged code evidence is present',
-    pendingDetail: 'missing merged code evidence',
+    evidenceFlags: ['--code-merged-evidence'],
+    passDetail: 'broker/plugin/runner merged code evidence is present',
+    pendingDetail: 'missing merged broker/plugin/runner code evidence',
   },
   {
-    id: 'productionDeployed',
-    title: 'Production deployed',
-    evidenceFlag: '--production-deployed-evidence',
-    passDetail: 'production deployment evidence is present',
-    pendingDetail: 'missing production deployment evidence',
+    id: 'canaryDeployed',
+    title: 'Canary deployed',
+    evidenceFlags: ['--canary-deployed-evidence', '--production-deployed-evidence'],
+    passDetail: 'bounded canary deployment evidence is present',
+    pendingDetail: 'missing bounded canary deployment evidence',
   },
   {
-    id: 'liveProviderSendAttempted',
-    title: 'Live provider send attempted',
-    evidenceFlag: '--provider-send-evidence',
-    passDetail: 'live provider send attempt evidence is present',
-    pendingDetail: 'missing live provider send attempt evidence',
+    id: 'operatorBridgeEnabled',
+    title: 'Operator bridge enabled',
+    evidenceFlags: ['--operator-bridge-evidence'],
+    passDetail: 'operator bridge enablement evidence is present',
+    pendingDetail: 'missing operator bridge enablement evidence',
+  },
+  {
+    id: 'oneShotFreshTaskSent',
+    title: 'One-shot fresh task sent',
+    evidenceFlags: ['--fresh-task-evidence', '--provider-send-evidence'],
+    passDetail: 'one-shot fresh task/send evidence is present',
+    pendingDetail: 'missing one-shot fresh task/send evidence',
   },
   {
     id: 'operatorVisibleReceiptProven',
     title: 'Operator-visible receipt proven',
-    evidenceFlag: '--operator-receipt-evidence',
+    evidenceFlags: ['--operator-receipt-evidence'],
     passDetail: 'operator-visible receipt evidence is present',
-    pendingDetail: 'missing operator-visible receipt evidence; provider send success is insufficient',
+    pendingDetail: 'missing operator-visible receipt evidence; task/provider send success is insufficient',
   },
   {
-    id: 'terminalAckPerformed',
-    title: 'Terminal ACK performed',
-    evidenceFlag: '--terminal-ack-evidence',
-    passDetail: 'terminal ACK evidence is present',
-    pendingDetail: 'missing terminal ACK evidence; receipt proof alone is not an ACK',
+    id: 'manualAckRecorded',
+    title: 'Manual ACK recorded',
+    evidenceFlags: ['--manual-ack-evidence', '--terminal-ack-evidence'],
+    passDetail: 'manual terminal-outbox ACK evidence is present',
+    pendingDetail: 'missing manual ACK evidence; receipt proof alone is not an ACK',
+  },
+  {
+    id: 'finalNoLiveRestored',
+    title: 'Final no-live restoration',
+    evidenceFlags: ['--final-no-live-restoration-evidence'],
+    passDetail: 'post-proof no-live restoration evidence is present',
+    pendingDetail: 'missing final no-live restoration evidence',
   },
 ];
 
@@ -54,6 +68,14 @@ function readOption(argv, name) {
   if (inline) return inline.slice(prefix.length);
   const index = argv.indexOf(name);
   return index >= 0 ? argv[index + 1] : undefined;
+}
+
+function readAnyOption(argv, names) {
+  for (const name of names) {
+    const value = readOption(argv, name);
+    if (value !== undefined) return value;
+  }
+  return undefined;
 }
 
 function sanitizeEvidence(value) {
@@ -84,14 +106,17 @@ export function runTerminalBriefActivationReport(options = {}) {
   const gates = GATES.map((gate) => buildGate(gate, options[gate.id]));
   const byId = Object.fromEntries(gates.map((gate) => [gate.id, gate]));
   const warnings = [];
-  if (byId.liveProviderSendAttempted.proven && !byId.operatorVisibleReceiptProven.proven) {
-    warnings.push('provider send evidence is not operator-visible receipt evidence');
+  if (byId.oneShotFreshTaskSent.proven && !byId.operatorVisibleReceiptProven.proven) {
+    warnings.push('one-shot task/provider send evidence is not operator-visible receipt evidence');
   }
-  if (byId.operatorVisibleReceiptProven.proven && !byId.terminalAckPerformed.proven) {
-    warnings.push('operator-visible receipt evidence is not terminal ACK evidence');
+  if (byId.operatorVisibleReceiptProven.proven && !byId.manualAckRecorded.proven) {
+    warnings.push('operator-visible receipt evidence is not manual ACK evidence');
   }
-  if (byId.terminalAckPerformed.proven && !byId.operatorVisibleReceiptProven.proven) {
-    warnings.push('terminal ACK evidence requires independently proven operator-visible/provider-delivery receipt evidence');
+  if (byId.manualAckRecorded.proven && !byId.operatorVisibleReceiptProven.proven) {
+    warnings.push('manual ACK evidence requires independently proven operator-visible/provider-delivery receipt evidence');
+  }
+  if (byId.manualAckRecorded.proven && !byId.finalNoLiveRestored.proven) {
+    warnings.push('manual ACK evidence is not final no-live restoration evidence');
   }
 
   const activationReady = gates.every((gate) => gate.proven) && warnings.length === 0;
@@ -107,7 +132,9 @@ export function runTerminalBriefActivationReport(options = {}) {
     warnings,
     safety: {
       productionDeployAttempted: false,
+      canaryDeployAttempted: false,
       gatewayRestartAttempted: false,
+      operatorBridgeEnabledByThisReport: false,
       providerSendAttempted: false,
       dbMutationAttempted: false,
       workerRestartOrRolloutAttempted: false,
@@ -134,12 +161,15 @@ export function renderMarkdown(report) {
     ...report.gates.map((gate) => `| ${escapeCell(gate.title)} | ${gate.status} | ${escapeCell(gate.evidence ?? 'none')} | ${escapeCell(gate.detail)} |`),
     '',
     'Separation checks:',
-    `- provider send success counted as operator-visible receipt: ${report.gates.find((gate) => gate.id === 'liveProviderSendAttempted')?.proven && !report.gates.find((gate) => gate.id === 'operatorVisibleReceiptProven')?.proven ? 'no' : 'not applicable'}`,
-    `- operator-visible receipt counted as terminal ACK: ${report.gates.find((gate) => gate.id === 'operatorVisibleReceiptProven')?.proven && !report.gates.find((gate) => gate.id === 'terminalAckPerformed')?.proven ? 'no' : 'not applicable'}`,
+    `- one-shot task/provider send counted as operator-visible receipt: ${report.gates.find((gate) => gate.id === 'oneShotFreshTaskSent')?.proven && !report.gates.find((gate) => gate.id === 'operatorVisibleReceiptProven')?.proven ? 'no' : 'not applicable'}`,
+    `- operator-visible receipt counted as manual ACK: ${report.gates.find((gate) => gate.id === 'operatorVisibleReceiptProven')?.proven && !report.gates.find((gate) => gate.id === 'manualAckRecorded')?.proven ? 'no' : 'not applicable'}`,
+    `- manual ACK counted as final no-live restoration: ${report.gates.find((gate) => gate.id === 'manualAckRecorded')?.proven && !report.gates.find((gate) => gate.id === 'finalNoLiveRestored')?.proven ? 'no' : 'not applicable'}`,
     '',
     'Safety:',
     '- production deploy attempted: no',
+    '- canary deploy attempted by this report: no',
     '- Gateway restart attempted: no',
+    '- operator bridge enabled by this report: no',
     '- live provider send attempted by this report: no',
     '- production DB mutation attempted: no',
     '- worker service restart/runner rollout attempted: no',
@@ -153,7 +183,7 @@ export function renderMarkdown(report) {
 
 function parseArgs(argv) {
   const options = {};
-  for (const gate of GATES) options[gate.id] = readOption(argv, gate.evidenceFlag);
+  for (const gate of GATES) options[gate.id] = readAnyOption(argv, gate.evidenceFlags);
   return {
     json: argv.includes('--json') || argv.includes('--format=json'),
     markdown: argv.includes('--markdown') || argv.includes('--md') || argv.includes('--format=markdown'),
