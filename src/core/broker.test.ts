@@ -265,6 +265,25 @@ test("broker profiling hooks receive compact persistence samples", () => {
   }
 });
 
+test("broker throttles unchanged worker heartbeat persistence while keeping in-memory liveness fresh", () => {
+  const saveHints: Array<BrokerStateSaveHints | undefined> = [];
+  const store: BrokerStateStore = {
+    load: () => emptySnapshot(),
+    save: (_snapshot, hints) => {
+      saveHints.push(hints);
+    },
+  };
+  const broker = new InMemoryA2ABroker(store, store.load());
+  registerWorker(broker, "worker-heartbeat-throttle");
+
+  broker.heartbeatWorker("worker-heartbeat-throttle");
+  const savesAfterFirstHeartbeat = saveHints.length;
+  const secondHeartbeat = broker.heartbeatWorker("worker-heartbeat-throttle");
+
+  assert.equal(saveHints.length, savesAfterFirstHeartbeat, "unchanged immediate heartbeat should not rewrite broker state");
+  assert.equal(broker.getWorker("worker-heartbeat-throttle")?.lastSeenAt, secondHeartbeat.lastSeenAt);
+});
+
 test("broker passes dirty task, audit, and worker hints to state store saves", () => {
   const saveHints: Array<BrokerStateSaveHints | undefined> = [];
   const store: BrokerStateStore = {

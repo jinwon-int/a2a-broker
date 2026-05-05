@@ -158,6 +158,11 @@ export interface InMemoryA2ABrokerOptions {
    * Older records are evicted FIFO when exceeded. Default: 1000.
    */
   maxTerminalTaskOutboxEvents?: number;
+  /**
+   * Minimum interval for persisting unchanged worker heartbeats. Set `0` to persist every heartbeat.
+   * In-memory worker liveness still updates on every heartbeat. Default: 60000ms.
+   */
+  workerHeartbeatPersistIntervalMs?: number;
   /** Optional lightweight profiling hook for broker internals. Listener errors are ignored. */
   profilingListener?: BrokerProfilingListener;
 }
@@ -177,6 +182,12 @@ export interface TaskDiagnosticsOptions {
  * worker crashes or transient outages without masking a genuinely stuck task forever.
  */
 export const DEFAULT_MAX_REQUEUE_ATTEMPTS = 5;
+
+/**
+ * Worker heartbeats are high-churn liveness hints. Persist unchanged heartbeats
+ * at most once per minute; in-memory liveness remains updated on every request.
+ */
+export const DEFAULT_WORKER_HEARTBEAT_PERSIST_INTERVAL_MS = 60_000;
 
 export const REQUEUE_EXHAUSTED_ERROR_CODE = "exceeded_requeue_limit";
 
@@ -301,6 +312,7 @@ export class InMemoryA2ABroker {
   private readonly pendingHotProposals = new Map<string, ChangeProposal>();
   private readonly pendingHotArtifacts = new Map<string, ArtifactRecord>();
   private readonly pendingHotValidations = new Map<string, ValidationResult>();
+  private readonly lastPersistedWorkerHeartbeatAtMs = new Map<string, number>();
   private readonly stateListeners = new Set<BrokerStateListener>();
   private readonly profilingListeners = new Set<BrokerProfilingListener>();
   private readonly maxBufferedEventsPerTask: number;
@@ -317,6 +329,7 @@ export class InMemoryA2ABroker {
   private readonly artifactRepository?: ArtifactRuntimeRepository;
   private readonly validationRepository?: ValidationRuntimeRepository;
   private readonly optionProfilingListener?: BrokerProfilingListener;
+  private readonly workerHeartbeatPersistIntervalMs: number;
 
   constructor(
     private readonly stateStore?: BrokerStateStore,
@@ -333,6 +346,7 @@ export class InMemoryA2ABroker {
     this.artifactRepository = options.artifactRepository;
     this.validationRepository = options.validationRepository;
     this.optionProfilingListener = options.profilingListener;
+    this.workerHeartbeatPersistIntervalMs = Math.max(0, options.workerHeartbeatPersistIntervalMs ?? DEFAULT_WORKER_HEARTBEAT_PERSIST_INTERVAL_MS);
     this.retentionPolicy = normalizeBrokerRetentionPolicy(options.retention);
     this.maxRequeueAttempts = normalizeMaxRequeueAttempts(options.maxRequeueAttempts);
     this.maxBufferedEventsPerTask = options.maxBufferedEventsPerTask ?? 100;
@@ -739,19 +753,43 @@ export class InMemoryA2ABroker {
 
   heartbeatWorker(nodeId: string, request?: WorkerHeartbeatRequest): WorkerRecord {
     const worker = this.requireWorker(nodeId);
-    const now = isoNow();
+    const nowMs = Date.now();
+    const now = new Date(nowMs).toISOString();
 
-    worker.displayName = request?.displayName ?? worker.displayName;
-    worker.brokerUrl = request?.brokerUrl ?? worker.brokerUrl;
-    worker.capabilities = request?.capabilities
+    const nextCapabilities = request?.capabilities
       ? normalizeCapabilities(request.capabilities)
       : worker.capabilities;
-    worker.workerMode = request?.workerMode ?? worker.workerMode;
-    worker.metadata = request?.metadata ?? worker.metadata;
+    const nextDisplayName = request?.displayName ?? worker.displayName;
+    const nextBrokerUrl = request?.brokerUrl ?? worker.brokerUrl;
+    const nextWorkerMode = request?.workerMode ?? worker.workerMode;
+    const nextMetadata = request?.metadata ?? worker.metadata;
+    const materialChange =
+      nextDisplayName !== worker.displayName ||
+      nextBrokerUrl !== worker.brokerUrl ||
+      nextWorkerMode !== worker.workerMode ||
+      JSON.stringify(nextCapabilities) !== JSON.stringify(worker.capabilities) ||
+      JSON.stringify(nextMetadata ?? null) !== JSON.stringify(worker.metadata ?? null);
+
+    worker.displayName = nextDisplayName;
+    worker.brokerUrl = nextBrokerUrl;
+    worker.capabilities = nextCapabilities;
+    worker.workerMode = nextWorkerMode;
+    worker.metadata = nextMetadata;
     worker.updatedAt = now;
     worker.lastSeenAt = now;
 
     this.setWorkerRecord(worker);
+
+    const lastPersistedAtMs = this.lastPersistedWorkerHeartbeatAtMs.get(worker.nodeId) ?? 0;
+    const shouldPersistHeartbeat =
+      this.workerHeartbeatPersistIntervalMs === 0 ||
+      materialChange ||
+      nowMs - lastPersistedAtMs >= this.workerHeartbeatPersistIntervalMs;
+
+    if (!shouldPersistHeartbeat) {
+      return worker;
+    }
+
     this.appendAuditEvent({
       actorId: worker.nodeId,
       action: "worker.heartbeat",
@@ -760,6 +798,7 @@ export class InMemoryA2ABroker {
       note: "heartbeat",
     });
     this.persistState();
+    this.lastPersistedWorkerHeartbeatAtMs.set(worker.nodeId, nowMs);
     return worker;
   }
 
