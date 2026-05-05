@@ -55,6 +55,16 @@ function completeEvidence(overrides = {}) {
         productionAckAttempted: false,
       })),
     },
+    terminalOutbox: {
+      lastNotificationAttempt: null,
+    },
+    finalConfigRestoration: {
+      ok: true,
+      operatorEventsEnabled: false,
+      notificationEnabled: false,
+      providerCalled: false,
+      terminalAckAttempted: false,
+    },
   };
   return deepMerge(evidence, overrides);
 }
@@ -83,6 +93,8 @@ describe('consolidated closeout release report', () => {
     assert.deepEqual(report.expectedWorkers, ['bangtong', 'dungae', 'sogyo', 'nosuk', 'yukson']);
     assert.equal(check(report, 'worker capacity matrix')?.ok, true);
     assert.equal(check(report, 'queue/stale closeout')?.ok, true);
+    assert.equal(check(report, 'final config restoration/no-live verification')?.ok, true);
+    assert.deepEqual(report.terminalOutboxLastNotificationAttemptShapes, { null: 1 });
 
     const markdown = renderCloseoutMarkdown(report);
     assert.match(markdown, /^Done: #342 consolidated read-only closeout report/);
@@ -127,5 +139,55 @@ describe('consolidated closeout release report', () => {
     assert.match(check(report, 'terminal evidence closeout')?.detail ?? '', /invalid receipt evidence provider_sent/);
     assert.equal(check(report, 'receipt no-live matrix')?.ok, false);
     assert.match(check(report, 'receipt no-live matrix')?.detail ?? '', /missing scenario/);
+  });
+
+  it('summarizes terminalOutbox.lastNotificationAttempt shapes without leaking raw values or crashing', () => {
+    const report = buildCloseoutReport(completeEvidence({
+      terminalOutbox: {
+        lastNotificationAttempt: [
+          { provider: 'telegram', chat_id: 'redacted-by-shape-only' },
+          'BROKER_EDGE_SECRET=do-not-render',
+          null,
+          ['nested'],
+        ],
+      },
+    }));
+
+    assert.equal(report.ok, true);
+    assert.deepEqual(report.terminalOutboxLastNotificationAttemptShapes, {
+      array: 1,
+      null: 1,
+      object: 1,
+      string: 1,
+    });
+    const markdown = renderCloseoutMarkdown(report);
+    assert.match(markdown, /terminalOutbox.lastNotificationAttempt shapes: array=1, null=1, object=1, string=1/);
+    assert.doesNotMatch(markdown, /chat_id|BROKER_EDGE_SECRET|do-not-render/i);
+  });
+
+  it('fails closed without final config restoration no-live proof', () => {
+    const evidence = completeEvidence();
+    delete evidence.finalConfigRestoration;
+    const report = buildCloseoutReport(evidence);
+
+    assert.equal(report.ok, false);
+    assert.equal(check(report, 'final config restoration/no-live verification')?.ok, false);
+    assert.match(check(report, 'final config restoration/no-live verification')?.detail ?? '', /missing final config restoration/);
+  });
+
+  it('redacts unsafe terminal evidence identifiers in deterministic blocker comments', () => {
+    const report = buildCloseoutReport(completeEvidence({
+      terminalEvidence: {
+        events: [
+          { id: '/work/repo/private-token', payload: { receipt: { evidence: 'provider_sent' } } },
+        ],
+      },
+    }));
+
+    const detail = check(report, 'terminal evidence closeout')?.detail ?? '';
+    assert.equal(report.ok, false);
+    assert.match(detail, /<string>: missing canonical HTTPS/);
+    assert.match(detail, /invalid receipt evidence provider_sent/);
+    assert.doesNotMatch(detail, /\/work\/repo|private-token/);
   });
 });
