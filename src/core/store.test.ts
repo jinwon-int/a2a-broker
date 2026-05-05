@@ -237,7 +237,7 @@ test("SqliteBrokerStateStore saves and reloads snapshots with WAL metadata", () 
       dbFile: temp.filePath,
       stateVersion: CURRENT_BROKER_STATE_VERSION,
       loadSource: "snapshot",
-      schemaVersion: 9,
+      schemaVersion: 10,
       journalMode: "wal",
       hotEntityTables: [
         "broker_exchanges",
@@ -1803,7 +1803,7 @@ test("SqliteBrokerStateStore migrates v2 task hot table with task origin column"
       store.readHotTasks({ taskOrigin: "api", targetNodeId: "worker-a" }).map((task) => task.id),
       ["task-migrated"],
     );
-    assert.equal(store.getPersistenceInfo().schemaVersion, 9);
+    assert.equal(store.getPersistenceInfo().schemaVersion, 10);
     store.close();
   } finally {
     temp.cleanup();

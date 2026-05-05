@@ -249,7 +249,7 @@ export interface SqliteWorkerHotRetentionPlanOptions {
   protectedWorkerIds?: string[];
 }
 
-const SQLITE_SCHEMA_VERSION = 9;
+const SQLITE_SCHEMA_VERSION = 10;
 const SQLITE_HOT_ENTITY_TABLES = [
   "broker_exchanges",
   "broker_exchange_messages",
@@ -1216,8 +1216,14 @@ export class SqliteBrokerStateStore implements BrokerStateStore {
       );
       CREATE INDEX IF NOT EXISTS broker_tasks_status_updated_idx
         ON broker_tasks(status, updated_at);
+      CREATE INDEX IF NOT EXISTS broker_tasks_updated_id_idx
+        ON broker_tasks(updated_at DESC, id ASC);
+      CREATE INDEX IF NOT EXISTS broker_tasks_status_updated_id_idx
+        ON broker_tasks(status, updated_at DESC, id ASC);
       CREATE INDEX IF NOT EXISTS broker_tasks_worker_status_idx
         ON broker_tasks(assigned_worker_id, status);
+      CREATE INDEX IF NOT EXISTS broker_tasks_worker_status_updated_id_idx
+        ON broker_tasks(assigned_worker_id, status, updated_at DESC, id ASC);
       CREATE INDEX IF NOT EXISTS broker_tasks_target_status_idx
         ON broker_tasks(target_node_id, status);
       CREATE INDEX IF NOT EXISTS broker_tasks_intent_status_idx
