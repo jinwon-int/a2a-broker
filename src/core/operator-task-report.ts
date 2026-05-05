@@ -8,6 +8,7 @@ export interface OperatorTaskReportOptions {
   nowMs?: number;
   staleAfterMs?: number;
   taskIds?: string[];
+  parentIssue?: string;
   updatedAfter?: string;
 }
 
@@ -67,11 +68,13 @@ export function buildOperatorTaskReport(tasks: TaskRecord[], options: OperatorTa
   const nowMs = options.nowMs ?? Date.now();
   const staleAfterMs = Math.max(1, options.staleAfterMs ?? DEFAULT_STALE_AFTER_MS);
   const wanted = new Set((options.taskIds ?? []).filter(Boolean));
+  const parentIssue = normalizeIssueRef(options.parentIssue);
   const updatedAfterMs = options.updatedAfter ? Date.parse(options.updatedAfter) : NaN;
   const hasUpdatedAfter = Number.isFinite(updatedAfterMs);
 
   const items = tasks
     .filter((task) => !wanted.size || wanted.has(task.id))
+    .filter((task) => !parentIssue || taskMatchesIssueRef(task, parentIssue))
     .sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id))
     .map((task) => buildOperatorTaskReportItem(task, { nowMs, staleAfterMs, updatedAfterMs: hasUpdatedAfter ? updatedAfterMs : undefined }));
 
@@ -279,6 +282,55 @@ function parseRepoFromGithubUrl(url?: string): string | undefined {
 
 function safeString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function taskMatchesIssueRef(task: TaskRecord, issueRef: string): boolean {
+  for (const candidate of taskIssueRefCandidates(task)) {
+    if (normalizeIssueRef(candidate) === issueRef) return true;
+  }
+  return false;
+}
+
+function taskIssueRefCandidates(task: TaskRecord): string[] {
+  const payload = asRecord(task.payload) ?? {};
+  const nestedTask = asRecord(payload.task);
+  const via = asRecord(task.via);
+  return [
+    payload.parentIssue,
+    payload.parent_issue,
+    payload.parentIssueUrl,
+    payload.parent_issue_url,
+    payload.commandCenterIssue,
+    payload.command_center_issue,
+    nestedTask?.parentIssue,
+    nestedTask?.parent_issue,
+    via?.parentIssue,
+    via?.parent_issue,
+    task.message,
+  ].map((value) => safeString(value)).filter((value): value is string => Boolean(value));
+}
+
+function normalizeIssueRef(value?: string): string | undefined {
+  if (!value) return undefined;
+  const compact = value.trim();
+  if (!compact) return undefined;
+  const urlRef = parseGithubIssueRef(compact);
+  if (urlRef) return urlRef;
+  const inlineRef = compact.match(/([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)#(\d+)\b/);
+  if (inlineRef) return `${inlineRef[1].toLowerCase()}#${inlineRef[2]}`;
+  return compact.toLowerCase();
+}
+
+function parseGithubIssueRef(value: string): string | undefined {
+  try {
+    const url = new URL(value);
+    if (url.hostname !== "github.com") return undefined;
+    const [, owner, repo, kind, number] = url.pathname.split("/");
+    if (!owner || !repo || kind !== "issues" || !/^\d+$/.test(number ?? "")) return undefined;
+    return `${owner.toLowerCase()}/${repo.toLowerCase()}#${number}`;
+  } catch {
+    return undefined;
+  }
 }
 
 function formatDuration(ms: number): string {

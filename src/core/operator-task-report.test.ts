@@ -370,3 +370,32 @@ test("operator task report filters watched task ids and updatedAfter reportabili
   assert.equal(report.items.find((item) => item.taskId === "new")?.reportable, true);
   assert.equal(report.reportable, 1);
 });
+
+test("operator task report filters by parent GitHub issue metadata", () => {
+  const report = buildOperatorTaskReport([
+    task({ id: "lane-1", payload: { parentIssue: "jinwon-int/a2a-broker#364", issue: "#367" } }),
+    task({ id: "lane-2", payload: { parentIssueUrl: "https://github.com/jinwon-int/a2a-broker/issues/364", issue: "#368" } }),
+    task({ id: "lane-3", message: "Parent: jinwon-int/a2a-broker#364\nIssue: #369" }),
+    task({ id: "other", payload: { parentIssue: "jinwon-int/a2a-broker#360", issue: "#361" } }),
+  ], {
+    parentIssue: "https://github.com/jinwon-int/a2a-broker/issues/364",
+    nowMs: Date.parse("2026-05-01T00:06:00.000Z"),
+  });
+
+  assert.deepEqual(report.items.map((item) => item.taskId), ["lane-1", "lane-2", "lane-3"]);
+  assert.equal(report.total, 3);
+});
+
+test("operator task report combines explicit task ids with parent issue filter", () => {
+  const report = buildOperatorTaskReport([
+    task({ id: "wanted-parent", payload: { parentIssue: "jinwon-int/a2a-broker#364" } }),
+    task({ id: "wanted-other", payload: { parentIssue: "jinwon-int/a2a-broker#360" } }),
+    task({ id: "unlisted-parent", payload: { parentIssue: "jinwon-int/a2a-broker#364" } }),
+  ], {
+    taskIds: ["wanted-parent", "wanted-other"],
+    parentIssue: "jinwon-int/a2a-broker#364",
+    nowMs: Date.parse("2026-05-01T00:06:00.000Z"),
+  });
+
+  assert.deepEqual(report.items.map((item) => item.taskId), ["wanted-parent"]);
+});

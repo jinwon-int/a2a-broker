@@ -2730,7 +2730,7 @@ test("GET /operator/task-report summarizes watched task progress and results", a
       }),
     });
 
-    const create = async (pullRequest: string) => {
+    const create = async (pullRequest: string, payloadExtra: Record<string, unknown> = {}) => {
       const res = await fetch(`${server.baseUrl}/tasks`, {
         method: "POST",
         headers: h({ "x-a2a-requester-id": "hub-1", "x-a2a-requester-role": "hub" }),
@@ -2741,7 +2741,7 @@ test("GET /operator/task-report summarizes watched task progress and results", a
           assignedWorkerId: "w1",
           message: `fix ${pullRequest}`,
           taskOrigin: "github",
-          payload: { pullRequest, lane: "operator-report" },
+          payload: { pullRequest, lane: "operator-report", ...payloadExtra },
         }),
       });
       const text = await res.text();
@@ -2749,8 +2749,9 @@ test("GET /operator/task-report summarizes watched task progress and results", a
       return JSON.parse(text);
     };
 
-    const runningTask = await create("#10");
-    const doneTask = await create("#11");
+    const runningTask = await create("#10", { parentIssue: "jinwon-int/a2a-broker#364" });
+    const doneTask = await create("#11", { parentIssueUrl: "https://github.com/jinwon-int/a2a-broker/issues/364" });
+    await create("#12", { parentIssue: "jinwon-int/a2a-broker#360" });
 
     await fetch(`${server.baseUrl}/tasks/${runningTask.id}/claim`, {
       method: "POST",
@@ -2795,6 +2796,15 @@ test("GET /operator/task-report summarizes watched task progress and results", a
     assert.equal(done.kind, "result");
     assert.equal(done.github.prUrl, "https://github.com/o/r/pull/11");
     assert.match(done.reportLine, /완료/);
+
+    const parentReportRes = await fetch(
+      `${server.baseUrl}/operator/task-report?parent_issue=jinwon-int/a2a-broker%23364`,
+      { headers: { "x-a2a-edge-secret": "s", "x-a2a-requester-id": "hub-1", "x-a2a-requester-role": "hub" } },
+    );
+    const parentReportText = await parentReportRes.text();
+    assert.equal(parentReportRes.status, 200, parentReportText);
+    const parentReport = JSON.parse(parentReportText);
+    assert.deepEqual(parentReport.items.map((item: { taskId: string }) => item.taskId).sort(), [doneTask.id, runningTask.id].sort());
   } finally {
     await server.close();
   }
