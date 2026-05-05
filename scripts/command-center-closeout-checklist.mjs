@@ -29,6 +29,9 @@ function parseArgs(argv) {
     edgeSecretEnv: readOption('--edge-secret-env') ?? 'BROKER_EDGE_SECRET',
     json: argv.includes('--json') || argv.includes('--format=json'),
     markdown: argv.includes('--markdown') || argv.includes('--format=markdown'),
+    roundCloseout: argv.includes('--round-closeout') || argv.includes('--task-report'),
+    parent: readOption('--parent'),
+    round: readOption('--round'),
   };
 }
 
@@ -217,6 +220,103 @@ async function liveDashboardEvidence({ dashboardUrl, edgeSecretEnv }) {
   return { dashboard: await response.json() };
 }
 
+function evidenceUrlForGithub(github = {}) {
+  return firstDefined(github.prUrl, github.doneCommentUrl, github.blockCommentUrl, github.branchUrl);
+}
+
+function issueRefFromGithub(github = {}) {
+  return normalizeIssue(firstDefined(github.issue, github.issueUrl));
+}
+
+function workerForLane(item = {}) {
+  return sanitize(firstDefined(item.github?.nodeId, item.assignedWorkerId, item.targetNodeId, item.claimedBy, item.worker, 'unknown'));
+}
+
+function laneIssueLabel(github = {}) {
+  const repo = sanitize(github.repo);
+  const issue = issueRefFromGithub(github);
+  return [repo, issue].filter(Boolean).join('') || 'missing';
+}
+
+export function classifyCommandCenterLane(item) {
+  const github = item?.github ?? {};
+  const evidenceUrl = evidenceUrlForGithub(github);
+  const hasIssue = Boolean(github.repo && issueRefFromGithub(github));
+  const final = Boolean(item?.final) || ['succeeded', 'failed', 'canceled'].includes(String(item?.status));
+  const stale = Boolean(item?.stale) || item?.kind === 'stale';
+
+  if (!final) return stale ? 'stuck' : 'waiting';
+  if (!evidenceUrl || !hasIssue) return 'needs-evidence';
+  if (item?.status === 'failed' || github.blockCommentUrl || item?.errorCode) return 'blocked';
+  if (item?.status === 'succeeded') return 'ready';
+  return 'blocked';
+}
+
+export function nextActionForCommandCenterLane(item, state = classifyCommandCenterLane(item)) {
+  const github = item?.github ?? {};
+  const evidenceUrl = evidenceUrlForGithub(github);
+  if (item?.nextAction) return sanitize(item.nextAction);
+  if (state === 'ready') return github.prUrl ? 'review/merge PR or mark Done evidence' : 'verify Done evidence and close lane';
+  if (state === 'blocked') return evidenceUrl ? 'inspect Block evidence and resolve blocker' : 'resolve failed lane blocker';
+  if (state === 'stuck') return `check worker heartbeat or reassign stale ${item?.status ?? 'active'} task`;
+  if (state === 'waiting') return `wait for ${item?.status ?? 'active'} task update`;
+  return 'recover PR/Done/Block evidence before closeout';
+}
+
+export function buildCommandCenterRoundCloseout(taskReport, options = {}) {
+  const report = taskReport?.taskReport ?? taskReport?.operatorTaskReport ?? taskReport ?? {};
+  const items = asArray(report.items);
+  const lanes = items.map((item) => {
+    const state = classifyCommandCenterLane(item);
+    const github = item.github ?? {};
+    return {
+      worker: workerForLane(item),
+      taskId: sanitize(item.taskId),
+      status: sanitize(item.status),
+      stale: Boolean(item.stale),
+      repo: sanitize(github.repo),
+      issue: issueRefFromGithub(github),
+      issueUrl: sanitize(github.issueUrl),
+      issueLabel: laneIssueLabel(github),
+      evidenceUrl: sanitize(evidenceUrlForGithub(github)),
+      state,
+      nextAction: nextActionForCommandCenterLane(item, state),
+    };
+  });
+  const counts = lanes.reduce((acc, lane) => ({ ...acc, [lane.state]: (acc[lane.state] ?? 0) + 1 }), {});
+  return {
+    kind: 'broker.command-center-round-closeout',
+    generatedAt: new Date(options.nowMs ?? Date.now()).toISOString(),
+    mode: options.mode ?? report.mode ?? 'read-only/no-live',
+    parent: options.parent ?? taskReport?.parent ?? taskReport?.parentIssue,
+    round: options.round ?? taskReport?.round ?? taskReport?.run,
+    total: lanes.length,
+    counts,
+    lanes,
+    ok: lanes.length > 0 && lanes.every((lane) => lane.state === 'ready'),
+  };
+}
+
+export function renderCommandCenterRoundCloseoutMarkdown(roundReport) {
+  const title = roundReport.ok ? 'Done' : 'Block';
+  const counts = ['ready', 'waiting', 'blocked', 'stuck', 'needs-evidence']
+    .map((state) => `${state}=${roundReport.counts?.[state] ?? 0}`)
+    .join(', ');
+  const scope = [roundReport.round ? `Round: ${sanitize(roundReport.round)}` : undefined, roundReport.parent ? `Parent: ${sanitize(roundReport.parent)}` : undefined]
+    .filter(Boolean);
+  return [
+    `${title}: command-center round closeout`,
+    `Mode: ${roundReport.mode}`,
+    ...scope,
+    `Lanes: total=${roundReport.total} (${counts})`,
+    '',
+    'Lane states:',
+    ...roundReport.lanes.map((lane) => `- ${lane.worker} | ${lane.issueLabel} | ${lane.evidenceUrl ?? 'missing-evidence'} | ${lane.state} | next: ${lane.nextAction}`),
+    '',
+    'Safety: read-only summary only; no live Telegram send, Gateway restart, production deploy, broker mutation, or terminal-outbox ACK.',
+  ].join('\n');
+}
+
 export function buildCommandCenterCloseoutChecklist(evidence) {
   const github = githubEvidence(evidence);
   const checks = summarizeChecks(github.checks);
@@ -294,9 +394,12 @@ async function main() {
   if (!options.input && !(options.repo && options.issue) && !options.dashboardUrl) {
     throw new Error('usage: node scripts/command-center-closeout-checklist.mjs --input evidence.json [--markdown|--json] OR --repo owner/repo --issue N [--pr N] [--dashboard-url URL]');
   }
-  const report = buildCommandCenterCloseoutChecklist(evidence);
+  const isTaskReport = options.roundCloseout || Array.isArray(evidence.items) || Array.isArray(evidence.taskReport?.items) || Array.isArray(evidence.operatorTaskReport?.items);
+  const report = isTaskReport
+    ? buildCommandCenterRoundCloseout(evidence, { parent: options.parent, round: options.round })
+    : buildCommandCenterCloseoutChecklist(evidence);
   if (options.json && !options.markdown) console.log(JSON.stringify(report, null, 2));
-  else console.log(renderCommandCenterCloseoutMarkdown(report));
+  else console.log(isTaskReport ? renderCommandCenterRoundCloseoutMarkdown(report) : renderCommandCenterCloseoutMarkdown(report));
   process.exit(report.ok ? 0 : 1);
 }
 

@@ -72,6 +72,29 @@ Stale/retry: workers=0, tasks=0, requeued=0
 
 The script exits `0` only when required evidence is present, checks pass, active queue count is zero, and stale worker/task counts are zero. It exits `1` with a `Block:` summary when evidence is missing or closeout is not clean.
 
+## Round closeout from task-report data
+
+Task-report JSON can be rendered directly into per-worker lane closeout markdown:
+
+```sh
+npm run command_center_closeout_checklist -- \
+  --input task-report.json \
+  --round-closeout \
+  --parent '#364' \
+  --round a2a-command-center-aggregation-20260505170100 \
+  --markdown
+```
+
+Lane states are intentionally compact and operator-facing:
+
+- `ready` — terminal success with repo/issue and PR/Done evidence.
+- `waiting` — active task that is still fresh.
+- `stuck` — active task that is stale.
+- `blocked` — terminal failure/cancel with Block or other evidence to inspect.
+- `needs-evidence` — terminal lane without enough PR/Done/Block evidence for closeout.
+
+Each lane line includes worker, `repo#issue`, evidence URL or `missing-evidence`, state, and next action.
+
 ## Safety
 
 This checklist is read-only. It does not perform live Telegram sends, Gateway restarts, production deploys, broker mutations, or terminal-outbox ACKs.

@@ -2,7 +2,10 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   buildCommandCenterCloseoutChecklist,
+  buildCommandCenterRoundCloseout,
+  classifyCommandCenterLane,
   renderCommandCenterCloseoutMarkdown,
+  renderCommandCenterRoundCloseoutMarkdown,
 } from './command-center-closeout-checklist.mjs';
 
 function completeEvidence(overrides = {}) {
@@ -104,5 +107,79 @@ describe('command-center closeout checklist', () => {
     assert.equal(report.ok, false);
     assert.equal(report.checks.find((check) => check.check === 'lane issue')?.ok, false);
     assert.equal(report.checks.find((check) => check.check === 'PR evidence')?.ok, false);
+  });
+
+  it('classifies mixed terminal, active, stale, failed, and no-evidence task-report lanes', () => {
+    const taskReport = {
+      generatedAt: '2026-05-05T17:01:00.000Z',
+      items: [
+        {
+          taskId: 'task-ready',
+          status: 'succeeded',
+          final: true,
+          targetNodeId: 'nosuk',
+          github: {
+            repo: 'jinwon-int/a2a-broker',
+            issue: '#368',
+            issueUrl: 'https://github.com/jinwon-int/a2a-broker/issues/368',
+            prUrl: 'https://github.com/jinwon-int/a2a-broker/pull/400',
+          },
+        },
+        {
+          taskId: 'task-waiting',
+          status: 'running',
+          final: false,
+          stale: false,
+          targetNodeId: 'bangtong',
+          github: { repo: 'jinwon-int/a2a-broker', issue: '#369' },
+        },
+        {
+          taskId: 'task-stuck',
+          status: 'claimed',
+          final: false,
+          stale: true,
+          targetNodeId: 'dungae',
+          github: { repo: 'jinwon-int/a2a-broker', issue: '#370' },
+        },
+        {
+          taskId: 'task-blocked',
+          status: 'failed',
+          final: true,
+          errorCode: 'tests_failed',
+          targetNodeId: 'sogyo',
+          github: {
+            repo: 'jinwon-int/a2a-broker',
+            issue: '#371',
+            blockCommentUrl: 'https://github.com/jinwon-int/a2a-broker/issues/371#issuecomment-1',
+          },
+        },
+        {
+          taskId: 'task-needs-evidence',
+          status: 'succeeded',
+          final: true,
+          targetNodeId: 'haneul',
+          github: { repo: 'jinwon-int/a2a-broker', issue: '#372' },
+        },
+      ],
+    };
+
+    assert.equal(classifyCommandCenterLane(taskReport.items[0]), 'ready');
+    assert.equal(classifyCommandCenterLane(taskReport.items[1]), 'waiting');
+    assert.equal(classifyCommandCenterLane(taskReport.items[2]), 'stuck');
+    assert.equal(classifyCommandCenterLane(taskReport.items[3]), 'blocked');
+    assert.equal(classifyCommandCenterLane(taskReport.items[4]), 'needs-evidence');
+
+    const report = buildCommandCenterRoundCloseout(taskReport, { parent: '#364', round: 'aggregation-1', nowMs: Date.parse('2026-05-05T17:02:00.000Z') });
+    assert.equal(report.ok, false);
+    assert.deepEqual(report.counts, { ready: 1, waiting: 1, stuck: 1, blocked: 1, 'needs-evidence': 1 });
+
+    const markdown = renderCommandCenterRoundCloseoutMarkdown(report);
+    assert.match(markdown, /^Block: command-center round closeout/);
+    assert.match(markdown, /nosuk \| jinwon-int\/a2a-broker#368 \| https:\/\/github.com\/jinwon-int\/a2a-broker\/pull\/400 \| ready \| next:/);
+    assert.match(markdown, /bangtong \| jinwon-int\/a2a-broker#369 \| missing-evidence \| waiting \| next: wait for running task update/);
+    assert.match(markdown, /dungae \| jinwon-int\/a2a-broker#370 \| missing-evidence \| stuck \| next: check worker heartbeat or reassign stale claimed task/);
+    assert.match(markdown, /sogyo \| jinwon-int\/a2a-broker#371 \| https:\/\/github.com\/jinwon-int\/a2a-broker\/issues\/371#issuecomment-1 \| blocked \| next: inspect Block evidence and resolve blocker/);
+    assert.match(markdown, /haneul \| jinwon-int\/a2a-broker#372 \| missing-evidence \| needs-evidence \| next: recover PR\/Done\/Block evidence before closeout/);
+    assert.doesNotMatch(markdown, /ghp_|BROKER_EDGE_SECRET=|\/work\/repo/);
   });
 });
