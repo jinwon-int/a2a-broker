@@ -84,6 +84,7 @@ state change.
 | `kind`       | source audit action |
 | ------------ | ------------------- |
 | `created`    | `task.created`      |
+| `approved`   | `task.approved`     |
 | `claimed`    | `task.claimed`      |
 | `started`    | `task.started`      |
 | `succeeded`  | `task.succeeded`    |
@@ -106,6 +107,34 @@ setInterval(() => {
   }
 }, 1000);
 ```
+
+## Worker assignment SSE
+
+Workers can reduce idle `/tasks?assignedWorkerId=...&status=queued` polling by
+holding an event-backed assignment stream:
+
+```http
+GET /a2a/workers/{workerId}/assignment-events
+Last-Event-ID: 123
+```
+
+Behavior:
+
+- Auth: with requester enforcement enabled, only the assigned worker itself or a
+  `hub`/`operator` requester may subscribe. The route is classified in the
+  worker rate-limit bucket when the requester id matches `{workerId}`.
+- Snapshot: the stream opens with `worker-assignment-snapshot`, a compact list of
+  currently queued task ids for that worker. This reconciles tasks created before
+  the connection or outside the retained replay window without exposing raw
+  prompts, payloads, results, logs, or local paths.
+- Live/replay: `worker-assignment` events are emitted for queued `created`,
+  `approved`, `reassigned`, and `requeued` transitions whose
+  `metadata.assignedWorkerId` matches the worker. SSE ids are the broker-wide
+  task event ids; reconnect with `Last-Event-ID` to replay retained events with
+  `id > Last-Event-ID`.
+- Fallback: workers should keep the existing `/tasks` polling path as a
+  low-frequency reconciliation fallback. Assignment events are wake hints, not
+  receipt or ACK evidence, and do not change the canonical task lifecycle.
 
 For server-sent events to a single client, prefer the per-task SSE pipeline
 (`subscribeToTask` + `replayTaskEvents`); the task event stream is sized for
