@@ -35,6 +35,29 @@ Read-only live checks may inspect health, queue, worker fleet, and GitHub issue/
 | Runner evidence hints for recovery | [`a2a-docker-runner#143`](https://github.com/jinwon-int/a2a-docker-runner/issues/143) | PR/Done evidence proving runner outputs expose compact PR/Done/Block URLs or recovery hints without raw logs/secrets. | Mark L2/L5 blocked: waiting on #143 PR/Done/Block evidence. |
 | Libero validation | [`a2a-broker#370`](https://github.com/jinwon-int/a2a-broker/issues/370) | This matrix plus local no-live command output and read-only before/after snapshots when available. | Post `Block` with the missing command, endpoint, or upstream lane evidence. |
 
+## 2026-05-05 validation pass
+
+Linked lane evidence observed after the initial #370 Block:
+
+| Lane | Evidence | Validation status |
+| --- | --- | --- |
+| #367 parent issue query | [`a2a-broker#374`](https://github.com/jinwon-int/a2a-broker/pull/374), merged | `parent_issue` filtering added with core + HTTP tests. |
+| #368 closeout markdown states | [`a2a-broker#371`](https://github.com/jinwon-int/a2a-broker/pull/371), merged | Closeout checklist renderer added with fixture tests. |
+| #369 aggregate comment trigger | [`a2a-broker#373`](https://github.com/jinwon-int/a2a-broker/pull/373), merged | Managed parent aggregate comment preview/update path added with tests. |
+| #143 runner evidence hints | [`a2a-docker-runner#144`](https://github.com/jinwon-int/a2a-docker-runner/pull/144), merged | Runner artifact/evidence hint improvements added with tests. |
+| Sogyo auth-path recurrence fix | [`a2a-docker-runner#145`](https://github.com/jinwon-int/a2a-docker-runner/pull/145), merged and applied to live workers | Embedded OpenClaw profile now mirrors ephemeral `GH_TOKEN` into the disposable in-container `gh-issues` config; live worker doctor with env passed on `bangtong`, `dungae`, `sogyo`, `nosuk`, and `vps5` at runner revision `5629354dc954`. |
+
+Focused validation run for this matrix branch after merging current `origin/main`:
+
+```sh
+npm run build
+npm test
+```
+
+Recommendation: merge-ready for repository code/docs. Production broker deploy,
+Gateway restart, live Telegram send, DB mutation, terminal-outbox ACK, package
+publish, and repository visibility changes remain operator-approval-gated.
+
 ## Validation matrix
 
 | ID | Surface | No-live proof | Required commands/evidence | Expected result | Blocker condition |
