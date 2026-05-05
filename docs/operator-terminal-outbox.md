@@ -26,6 +26,7 @@ A notifier can consume the broker-owned outbox without subscribing to raw task s
 - `POST /a2a/tasks/terminal-outbox/ack` requires receipt evidence, for example `{ "id": "...", "receipt": { "evidence": "operator_visible", "acknowledgedAt": "...", "receiptId": "message-id" } }`.
 - Valid receipt evidence values are `operator_visible`, `operator_confirmed`, and `provider_delivery_receipt`. Gateway/provider send success alone is not terminal ack evidence.
 - Receipt status is deliberately separate from task terminal status and provider send status. Broker records use the small vocabulary `accepted`, `started`, `produced`, `provider_sent`, `operator_visible`, `timed_out`, `stale`, and `failed`. A succeeded task with any receipt status other than `operator_visible` still has an operator-visible receipt gap; provider/API send success is recorded as `provider_sent`, not ACKed receipt.
+- One-shot live eligibility is stricter than send success: the dry-run projection remains `oneShotLiveEligible=false` until every retained terminal outbox row has manual receipt confirmation (`ack.status=receipt_confirmed`, `receipt.status=operator_visible`, and `ack.evidence`/receipt evidence of `operator_visible` or `operator_confirmed`). Provider send success, `provider_sent`, or `provider_delivery_receipt` alone are blocked evidence and must not be counted as live-send/ACK approval.
 - Both routes require an authenticated hub/operator requester when edge identity enforcement is enabled.
 
 ## Operator read model

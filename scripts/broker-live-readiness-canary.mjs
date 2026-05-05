@@ -28,6 +28,10 @@ const RECEIPT_ACK_EVIDENCE = new Set([
   'operator_confirmed',
   'provider_delivery_receipt',
 ]);
+const MANUAL_RECEIPT_ACK_EVIDENCE = new Set([
+  'operator_visible',
+  'operator_confirmed',
+]);
 
 function ok(check, detail, extra = {}) {
   return { ok: true, check, detail, ...extra };
@@ -190,6 +194,37 @@ function evaluateQueue(body, status) {
   return ok('queue emptiness and stale tasks', 'queued=0, claimed=0, running=0, stale=0', { counts });
 }
 
+function manualReceiptSatisfied(event) {
+  const ack = event?.ack;
+  const receipt = event?.receipt ?? event?.payload?.receipt;
+  const evidence = ack?.evidence ?? receipt?.evidence ?? event?.payload?.receiptEvidence;
+  return ack?.status === 'receipt_confirmed'
+    && receipt?.status === 'operator_visible'
+    && MANUAL_RECEIPT_ACK_EVIDENCE.has(evidence);
+}
+
+function projectOneShotLiveEligibility(body, status) {
+  if (status !== 200) return fail('one-shot live eligibility manual receipt gate', `expected HTTP 200, got ${status}`);
+  const events = Array.isArray(body?.events) ? body.events : [];
+  const readyEvents = events.filter(manualReceiptSatisfied);
+  const blockedEvents = events.filter((event) => !manualReceiptSatisfied(event));
+  return ok('one-shot live eligibility manual receipt gate', `${readyEvents.length} eligible, ${blockedEvents.length} blocked until manual receipt confirmation`, {
+    oneShotLiveEligible: readyEvents.length > 0 && blockedEvents.length === 0,
+    readyCount: readyEvents.length,
+    blockedCount: blockedEvents.length,
+    blockedEvents: blockedEvents.map((event) => ({
+      id: event?.id ?? '<missing-id>',
+      receiptStatus: event?.receipt?.status ?? event?.payload?.receipt?.status ?? event?.payload?.receiptStatus ?? null,
+      ackStatus: event?.ack?.status ?? 'unacknowledged',
+      ackEvidence: event?.ack?.evidence ?? event?.receipt?.evidence ?? event?.payload?.receipt?.evidence ?? event?.payload?.receiptEvidence ?? null,
+    })),
+  });
+}
+
+function oneShotEligibilityFromChecks(checks) {
+  return checks.find((check) => check.check === 'one-shot live eligibility manual receipt gate') ?? {};
+}
+
 function summarizeOutboxEvent(event) {
   const payload = event?.payload ?? event?.output ?? {};
   return {
@@ -277,6 +312,7 @@ export function runNoLiveCanary(options = {}) {
     evaluateWorkers(sample.workers.body, sample.workers.status, options.expectedWorkers ?? ['bangtong', 'dungae', 'sogyo', 'nosuk', 'yukson']),
     evaluateQueue(sample.diagnostics.body, sample.diagnostics.status),
     evaluateEvidenceAcceptance(sample.outbox.body, sample.outbox.status),
+    projectOneShotLiveEligibility(sample.outbox.body, sample.outbox.status),
     evaluateGithubVerifyDoneRegression(),
     ok('safety gate', 'read-only validation only; no live Telegram send, DB mutation, production deploy, Gateway restart, or real terminal-outbox ACK'),
   ];
@@ -289,6 +325,8 @@ export function runNoLiveCanary(options = {}) {
     providerCalled: false,
     dbMutationAttempted: false,
     terminalAckAttempted: false,
+    oneShotLiveEligible: oneShotEligibilityFromChecks(checks).oneShotLiveEligible ?? false,
+    blockedCount: oneShotEligibilityFromChecks(checks).blockedCount ?? 0,
     checks,
     ok: checks.every((check) => check.ok),
   };
@@ -309,6 +347,7 @@ export async function runLiveReadinessCanary(options = {}) {
     evaluateWorkers(workers.body, workers.status, options.expectedWorkers ?? []),
     evaluateQueue(diagnostics.body, diagnostics.status),
     evaluateEvidenceAcceptance(outbox.body, outbox.status),
+    projectOneShotLiveEligibility(outbox.body, outbox.status),
     evaluateGithubVerifyDoneRegression(),
     ok('safety gate', 'read-only GET validation only; no live Telegram send, DB mutation, production deploy, Gateway restart, or real terminal-outbox ACK'),
   ];
@@ -322,6 +361,8 @@ export async function runLiveReadinessCanary(options = {}) {
     providerCalled: false,
     dbMutationAttempted: false,
     terminalAckAttempted: false,
+    oneShotLiveEligible: oneShotEligibilityFromChecks(checks).oneShotLiveEligible ?? false,
+    blockedCount: oneShotEligibilityFromChecks(checks).blockedCount ?? 0,
     checks,
     ok: checks.every((check) => check.ok),
   };
