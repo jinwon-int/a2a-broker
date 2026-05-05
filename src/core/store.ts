@@ -128,6 +128,10 @@ export interface BrokerHotAuditDiagnostics {
   total: number;
   workerHeartbeat: number;
   workerHeartbeatRatio: number;
+  recentWindowMs: number;
+  recentTotal: number;
+  recentWorkerHeartbeat: number;
+  recentWorkerHeartbeatRatio: number;
   warnings: string[];
 }
 
@@ -250,6 +254,8 @@ export interface SqliteWorkerHotRetentionPlanOptions {
 }
 
 const SQLITE_SCHEMA_VERSION = 10;
+const HOT_AUDIT_RECENT_WINDOW_MS = 10 * 60 * 1000;
+const HOT_AUDIT_HEARTBEAT_CHURN_WARNING_COUNT = 20;
 const SQLITE_HOT_ENTITY_TABLES = [
   "broker_exchanges",
   "broker_exchange_messages",
@@ -1047,14 +1053,37 @@ export class SqliteBrokerStateStore implements BrokerStateStore {
       ? Number(row.count)
       : typeof row?.count === "number" ? row.count : 0;
     const workerHeartbeatRatio = total > 0 ? workerHeartbeat / total : 0;
+    const recentCutoff = new Date(Date.now() - HOT_AUDIT_RECENT_WINDOW_MS).toISOString();
+    const recentTotalRow = this.db.prepare("SELECT COUNT(*) AS count FROM broker_audit_events WHERE created_at >= ?").get(recentCutoff) as
+      | { count?: number | bigint }
+      | undefined;
+    const recentWorkerHeartbeatRow = this.db.prepare("SELECT COUNT(*) AS count FROM broker_audit_events WHERE action = 'worker.heartbeat' AND created_at >= ?").get(recentCutoff) as
+      | { count?: number | bigint }
+      | undefined;
+    const recentTotal = typeof recentTotalRow?.count === "bigint"
+      ? Number(recentTotalRow.count)
+      : typeof recentTotalRow?.count === "number" ? recentTotalRow.count : 0;
+    const recentWorkerHeartbeat = typeof recentWorkerHeartbeatRow?.count === "bigint"
+      ? Number(recentWorkerHeartbeatRow.count)
+      : typeof recentWorkerHeartbeatRow?.count === "number" ? recentWorkerHeartbeatRow.count : 0;
+    const recentWorkerHeartbeatRatio = recentTotal > 0 ? recentWorkerHeartbeat / recentTotal : 0;
     const warnings: string[] = [];
     if (total > 8_000) {
       warnings.push(`broker_audit_events has ${total} rows; expected SQLite hot-table retention near 5000`);
     }
-    if (total > 0 && workerHeartbeatRatio > 0.8) {
-      warnings.push(`worker.heartbeat audit events are ${Math.round(workerHeartbeatRatio * 100)}% of broker_audit_events`);
+    if (recentWorkerHeartbeat >= HOT_AUDIT_HEARTBEAT_CHURN_WARNING_COUNT && recentWorkerHeartbeatRatio > 0.8) {
+      warnings.push(`worker.heartbeat audit events are ${Math.round(recentWorkerHeartbeatRatio * 100)}% of broker_audit_events in the last ${Math.round(HOT_AUDIT_RECENT_WINDOW_MS / 60_000)} minutes`);
     }
-    return { total, workerHeartbeat, workerHeartbeatRatio, warnings };
+    return {
+      total,
+      workerHeartbeat,
+      workerHeartbeatRatio,
+      recentWindowMs: HOT_AUDIT_RECENT_WINDOW_MS,
+      recentTotal,
+      recentWorkerHeartbeat,
+      recentWorkerHeartbeatRatio,
+      warnings,
+    };
   }
 
   planHotTaskRetention(options: SqliteTaskHotRetentionPlanOptions): SqliteHotRetentionPlan {
