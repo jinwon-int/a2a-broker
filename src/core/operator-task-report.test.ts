@@ -86,6 +86,58 @@ test("operator task report exposes terminal receipt gap as first-class status", 
   assert.match(item.reportLine, /receipt gap: accepted/);
 });
 
+test("operator task report joins terminal outbox brief state for plugin/operator consumption", () => {
+  const report = buildOperatorTaskReport([
+    task({
+      id: "brief-1",
+      status: "succeeded",
+      completedAt: "2026-05-01T00:05:00.000Z",
+      updatedAt: "2026-05-01T00:05:00.000Z",
+      result: {
+        summary: "provider send succeeded only",
+        output: { receipt: { status: "operator_visible" } },
+      },
+    }),
+  ], {
+    nowMs: Date.parse("2026-05-01T00:06:00.000Z"),
+    terminalOutbox: [{
+      id: "terminal:brief-1:succeeded:2026-05-01T00%3A05%3A00.000Z",
+      kind: "task.terminal",
+      taskEventId: 17,
+      createdAt: "2026-05-01T00:05:00.000Z",
+      attempts: 0,
+      receipt: { status: "provider_sent", updatedAt: "2026-05-01T00:05:30.000Z" },
+      ackAudit: {
+        decision: "pending",
+        reason: "provider send is not operator-visible ACK evidence",
+        updatedAt: "2026-05-01T00:05:30.000Z",
+        taskId: "brief-1",
+        receiptStatus: "provider_sent",
+      },
+      payload: {
+        taskId: "brief-1",
+        status: "succeeded",
+        worker: "dungae",
+        repo: "jinwon-int/a2a-broker",
+        issue: 384,
+        taskBrief: "Broker event/outbox deploy-readiness",
+        doneUrl: "https://github.com/jinwon-int/a2a-broker/issues/384#issuecomment-done",
+        createdAt: "2026-05-01T00:00:00.000Z",
+        updatedAt: "2026-05-01T00:05:00.000Z",
+        completedAt: "2026-05-01T00:05:00.000Z",
+      },
+    }],
+  });
+
+  const item = report.items[0];
+  assert.equal(item.receiptStatus, "provider_sent");
+  assert.equal(item.terminalBrief?.cursor, "terminal:brief-1:succeeded:2026-05-01T00%3A05%3A00.000Z");
+  assert.equal(item.terminalBrief?.ackStatus, "unacknowledged");
+  assert.equal(item.terminalBrief?.ackDecision, "pending");
+  assert.equal(item.terminalBrief?.evidenceUrl, "https://github.com/jinwon-int/a2a-broker/issues/384#issuecomment-done");
+  assert.match(item.reportLine, /receipt gap: provider_sent/);
+});
+
 test("operator task report distinguishes receipt confirmed and failed or stale receipt states", () => {
   const report = buildOperatorTaskReport([
     task({

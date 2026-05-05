@@ -3460,6 +3460,17 @@ test("GET/POST /a2a/tasks/terminal-outbox replays and acknowledges compact recor
       note: "provider accepted message-id=abc",
     });
 
+    const reportRes = await fetch(`${server.baseUrl}/operator/task-report?task_id=${encodeURIComponent(task.id)}`, {
+      headers: hubHeaders,
+    });
+    assert.equal(reportRes.status, 200);
+    const report = await reportRes.json();
+    assert.equal(report.items[0].receiptStatus, "provider_sent");
+    assert.equal(report.items[0].terminalBrief.cursor, event.id);
+    assert.equal(report.items[0].terminalBrief.ackStatus, "unacknowledged");
+    assert.equal(report.items[0].terminalBrief.evidenceUrl, "https://github.com/acme/example/issues/246#issuecomment-done");
+    assert.match(report.items[0].reportLine, /receipt gap: provider_sent/);
+
     const acknowledgedAt = "2026-05-02T00:00:00.000Z";
     const ackRes = await fetch(`${server.baseUrl}/a2a/tasks/terminal-outbox/ack`, {
       method: "POST",

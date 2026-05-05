@@ -28,6 +28,26 @@ A notifier can consume the broker-owned outbox without subscribing to raw task s
 - Receipt status is deliberately separate from task terminal status and provider send status. Broker records use the small vocabulary `accepted`, `started`, `produced`, `provider_sent`, `operator_visible`, `timed_out`, `stale`, and `failed`. A succeeded task with any receipt status other than `operator_visible` still has an operator-visible receipt gap; provider/API send success is recorded as `provider_sent`, not ACKed receipt.
 - Both routes require an authenticated hub/operator requester when edge identity enforcement is enabled.
 
+## Operator read model
+
+`GET /operator/task-report` includes the same terminal-outbox state in each matching terminal task as `terminalBrief` so operators/plugins do not need to join raw task payloads with outbox rows themselves. The compact brief includes the stable outbox `cursor`, `receiptStatus`, `ackStatus`, optional `ackDecision`/reason, worker/repo/issue/task brief metadata, and the first safe PR/Done/Block evidence URL. The report's top-level `receiptStatus` is derived from the broker outbox when present, so a provider-send-only notification remains visible as `provider_sent` / receipt gap until an operator-visible or provider-delivery receipt ACK is recorded.
+
+Worker assignment SSE (`GET /a2a/workers/{workerId}/assignment-events`) remains a wake hint for queued work only. It is useful for reducing worker polling, but it is not operator-visible receipt evidence and must never be used to ACK terminal-outbox records.
+
+## Broker main vs live container deploy-readiness note
+
+The broker code on `origin/main` can be considered deploy-ready for Terminal Brief only after the local candidate passes build/tests plus the no-live outbox preflight, and the live container image/revision is confirmed to include that same broker commit. If the live container is behind `origin/main`, plugin/operator consumers may see older surfaces even though `main` is ready; close the gap by scheduling a normal broker rollout with operator approval, not by restarting or deploying from this readiness check.
+
+Safe pre-deploy commands:
+
+```sh
+npm run build
+npm run terminal_outbox_preflight -- --no-live --json
+npm run smoke:docker-broker -- --dry-run
+```
+
+Rollback plan: keep the previous broker image/tag and SQLite snapshot backup available, stop at the first failed health/outbox/read-model check, and revert to the last known-good broker container through the approved deployment runbook. This note is documentation only; it does not authorize production deploys, Gateway restarts, live provider sends, DB mutation, worker restarts, or terminal-outbox ACKs.
+
 ## Release/deploy readiness smoke
 
 Before any live deploy, run the broker-side dry-run smoke first; it does not send Telegram messages or deploy services:
