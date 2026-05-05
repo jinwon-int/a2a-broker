@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
+import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -262,6 +263,54 @@ test("broker profiling hooks receive compact persistence samples", () => {
       hotAuditEvents: 1,
       hotWorkers: 0,
     });
+  }
+});
+
+test("SQLite hot task poll queries avoid temp b-tree sorts", () => {
+  const dir = mkdtempSync(join(tmpdir(), "a2a-broker-task-poll-index-"));
+  const sqliteFile = join(dir, "state.sqlite");
+  try {
+    const store = new SqliteBrokerStateStore(sqliteFile);
+    store.save({
+      ...emptySnapshot(),
+      tasks: [
+        {
+          id: "task-poll-index",
+          intent: "chat",
+          status: "queued",
+          requester: { id: "hub", kind: "node", role: "hub" },
+          target: { id: "sogyo", kind: "node", role: "analyst" },
+          targetNodeId: "sogyo",
+          assignedWorkerId: "sogyo",
+          message: "prove poll query plan",
+          payload: {},
+          createdAt: "2026-05-05T00:00:00.000Z",
+          updatedAt: "2026-05-05T00:00:00.000Z",
+        },
+      ],
+    });
+    store.close();
+
+    const db = new DatabaseSync(sqliteFile, { readOnly: true });
+    const plans = [
+      db.prepare(
+        "EXPLAIN QUERY PLAN SELECT payload FROM broker_tasks WHERE status = 'queued' ORDER BY updated_at DESC, id ASC",
+      ).all(),
+      db.prepare(
+        "EXPLAIN QUERY PLAN SELECT payload FROM broker_tasks WHERE status = 'queued' AND assigned_worker_id = 'sogyo' ORDER BY updated_at DESC, id ASC",
+      ).all(),
+    ];
+    db.close();
+
+    for (const plan of plans) {
+      assert.equal(
+        plan.some((row) => String((row as { detail?: unknown }).detail ?? "").includes("USE TEMP B-TREE")),
+        false,
+        JSON.stringify(plan),
+      );
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
   }
 });
 
