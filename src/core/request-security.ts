@@ -211,6 +211,17 @@ export function classifyRateLimitBucket(req: IncomingMessage, url: URL): RateLim
     return "worker";
   }
 
+  if (
+    req.method === "GET" &&
+    segments[0] === "a2a" &&
+    segments[1] === "workers" &&
+    segments[2] &&
+    segments[3] === "assignment-events" &&
+    headerValue(req, "x-a2a-requester-id") === segments[2]
+  ) {
+    return "worker";
+  }
+
   const assignedWorkerId = url.searchParams.get("assignedWorkerId")?.trim();
   const requesterId = headerValue(req, "x-a2a-requester-id");
   if (

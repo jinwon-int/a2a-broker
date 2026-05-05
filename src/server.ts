@@ -101,6 +101,7 @@ import {
   type TerminalTaskOutboxAckInput,
   type TerminalTaskOutboxReceiptUpdateInput,
 } from "./core/terminal-event-outbox.js";
+import type { TaskStatusEvent } from "./core/task-events.js";
 
 interface ThreadedExchangeMessage extends A2AExchangeMessageRecord {
   replies: ThreadedExchangeMessage[];
@@ -725,6 +726,30 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
           peerStatusService,
         });
         return sendJson(res, 200, response);
+      }
+
+      if (
+        req.method === "GET" &&
+        segments[0] === "a2a" &&
+        segments[1] === "workers" &&
+        segments[2] &&
+        segments[3] === "assignment-events" &&
+        segments.length === 4
+      ) {
+        const workerId = segments[2];
+        if (enforceRequesterIdentity) {
+          assertRequesterCanSubscribeToWorkerAssignments(requesterIdentity, workerId);
+        }
+        if (!broker.getWorker(workerId)) {
+          throw new BrokerError("not_found", "worker not found");
+        }
+
+        handleWorkerAssignmentEventStream(req, res, {
+          broker,
+          workerId,
+          heartbeatMs: taskSubscribeHeartbeatSec * 1000,
+        });
+        return;
       }
 
       if (
@@ -2638,6 +2663,22 @@ function buildAlertScan(input: {
   });
 }
 
+function assertRequesterCanSubscribeToWorkerAssignments(
+  identity: RequesterIdentity | null,
+  workerId: string,
+): void {
+  if (!identity?.id) {
+    throw new BrokerError("unauthorized", "x-a2a-requester-id is required for this route");
+  }
+  if (identity.role === "hub" || identity.role === "operator" || identity.id === workerId) {
+    return;
+  }
+  throw new BrokerError(
+    "unauthorized",
+    "worker assignment subscribe requires the assigned worker requester or a hub/operator role",
+  );
+}
+
 function formatOperatorSseEventId(seq: number): string {
   return `operator:${seq}`;
 }
@@ -2745,6 +2786,113 @@ function writeSseEvent(
   }
   res.write(`event: ${event}\n`);
   res.write(`data: ${JSON.stringify(data)}\n\n`);
+}
+
+function handleWorkerAssignmentEventStream(
+  req: IncomingMessage,
+  res: ServerResponse<IncomingMessage>,
+  params: {
+    broker: InMemoryA2ABroker;
+    workerId: string;
+    heartbeatMs: number;
+  },
+): void {
+  const { broker, workerId, heartbeatMs } = params;
+  const stream = broker.getTaskEventStream();
+
+  writeSseResponseHeaders(res);
+
+  const lastEventIdHeader = req.headers["last-event-id"] as string | undefined;
+  const replayAfterId = lastEventIdHeader ? Number(lastEventIdHeader) : -1;
+  const afterId = Number.isFinite(replayAfterId) && replayAfterId >= 0 ? replayAfterId : -1;
+
+  const queuedTasks = broker.listTasks({ assignedWorkerId: workerId, status: "queued" });
+  writeSseEvent(res, "worker-assignment-snapshot", {
+    workerId,
+    count: queuedTasks.length,
+    tasks: queuedTasks.map((task) => ({
+      taskId: task.id,
+      status: task.status,
+      assignedWorkerId: task.assignedWorkerId ?? task.targetNodeId,
+      updatedAt: task.updatedAt,
+    })),
+  });
+
+  for (const event of stream.subscribe({ afterId })) {
+    if (isWorkerAssignmentEvent(event, workerId)) {
+      writeSseEvent(res, "worker-assignment", buildWorkerAssignmentEvent(event), String(event.id));
+    }
+  }
+
+  let heartbeatTimer: NodeJS.Timeout | null = null;
+  let unsubscribe: (() => void) | null = null;
+
+  const cleanup = (): void => {
+    if (heartbeatTimer) {
+      clearInterval(heartbeatTimer);
+      heartbeatTimer = null;
+    }
+    if (unsubscribe) {
+      unsubscribe();
+      unsubscribe = null;
+    }
+  };
+
+  unsubscribe = stream.onStatus((event) => {
+    if (isWorkerAssignmentEvent(event, workerId)) {
+      writeSseEvent(res, "worker-assignment", buildWorkerAssignmentEvent(event), String(event.id));
+    }
+  });
+
+  req.on("close", () => {
+    cleanup();
+    if (!res.writableEnded) {
+      res.end();
+    }
+  });
+  req.on("error", cleanup);
+
+  if (heartbeatMs > 0) {
+    heartbeatTimer = setInterval(() => {
+      if (res.writableEnded) {
+        cleanup();
+        return;
+      }
+      res.write(`: heartbeat ${new Date().toISOString()}\n\n`);
+    }, heartbeatMs);
+    heartbeatTimer.unref?.();
+  }
+}
+
+function isWorkerAssignmentEvent(event: TaskStatusEvent, workerId: string): boolean {
+  return (
+    event.status === "queued" &&
+    event.metadata.assignedWorkerId === workerId &&
+    (event.kind === "created" ||
+      event.kind === "approved" ||
+      event.kind === "reassigned" ||
+      event.kind === "requeued")
+  );
+}
+
+function buildWorkerAssignmentEvent(event: TaskStatusEvent): {
+  id: number;
+  taskId: string;
+  status: TaskStatus;
+  reason: TaskStatusEvent["kind"];
+  assignedWorkerId: string;
+  updatedAt: string;
+  metadata: TaskStatusEvent["metadata"];
+} {
+  return {
+    id: event.id,
+    taskId: event.taskId,
+    status: event.status,
+    reason: event.kind,
+    assignedWorkerId: event.metadata.assignedWorkerId ?? "",
+    updatedAt: event.timestamp,
+    metadata: event.metadata,
+  };
 }
 
 function handleTerminalTaskEventStream(

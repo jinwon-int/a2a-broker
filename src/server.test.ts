@@ -3576,6 +3576,87 @@ test("GET /a2a/tasks/terminal-outbox reconciles unacknowledged records before cu
   }
 });
 
+test("SSE /a2a/workers/:id/assignment-events streams queued assignment hints with replay", async () => {
+  const server = await startTestServer({ edgeSecret: "test-edge-secret" });
+  try {
+    await registerTestWorker(server.baseUrl, "worker-a", "analyst", "test-edge-secret");
+    await registerTestWorker(server.baseUrl, "worker-b", "analyst", "test-edge-secret");
+
+    const workerHeaders = {
+      "x-a2a-edge-secret": "test-edge-secret",
+      "x-a2a-requester-id": "worker-a",
+      "x-a2a-requester-role": "analyst",
+    };
+    const sseRes = await fetch(`${server.baseUrl}/a2a/workers/worker-a/assignment-events`, {
+      headers: workerHeaders,
+    });
+    assert.equal(sseRes.status, 200);
+
+    const hubHeaders = jsonHeaders({
+      "x-a2a-edge-secret": "test-edge-secret",
+      "x-a2a-requester-id": "hub-a",
+      "x-a2a-requester-role": "hub",
+    });
+    const taskRes = await fetch(`${server.baseUrl}/tasks`, {
+      method: "POST",
+      headers: hubHeaders,
+      body: JSON.stringify({
+        intent: "analyze",
+        requester: { id: "hub-a", kind: "node", role: "hub" },
+        target: { id: "worker-a", kind: "node", role: "analyst" },
+        assignedWorkerId: "worker-a",
+        payload: { githubRepo: "acme/example", githubIssueNumber: 377, rawPrompt: "do-not-leak" },
+        message: "secret task prompt must not be streamed",
+      }),
+    });
+    assert.equal(taskRes.status, 201);
+    const task = await taskRes.json() as { id: string };
+
+    const events = await readSseEventsUntil(
+      sseRes,
+      (seen) => seen.some((event) => event.event === "worker-assignment"),
+    );
+    const assignment = events.find((event) => event.event === "worker-assignment");
+    assert.ok(assignment);
+    assert.ok(assignment.id);
+    const data = JSON.parse(assignment.data);
+    assert.equal(data.taskId, task.id);
+    assert.equal(data.status, "queued");
+    assert.equal(data.assignedWorkerId, "worker-a");
+    assert.equal(data.metadata.repoFullName, "acme/example");
+    assert.equal(data.metadata.issueNumber, 377);
+    assert.equal(assignment.data.includes("secret task prompt"), false);
+    assert.equal(assignment.data.includes("do-not-leak"), false);
+
+    const replayRes = await fetch(`${server.baseUrl}/a2a/workers/worker-a/assignment-events`, {
+      headers: {
+        ...workerHeaders,
+        "Last-Event-ID": "0",
+      },
+    });
+    assert.equal(replayRes.status, 200);
+    const replayEvents = await readSseEventsUntil(
+      replayRes,
+      (seen) => seen.some((event) => event.event === "worker-assignment"),
+    );
+    assert.equal(
+      replayEvents.some((event) => event.event === "worker-assignment" && JSON.parse(event.data).taskId === task.id),
+      true,
+    );
+
+    const strangerRes = await fetch(`${server.baseUrl}/a2a/workers/worker-a/assignment-events`, {
+      headers: {
+        "x-a2a-edge-secret": "test-edge-secret",
+        "x-a2a-requester-id": "worker-b",
+        "x-a2a-requester-role": "analyst",
+      },
+    });
+    assert.equal(strangerRes.status, 401);
+  } finally {
+    await server.close();
+  }
+});
+
 test("SSE /a2a/tasks/terminal-events streams compact terminal events with replay ids", async () => {
   const server = await startTestServer({ edgeSecret: "test-edge-secret" });
   try {

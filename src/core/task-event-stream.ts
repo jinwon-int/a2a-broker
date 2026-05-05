@@ -61,6 +61,7 @@ const NOTIFIABLE_TERMINAL_STATUSES = new Set<TerminalTaskEventStatus>([
 const TASK_BRIEF_KEYS = ["githubIssueTitle", "taskTitle", "title", "taskBrief"] as const;
 const MAX_TASK_BRIEF_CHARS = 160;
 
+export type TaskStatusEventListener = (event: TaskStatusEvent) => void;
 export type TerminalTaskEventListener = (event: TerminalTaskEvent) => void;
 
 /**
@@ -73,6 +74,7 @@ export type TerminalTaskEventListener = (event: TerminalTaskEvent) => void;
 export class TaskEventStream {
   private readonly buffer: CursorEventBuffer<TaskStatusEvent>;
   private readonly terminalBuffer: CursorEventBuffer<TerminalTaskEvent>;
+  private readonly listeners = new Set<TaskStatusEventListener>();
   private readonly terminalListeners = new Set<TerminalTaskEventListener>();
 
   constructor(options: TaskEventStreamOptions = {}) {
@@ -98,6 +100,17 @@ export class TaskEventStream {
 
     const event = this.buildEvent(kind, audit, task);
     const pushed = this.buffer.push(event);
+    for (const listener of [...this.listeners]) {
+      try {
+        listener(pushed);
+      } catch (error) {
+        console.error(
+          `[a2a-broker] task status event listener threw: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      }
+    }
     if (TERMINAL_ACTIONS.has(audit.action) || isNotifiableTerminalStatus(task.status)) {
       const terminalEvent = this.terminalBuffer.push(this.buildTerminalEvent(task));
       for (const listener of [...this.terminalListeners]) {
@@ -137,6 +150,14 @@ export class TaskEventStream {
       afterId: options.afterId,
       limit: options.limit,
     });
+  }
+
+  /** Subscribe to new task status events. Returns an unsubscribe function. */
+  onStatus(listener: TaskStatusEventListener): () => void {
+    this.listeners.add(listener);
+    return () => {
+      this.listeners.delete(listener);
+    };
   }
 
   /** Subscribe to new terminal task events. Returns an unsubscribe function. */
