@@ -35,6 +35,7 @@ map.
 
 - `docs/a2a-protocol.md` for the canonical A2A task protocol: envelope shape, lifecycle, cancel semantics, event/state model, and the migration map from the retired legacy library entrypoints
 - `docs/protocol-compatibility.md` for the public A2A compatibility matrix, current supported profile, non-goals, and conformance/golden gate
+- `docs/public-stable-readiness.md` for the public/stable release decision checklist, license/secret/history gates, and broker/plugin/runner responsibility boundaries
 - `docs/v1-acceptance-handoff.md` for the v1 acceptance gate, the plugin-facing contract, and the cross-repo handoff bar for `openclaw-plugin-a2a`
 - `docs/trading-partner-refactor-design.md` for the broker evolution plan that supports stateful trading-partner workers such as `bangtong` and `dengae`
 - `docs/phase-1-implementation-checklist.md` for the first implementation slice
@@ -147,6 +148,8 @@ curl -s "$BROKER_URL/workers/capacity?stale_after_ms=120000" \
 If the command exits non-zero, pause dispatch and inspect the compact response instead of repeatedly fetching large `/tasks?detail=full` snapshots.
 
 ## What is included
+
+Release note: this repository currently has no root `LICENSE` file. Treat public/stable release or visibility changes as blocked until the license decision is approved and recorded in `docs/public-stable-readiness.md`.
 
 - Node 22 + TypeScript service
 - JSON file backed persistence for exchanges, workers, proposals, validations, artifacts, and audit events

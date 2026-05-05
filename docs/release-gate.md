@@ -2,6 +2,12 @@
 
 One command to prove the broker is ready for the next release cut.
 
+For public/stable release decisions or repository visibility changes, pair this
+technical gate with the operator checklist in
+[`public-stable-readiness.md`](public-stable-readiness.md). The checklist adds
+license, secret/history scan, documentation, rollback, cross-repo boundary, and
+explicit approval gates that this script cannot prove by itself.
+
 ## Quick Start
 
 ```bash
@@ -159,8 +165,9 @@ sqlite runtime repositories: task/worker/audit/tombstone write/read covered
 ## When to Stop vs Escalate
 
 **Stop at the gate (green):**
-- Both gates pass → broker is safe to ship
+- Both gates pass → broker is technically ready for a normal release cut
 - Compose smoke passes but recovery is skipped → acceptable for non-production cuts where restart behavior hasn't changed
+- Public/stable readiness still requires `docs/public-stable-readiness.md`; do not treat a green script alone as approval to change visibility, publish, deploy production, restart Gateway, send live Telegram traffic, mutate DB rows, or ACK terminal outbox rows
 
 **Escalate to fuller tests:**
 - Either gate fails → do not merge, investigate using the failure triage in [smoke-compose.md](smoke-compose.md) and [restart-recovery-smoke.md](restart-recovery-smoke.md)
