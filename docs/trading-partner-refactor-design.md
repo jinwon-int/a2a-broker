@@ -441,7 +441,7 @@ The dashboard should stop thinking only in terms of exchanges.
 
 ### Recommended shape
 
-#### `seoseo`
+#### `<live-worker>`
 
 - broker service
 - dashboard service

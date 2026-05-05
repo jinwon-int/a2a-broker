@@ -1,6 +1,6 @@
 # Operator Terminal Push Proof Harness
 
-This broker-local proof exercises the terminal event outbox and compact SSE projection without calling Telegram directly. Operator Telegram and main-session delivery remain owned by `seoseo/OpenClaw plugin-notifier`.
+This broker-local proof exercises the terminal event outbox and compact SSE projection without calling Telegram directly. Operator Telegram and main-session delivery remain owned by `<notifier-host>/OpenClaw plugin-notifier`.
 
 ## Covered terminal envelopes
 
@@ -17,7 +17,7 @@ Expected fake envelope shape:
 {
   "envelopeVersion": 1,
   "delivery": "operator-terminal-push-proof",
-  "transportOwner": "seoseo/OpenClaw plugin-notifier",
+  "transportOwner": "<notifier-host>/OpenClaw plugin-notifier",
   "brokerTransport": "webhook-or-sse",
   "cursor": "terminal:<task-id>:<status>:<completed-or-updated-at>",
   "body": {

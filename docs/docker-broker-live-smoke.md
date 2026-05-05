@@ -19,9 +19,9 @@ Dry run is the default when `--live` is omitted. It does not contact the broker 
 npm run smoke:docker-broker -- --dry-run
 ```
 
-## Live run on seoseo
+## Live run on <broker-host>
 
-Run this from the deployed `a2a-broker` checkout on seoseo. Use local deployment values for the broker URL and the local edge-secret file; do not paste the secret itself into the shell history.
+Run this from the deployed `a2a-broker` checkout on <broker-host>. Use local deployment values for the broker URL and the local edge-secret file; do not paste the secret itself into the shell history.
 
 ```bash
 A2A_BROKER_URL="http://127.0.0.1:<broker-port>" \

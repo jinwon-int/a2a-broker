@@ -236,7 +236,7 @@ Request:
 
 ```json
 {
-  "requester": { "id": "seoseo", "kind": "node", "role": "hub" },
+  "requester": { "id": "<hub-node>", "kind": "node", "role": "hub" },
   "target": { "id": "dengae", "kind": "node", "role": "researcher" },
   "message": "analyze strategy drift",
   "maxTurns": 8,

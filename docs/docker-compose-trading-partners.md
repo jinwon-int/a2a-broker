@@ -2,7 +2,7 @@
 
 This example shows the intended isolation model for:
 
-- `seoseo` or another host running the broker service
+- `<broker-host>` or another host running the broker service
 - `bangtong` as the live-trading worker
 - `dengae` as the research and backfill worker
 
