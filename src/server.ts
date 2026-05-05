@@ -1246,7 +1246,8 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
         const tasks = taskIds.length
           ? taskIds.map((id) => getTaskForReadPath(stateStore, broker, id)).filter((task): task is TaskRecord => Boolean(task))
           : listTasksForReadPath(stateStore, broker, {});
-        return sendJson(res, 200, buildOperatorTaskReport(tasks, { taskIds, parentIssue, staleAfterMs, updatedAfter }));
+        const terminalOutbox = broker.getTerminalTaskEventOutbox().subscribe();
+        return sendJson(res, 200, buildOperatorTaskReport(tasks, { taskIds, parentIssue, staleAfterMs, updatedAfter, terminalOutbox }));
       }
 
       if (req.method === "GET" && path === "/tasks/diagnostics") {

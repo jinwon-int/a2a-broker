@@ -1,5 +1,10 @@
 import type { TaskRecord, TaskStatus } from "./types.js";
-import { normalizeTerminalTaskReceiptStatus, type TerminalTaskReceiptStatus } from "./terminal-event-outbox.js";
+import {
+  normalizeTerminalTaskReceiptStatus,
+  type TerminalTaskOutboxEvent,
+  type TerminalTaskOutboxAckDecision,
+  type TerminalTaskReceiptStatus,
+} from "./terminal-event-outbox.js";
 
 export type OperatorTaskReportStage = "queued" | "claimed" | "running" | "terminal";
 export type OperatorTaskReportKind = "progress" | "stale" | "result";
@@ -10,6 +15,22 @@ export interface OperatorTaskReportOptions {
   taskIds?: string[];
   parentIssue?: string;
   updatedAfter?: string;
+  terminalOutbox?: TerminalTaskOutboxEvent[];
+}
+
+export interface OperatorTaskReportTerminalBrief {
+  outboxId: string;
+  cursor: string;
+  receiptStatus: TerminalTaskReceiptStatus;
+  ackStatus: "unacknowledged" | "receipt_confirmed";
+  ackDecision?: TerminalTaskOutboxAckDecision;
+  ackReason?: string;
+  evidenceUrl?: string;
+  worker?: string;
+  repo?: string;
+  issue?: number;
+  taskBrief?: string;
+  updatedAt: string;
 }
 
 export interface OperatorTaskReportItem {
@@ -32,6 +53,7 @@ export interface OperatorTaskReportItem {
   errorMessage?: string;
   resultSummary?: string;
   receiptStatus?: TerminalTaskReceiptStatus;
+  terminalBrief?: OperatorTaskReportTerminalBrief;
   github?: {
     repo?: string;
     issue?: string;
@@ -71,12 +93,18 @@ export function buildOperatorTaskReport(tasks: TaskRecord[], options: OperatorTa
   const parentIssue = normalizeIssueRef(options.parentIssue);
   const updatedAfterMs = options.updatedAfter ? Date.parse(options.updatedAfter) : NaN;
   const hasUpdatedAfter = Number.isFinite(updatedAfterMs);
+  const terminalBriefByTaskId = buildTerminalBriefIndex(options.terminalOutbox ?? []);
 
   const items = tasks
     .filter((task) => !wanted.size || wanted.has(task.id))
     .filter((task) => !parentIssue || taskMatchesIssueRef(task, parentIssue))
     .sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id))
-    .map((task) => buildOperatorTaskReportItem(task, { nowMs, staleAfterMs, updatedAfterMs: hasUpdatedAfter ? updatedAfterMs : undefined }));
+    .map((task) => buildOperatorTaskReportItem(task, {
+      nowMs,
+      staleAfterMs,
+      updatedAfterMs: hasUpdatedAfter ? updatedAfterMs : undefined,
+      terminalBrief: terminalBriefByTaskId.get(task.id),
+    }));
 
   const terminal = items.filter((item) => item.final).length;
   const stale = items.filter((item) => item.stale).length;
@@ -96,7 +124,7 @@ export function buildOperatorTaskReport(tasks: TaskRecord[], options: OperatorTa
 
 function buildOperatorTaskReportItem(
   task: TaskRecord,
-  options: { nowMs: number; staleAfterMs: number; updatedAfterMs?: number },
+  options: { nowMs: number; staleAfterMs: number; updatedAfterMs?: number; terminalBrief?: OperatorTaskReportTerminalBrief },
 ): OperatorTaskReportItem {
   const final = TERMINAL_STATUSES.has(task.status);
   const stage = final ? "terminal" : task.status === "running" ? "running" : task.status === "claimed" ? "claimed" : "queued";
@@ -106,7 +134,7 @@ function buildOperatorTaskReportItem(
   const updatedMs = Date.parse(task.updatedAt);
   const reportable = final || stale || (options.updatedAfterMs !== undefined && Number.isFinite(updatedMs) && updatedMs > options.updatedAfterMs);
   const github = extractGithubEvidence(task);
-  const receiptStatus = extractReceiptStatus(task, final);
+  const receiptStatus = options.terminalBrief?.receiptStatus ?? extractReceiptStatus(task, final);
   const resultSummary = task.result?.summary ?? task.result?.note;
   const nextAction = buildNextAction(task, github);
 
@@ -130,10 +158,34 @@ function buildOperatorTaskReportItem(
     errorMessage: task.error?.message,
     resultSummary,
     receiptStatus,
+    terminalBrief: options.terminalBrief,
     github,
     nextAction,
     reportLine: buildReportLine(task, { kind, statusAgeMs, resultSummary, github, receiptStatus }),
   };
+}
+
+function buildTerminalBriefIndex(events: TerminalTaskOutboxEvent[]): Map<string, OperatorTaskReportTerminalBrief> {
+  const byTaskId = new Map<string, OperatorTaskReportTerminalBrief>();
+  for (const event of events) {
+    const taskId = event.payload?.taskId;
+    if (!taskId) continue;
+    byTaskId.set(taskId, {
+      outboxId: event.id,
+      cursor: event.id,
+      receiptStatus: event.receipt.status,
+      ackStatus: event.ack?.status ?? "unacknowledged",
+      ackDecision: event.ackAudit?.decision,
+      ackReason: event.ackAudit?.reason,
+      evidenceUrl: event.payload.prUrl ?? event.payload.doneUrl ?? event.payload.blockUrl,
+      worker: event.payload.worker,
+      repo: event.payload.repo,
+      issue: event.payload.issue,
+      taskBrief: event.payload.taskBrief,
+      updatedAt: event.receipt.updatedAt,
+    });
+  }
+  return byTaskId;
 }
 
 function buildReportLine(
