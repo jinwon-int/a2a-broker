@@ -294,6 +294,9 @@ test("SQLite hot task poll queries avoid temp b-tree sorts", () => {
     const db = new DatabaseSync(sqliteFile, { readOnly: true });
     const plans = [
       db.prepare(
+        "EXPLAIN QUERY PLAN SELECT payload FROM broker_tasks ORDER BY updated_at DESC, id ASC",
+      ).all(),
+      db.prepare(
         "EXPLAIN QUERY PLAN SELECT payload FROM broker_tasks WHERE status = 'queued' ORDER BY updated_at DESC, id ASC",
       ).all(),
       db.prepare(

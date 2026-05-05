@@ -1216,6 +1216,8 @@ export class SqliteBrokerStateStore implements BrokerStateStore {
       );
       CREATE INDEX IF NOT EXISTS broker_tasks_status_updated_idx
         ON broker_tasks(status, updated_at);
+      CREATE INDEX IF NOT EXISTS broker_tasks_updated_id_idx
+        ON broker_tasks(updated_at DESC, id ASC);
       CREATE INDEX IF NOT EXISTS broker_tasks_status_updated_id_idx
         ON broker_tasks(status, updated_at DESC, id ASC);
       CREATE INDEX IF NOT EXISTS broker_tasks_worker_status_idx
