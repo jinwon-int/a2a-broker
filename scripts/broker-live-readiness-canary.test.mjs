@@ -21,6 +21,8 @@ describe('broker live-readiness canary', () => {
     assert.equal(report.providerCalled, false);
     assert.equal(report.dbMutationAttempted, false);
     assert.equal(report.terminalAckAttempted, false);
+    assert.equal(report.oneShotLiveEligible, false);
+    assert.equal(report.blockedCount, 3);
     assert.ok(report.checks.find((check) => check.check === 'health revision'));
     assert.ok(report.checks.find((check) => check.check === 'online worker matrix'));
     assert.ok(report.checks.find((check) => check.check === 'queue emptiness and stale tasks'));
@@ -52,6 +54,81 @@ describe('broker live-readiness canary', () => {
     assert.equal(check.ok, false);
     assert.match(check.detail, /missing canonical HTTP PR\/Done\/Block evidence/);
     assert.match(check.detail, /invalid receipt evidence: provider_sent/);
+  });
+
+  it('blocks one-shot live eligibility until manual receipt-confirmed ACK exists', async () => {
+    const fetchImpl = async (url) => {
+      const parsed = new URL(String(url));
+      if (parsed.pathname === '/health') {
+        return jsonResponse({ ok: true, service: 'a2a-broker', version: '0.1.0', build: 'test-build' });
+      }
+      if (parsed.pathname === '/workers') {
+        return jsonResponse({ items: [{ nodeId: 'sogyo', status: 'online' }] });
+      }
+      if (parsed.pathname === '/tasks/diagnostics') {
+        return jsonResponse({ tasks: { byStatus: { queued: 0, claimed: 0, running: 0 }, stale: 0 } });
+      }
+      if (parsed.pathname === '/a2a/tasks/terminal-outbox') {
+        return jsonResponse({
+          kind: 'task.terminal.outbox',
+          events: [
+            {
+              id: 'provider-send-only',
+              payload: { worker: 'sogyo', doneUrl: 'https://github.com/jinwon-int/a2a-broker/issues/390#issuecomment-provider', receiptStatus: 'provider_sent' },
+            },
+            {
+              id: 'provider-delivery-only',
+              ack: { status: 'receipt_confirmed', evidence: 'provider_delivery_receipt', acknowledgedAt: '2026-05-05T00:00:00.000Z' },
+              receipt: { status: 'provider_sent', evidence: 'provider_delivery_receipt', updatedAt: '2026-05-05T00:00:00.000Z' },
+              payload: { worker: 'sogyo', doneUrl: 'https://github.com/jinwon-int/a2a-broker/issues/390#issuecomment-delivery' },
+            },
+          ],
+        });
+      }
+      throw new Error(`unexpected path ${parsed.pathname}`);
+    };
+
+    const report = await runLiveReadinessCanary({ baseUrl: 'http://broker.local', fetchImpl });
+
+    assert.equal(report.ok, true);
+    assert.equal(report.oneShotLiveEligible, false);
+    assert.equal(report.blockedCount, 2);
+    const gate = report.checks.find((check) => check.check === 'one-shot live eligibility manual receipt gate');
+    assert.equal(gate?.oneShotLiveEligible, false);
+    assert.equal(gate?.blockedEvents[1].ackEvidence, 'provider_delivery_receipt');
+  });
+
+  it('allows one-shot live eligibility only for manual operator receipt-confirmed ACK', async () => {
+    const fetchImpl = async (url) => {
+      const parsed = new URL(String(url));
+      if (parsed.pathname === '/health') {
+        return jsonResponse({ ok: true, service: 'a2a-broker', version: '0.1.0', build: 'test-build' });
+      }
+      if (parsed.pathname === '/workers') {
+        return jsonResponse({ items: [{ nodeId: 'sogyo', status: 'online' }] });
+      }
+      if (parsed.pathname === '/tasks/diagnostics') {
+        return jsonResponse({ tasks: { byStatus: { queued: 0, claimed: 0, running: 0 }, stale: 0 } });
+      }
+      if (parsed.pathname === '/a2a/tasks/terminal-outbox') {
+        return jsonResponse({
+          kind: 'task.terminal.outbox',
+          events: [{
+            id: 'manual-receipt',
+            ack: { status: 'receipt_confirmed', evidence: 'operator_confirmed', acknowledgedAt: '2026-05-05T00:00:00.000Z' },
+            receipt: { status: 'operator_visible', evidence: 'operator_confirmed', updatedAt: '2026-05-05T00:00:00.000Z' },
+            payload: { worker: 'sogyo', doneUrl: 'https://github.com/jinwon-int/a2a-broker/issues/390#issuecomment-manual' },
+          }],
+        });
+      }
+      throw new Error(`unexpected path ${parsed.pathname}`);
+    };
+
+    const report = await runLiveReadinessCanary({ baseUrl: 'http://broker.local', fetchImpl });
+
+    assert.equal(report.ok, true);
+    assert.equal(report.oneShotLiveEligible, true);
+    assert.equal(report.blockedCount, 0);
   });
 
   it('uses only read-only GET endpoints in live mode', async () => {
