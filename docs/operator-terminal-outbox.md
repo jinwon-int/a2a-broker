@@ -61,6 +61,8 @@ For a post-approval live validation, operators can use `npm run smoke:docker-bro
 
 For the #241/#168 duplicate Telegram flood closeout, use the receipt-gated canary smoke runbook in [receipt-gated-ack-canary-runbook.md](receipt-gated-ack-canary-runbook.md). It keeps dry-run/manual receipt ACK as the default path and treats any staged live Telegram send as an explicit command-center approval gate.
 
+For the R4 move from manual ACK to automatic current-session-visible receipt ACK, use [terminal-brief-r4-automatic-receipt-ack-runbook.md](terminal-brief-r4-automatic-receipt-ack-runbook.md). It records the backlog drain, one-shot fuse, Gateway restart caveat, manual receipt fallback, automatic receipt contract, supplemental post-dispatch verifier, and go/no-go gates.
+
 For release-gate closeout comments or pre-remediation evidence, generate the read-only terminal receipt report directly from the SQLite hot table:
 
 ```sh
