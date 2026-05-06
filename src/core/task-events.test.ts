@@ -308,7 +308,7 @@ describe("TerminalTaskEventOutbox", () => {
     assert.match(event.payload.testSummary ?? "", /tests passed from \[path\]/);
     assert.deepEqual(event.ackAudit, {
       decision: "pending",
-      reason: "terminal event accepted; awaiting operator-visible/provider-delivery evidence before ACK",
+      reason: "terminal event accepted; awaiting current-session-visible/operator-visible/provider-delivery evidence before ACK",
       updatedAt: event.createdAt,
       taskId: task.id,
       worker: "worker-1",
@@ -536,7 +536,7 @@ describe("TerminalTaskEventOutbox", () => {
     });
     assert.deepEqual(event.ackAudit!, {
       decision: "pending",
-      reason: "terminal event accepted; awaiting operator-visible/provider-delivery evidence before ACK",
+      reason: "terminal event accepted; awaiting current-session-visible/operator-visible/provider-delivery evidence before ACK",
       updatedAt: event.createdAt,
       taskId: "ack-task",
       worker: "worker-1",
@@ -546,14 +546,14 @@ describe("TerminalTaskEventOutbox", () => {
     for (const evidence of ["gateway_send_success", "provider_send_success"]) {
       assert.throws(
         () => outbox.acknowledge(event.id, { evidence } as any),
-        /receipt\/operator-visible evidence/,
+        /current-session-visible\/receipt\/operator-visible evidence/,
         evidence,
       );
     }
     const rejected = outbox.subscribe()[0]!;
     assert.equal(rejected.attempts, 0);
     assert.equal(rejected.ackAudit!.decision, "rejected");
-    assert.match(rejected.ackAudit!.reason, /provider send success is not operator-visible\/provider-delivery evidence/);
+    assert.match(rejected.ackAudit!.reason, /provider send success is not current-session-visible\/operator-visible\/provider-delivery evidence/);
     assert.equal(rejected.ackAudit!.taskId, "ack-task");
     assert.equal(rejected.ackAudit!.worker, "worker-1");
 
@@ -601,6 +601,42 @@ describe("TerminalTaskEventOutbox", () => {
     assert.equal(replayed!.attempts, 1);
   });
 
+  it("acks current-session visibility separately from manual operator confirmation", () => {
+    const broker = new InMemoryA2ABroker();
+    registerWorker(broker);
+    const task = createTask(broker, { id: "current-session-visible-task" });
+
+    broker.claimTask(task.id, "worker-1");
+    broker.completeTask(task.id, "worker-1", { summary: "done" });
+
+    const outbox = broker.getTerminalTaskEventOutbox();
+    const [event] = outbox.subscribe();
+    assert.ok(event);
+
+    const acknowledgedAt = "2026-05-02T01:58:00.000Z";
+    const acked = outbox.acknowledge(event.id, {
+      evidence: "current_session_visible",
+      acknowledgedAt,
+      receiptId: "main-session-message-1",
+    });
+
+    assert.deepEqual(acked?.ack, {
+      status: "receipt_confirmed",
+      evidence: "current_session_visible",
+      acknowledgedAt,
+      receiptId: "main-session-message-1",
+    });
+    assert.deepEqual(acked?.receipt, {
+      status: "current_session_visible",
+      updatedAt: acknowledgedAt,
+      evidence: "current_session_visible",
+      receiptId: "main-session-message-1",
+    });
+    assert.equal(acked?.ackAudit?.decision, "confirmed");
+    assert.equal(acked?.ackAudit?.receiptStatus, "current_session_visible");
+    assert.match(acked?.ackAudit?.reason ?? "", /not provider send-only success or manual operator confirmation/);
+  });
+
   it("tracks notification send failure and stale/timed-out receipt without acking", () => {
     const broker = new InMemoryA2ABroker();
     registerWorker(broker);
@@ -641,9 +677,25 @@ describe("TerminalTaskEventOutbox", () => {
     assert.match(providerAccepted.ackAudit!.reason, /provider send-only success/);
     assert.equal(providerAccepted.ackAudit!.receiptStatus, "provider_accepted");
 
+    const currentSessionVisible = outbox.recordReceiptStatus(event.id, {
+      status: "current_session_visible",
+      updatedAt: "2026-05-02T01:56:00.000Z",
+      note: "main session rendered the message",
+    });
+    assert.ok(currentSessionVisible);
+    assert.equal(currentSessionVisible.ack, undefined);
+    assert.deepEqual(currentSessionVisible.ackAudit!, {
+      decision: "eligible",
+      reason: "current-session-visible receipt recorded; terminal ACK is eligible with current_session_visible evidence but is not manual operator confirmation",
+      updatedAt: "2026-05-02T01:56:00.000Z",
+      taskId: "receipt-status-task",
+      worker: "worker-1",
+      receiptStatus: "current_session_visible",
+    });
+
     const operatorVisible = outbox.recordReceiptStatus(event.id, {
       status: "operator_visible",
-      updatedAt: "2026-05-02T01:56:00.000Z",
+      updatedAt: "2026-05-02T01:57:00.000Z",
       note: "operator-facing message visible",
     });
     assert.ok(operatorVisible);
@@ -651,7 +703,7 @@ describe("TerminalTaskEventOutbox", () => {
     assert.deepEqual(operatorVisible.ackAudit!, {
       decision: "eligible",
       reason: "operator-visible receipt recorded; terminal ACK is eligible with operator_visible/operator_confirmed evidence",
-      updatedAt: "2026-05-02T01:56:00.000Z",
+      updatedAt: "2026-05-02T01:57:00.000Z",
       taskId: "receipt-status-task",
       worker: "worker-1",
       receiptStatus: "operator_visible",

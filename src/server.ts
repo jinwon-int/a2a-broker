@@ -2266,7 +2266,7 @@ function parseTerminalOutboxAckReceipt(value: unknown): TerminalTaskOutboxAckInp
   if (!isTerminalTaskOutboxAckEvidence(receipt.evidence)) {
     throw new BrokerError(
       "bad_request",
-      "terminal outbox ack evidence must be operator_visible, operator_confirmed, or provider_delivery_receipt",
+      "terminal outbox ack evidence must be current_session_visible, operator_visible, operator_confirmed, or provider_delivery_receipt",
     );
   }
   return {
@@ -2285,7 +2285,7 @@ function parseTerminalOutboxReceiptUpdate(value: unknown): TerminalTaskOutboxRec
   if (!isTerminalTaskReceiptStatus(receipt.status)) {
     throw new BrokerError(
       "bad_request",
-      "terminal outbox receipt status must be accepted, started, produced, provider_sent, provider_accepted, operator_visible, timed_out, stale, or failed",
+      "terminal outbox receipt status must be accepted, started, produced, provider_sent, provider_accepted, current_session_visible, operator_visible, timed_out, stale, or failed",
     );
   }
   return {

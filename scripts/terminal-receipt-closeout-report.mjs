@@ -9,11 +9,11 @@ import { DatabaseSync } from 'node:sqlite';
 import { z } from 'zod';
 
 const DEFAULT_MAX_UNACKED_AGE_MS = 15 * 60 * 1000;
-const SAFE_ACK_EVIDENCE = new Set(['operator_visible', 'operator_confirmed', 'provider_delivery_receipt']);
+const SAFE_ACK_EVIDENCE = new Set(['current_session_visible', 'operator_visible', 'operator_confirmed', 'provider_delivery_receipt']);
 
 const terminalAckSchema = z.object({
   status: z.literal('receipt_confirmed'),
-  evidence: z.enum(['operator_visible', 'operator_confirmed', 'provider_delivery_receipt']),
+  evidence: z.enum(['current_session_visible', 'operator_visible', 'operator_confirmed', 'provider_delivery_receipt']),
   acknowledgedAt: z.string(),
   receiptId: z.string().optional(),
   note: z.string().optional(),
