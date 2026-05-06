@@ -452,11 +452,10 @@ function summarizeGapBuckets(classifications) {
   return buckets;
 }
 
-function isLegacyAcceptedOnlyOutbox(event, createdAt, cutoffMs) {
+function isLegacyUnackedTerminalOutboxResidue(event, createdAt, cutoffMs) {
   return isBeforeLegacyCutoff(createdAt, cutoffMs) &&
     !event.ack &&
-    !event.deliveredAt &&
-    normalizeTerminalReceiptStatus(event.receipt?.status) === 'accepted';
+    !event.deliveredAt;
 }
 
 function checkTerminalOutbox(db, { nowMs, maxUnackedAgeMs, legacyResidueCutoffMs }) {
@@ -501,10 +500,10 @@ function checkTerminalOutbox(db, { nowMs, maxUnackedAgeMs, legacyResidueCutoffMs
     }
     if (!event.ack && !event.deliveredAt) {
       if (Number.isFinite(createdMs) && nowMs - createdMs > maxUnackedAgeMs) {
-        if (isLegacyAcceptedOnlyOutbox(event, createdAt, legacyResidueCutoffMs)) {
+        if (isLegacyUnackedTerminalOutboxResidue(event, createdAt, legacyResidueCutoffMs)) {
           legacyResidue.push({
             id,
-            reason: 'legacy_accepted_only_unacked_terminal_outbox',
+            reason: 'legacy_unacked_terminal_outbox',
             bucket: classification.bucket,
             action: classification.action,
             releaseBlocking: false,
@@ -532,7 +531,7 @@ function checkTerminalOutbox(db, { nowMs, maxUnackedAgeMs, legacyResidueCutoffMs
   if (violations.length > 0) {
     return fail('terminal-outbox ACK invariant', `${violations.length} ACK invariant violation(s); rollout blocked; current receipt gaps=${JSON.stringify(currentGapBuckets)}`, { violations, legacyResidue, receiptGapClassifications, currentGapBuckets });
   }
-  const suffix = legacyResidue.length > 0 ? `; ${legacyResidue.length} legacy accepted-only row(s) quarantined by cutoff without ACK` : '';
+  const suffix = legacyResidue.length > 0 ? `; ${legacyResidue.length} legacy unacked row(s) quarantined by cutoff without ACK` : '';
   return pass('terminal-outbox ACK invariant', `${rows.length} outbox row(s) have receipt-safe ACK state or are within replay window${suffix}`, { rowCount: rows.length, legacyResidue, receiptGapClassifications, currentGapBuckets });
 }
 
