@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
-const HANDLER_VERSION = "0.2.6";
+const HANDLER_VERSION = "0.2.7";
 const SOURCE_PATH = fileURLToPath(import.meta.url);
 const sourceSha256 = createHash("sha256").update(readFileSync(SOURCE_PATH)).digest("hex");
 
@@ -135,6 +135,7 @@ function buildRunnerTask(task, env = process.env) {
     prompt: [
       safeText(task.message, safeText(payload.prompt, "")),
       "Leave a Start marker before work begins and a PR, Done, or Block marker when work ends; return startCommentUrl plus prUrl, doneCommentUrl, or blockCommentUrl when available.",
+      "Before creating a PR, fail closed if OpenClaw runtime/bootstrap context files would enter the branch or artifact evidence. Report the exact repo-relative offending paths, including any of: AGENTS.md, SOUL.md, USER.md, TOOLS.md, HEARTBEAT.md, IDENTITY.md, .openclaw/**.",
     ].filter(Boolean).join("\n\n"),
     timeoutMs: Number(env.A2A_DOCKER_RUNNER_TASK_TIMEOUT_MS || payload.timeoutMs || 45 * 60 * 1000),
   };
@@ -468,6 +469,28 @@ function runOpenClawBridge(task, env = process.env) {
   }
 }
 
+function extractOpenClawBootstrapLeakPaths(...values) {
+  const text = values
+    .map((value) => typeof value === "string" ? value : JSON.stringify(value ?? ""))
+    .join("\n");
+  const matches = new Set();
+  const patterns = [
+    /(?:^|[\s"'`:,])((?:\.?\/?|[A-Za-z]:\\)?(?:[\w.-]+[\\/])*AGENTS\.md)(?=$|[\s"'`,])/g,
+    /(?:^|[\s"'`:,])((?:\.?\/?|[A-Za-z]:\\)?(?:[\w.-]+[\\/])*SOUL\.md)(?=$|[\s"'`,])/g,
+    /(?:^|[\s"'`:,])((?:\.?\/?|[A-Za-z]:\\)?(?:[\w.-]+[\\/])*USER\.md)(?=$|[\s"'`,])/g,
+    /(?:^|[\s"'`:,])((?:\.?\/?|[A-Za-z]:\\)?(?:[\w.-]+[\\/])*TOOLS\.md)(?=$|[\s"'`,])/g,
+    /(?:^|[\s"'`:,])((?:\.?\/?|[A-Za-z]:\\)?(?:[\w.-]+[\\/])*HEARTBEAT\.md)(?=$|[\s"'`,])/g,
+    /(?:^|[\s"'`:,])((?:\.?\/?|[A-Za-z]:\\)?(?:[\w.-]+[\\/])*IDENTITY\.md)(?=$|[\s"'`,])/g,
+    /(?:^|[\s"'`:,])((?:\.?\/?|[A-Za-z]:\\)?(?:[\w.-]+[\\/])*\.openclaw(?:[\\/][^\s"'`,]+)?)(?=$|[\s"'`,])/g,
+  ];
+  for (const pattern of patterns) {
+    for (const match of text.matchAll(pattern)) {
+      matches.add(match[1].replace(/\\/g, "/").replace(/^\.\//, ""));
+    }
+  }
+  return [...matches].sort();
+}
+
 function buildOutputGithub(parsed) {
   const nested = parsed?.github && typeof parsed.github === "object" && !Array.isArray(parsed.github)
     ? parsed.github
@@ -533,6 +556,7 @@ function runDockerRunner(task, env = process.env) {
       child.status === 124; // timeout exit code convention
 
     if (child.status !== 0 || !parsed?.ok) {
+      const openclawBootstrapLeakPaths = extractOpenClawBootstrapLeakPaths(parsed, stdout, stderr);
       return {
         error: {
           code: isTimeout ? "docker_runner_timeout" : "docker_runner_failed",
@@ -542,6 +566,7 @@ function runDockerRunner(task, env = process.env) {
             exitCode: child.status,
             signal: child.signal ?? undefined,
             runnerResult: parsed,
+            ...(openclawBootstrapLeakPaths.length ? { openclawBootstrapLeakPaths } : {}),
           },
         },
       };

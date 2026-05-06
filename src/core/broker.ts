@@ -3735,10 +3735,6 @@ function normalizePolicyError(error: unknown): BrokerError {
 }
 
 function normalizeGitHubPatchTaskRequest(request: CreateTaskRequest): CreateTaskRequest {
-  if (request.intent !== "propose_patch") {
-    return request;
-  }
-
   const payload = request.payload ?? {};
   const mode = readString(payload["mode"]);
   const repo = readString(payload["repo"]);
@@ -3747,15 +3743,42 @@ function normalizeGitHubPatchTaskRequest(request: CreateTaskRequest): CreateTask
   const legacyIssueNumber = readIssueNumber(payload["githubIssueNumber"]);
   const issueUrl = readString(payload["issueUrl"]);
   const legacyIssueUrl = readString(payload["githubIssueUrl"]);
+  const workMode = readString(payload["workMode"]);
+  const githubWorkMode = readString(payload["githubWorkMode"]);
+  if (request.intent === "propose_patch" && mode === "github-issue-instruction") {
+    return request;
+  }
+  const messageHasGithubIssueUrl = containsGithubIssueUrl(request.message);
+  const payloadHasGithubIssueUrl = objectContainsGithubIssueUrl(payload);
+  const hasRepoAndIssue = repo !== undefined && (issueNumber !== undefined || issueUrl !== undefined);
+  const hasLegacyGithubFields = legacyRepo !== undefined || legacyIssueNumber !== undefined || legacyIssueUrl !== undefined;
   const looksLikeGithubTask =
     mode === "github-propose-patch" ||
-    legacyRepo !== undefined ||
-    legacyIssueNumber !== undefined ||
-    legacyIssueUrl !== undefined ||
-    readString(payload["workMode"]) === "github" ||
-    readString(payload["githubWorkMode"]) === "github";
+    hasRepoAndIssue ||
+    hasLegacyGithubFields ||
+    workMode === "github" ||
+    githubWorkMode === "github" ||
+    messageHasGithubIssueUrl ||
+    payloadHasGithubIssueUrl;
 
   if (!looksLikeGithubTask) {
+    return request;
+  }
+
+  if (request.intent !== "propose_patch") {
+    if (request.taskOrigin === "github" && readString(payload["githubDeliveryId"]) && readString(payload["githubKind"])) {
+      return request;
+    }
+    const nonPatchDispatchLooksLikeGithubWork =
+      mode === "github-propose-patch" ||
+      hasRepoAndIssue ||
+      workMode === "github" ||
+      githubWorkMode === "github" ||
+      messageHasGithubIssueUrl ||
+      payloadHasGithubIssueUrl;
+    if (nonPatchDispatchLooksLikeGithubWork) {
+      throw new BrokerError("bad_request", "GitHub-looking dispatch requires intent=propose_patch and canonical github-propose-patch payload");
+    }
     return request;
   }
 
@@ -3763,7 +3786,12 @@ function normalizeGitHubPatchTaskRequest(request: CreateTaskRequest): CreateTask
     throw new BrokerError("bad_request", "GitHub patch dispatch tasks require taskOrigin=github");
   }
 
-  const normalizedMode = mode ?? (legacyRepo || legacyIssueNumber !== undefined || legacyIssueUrl ? "github-propose-patch" : undefined);
+  const legacyCompatibilityAllowed = hasLegacyGithubFields && (workMode === "github" || githubWorkMode === "github");
+  if (mode === undefined && !legacyCompatibilityAllowed) {
+    throw new BrokerError("bad_request", "GitHub-looking dispatch requires payload.mode=github-propose-patch; legacy github* fields must include workMode=github for compatibility normalization");
+  }
+
+  const normalizedMode = mode ?? (legacyCompatibilityAllowed ? "github-propose-patch" : undefined);
   if (normalizedMode !== "github-propose-patch") {
     throw new BrokerError("bad_request", "GitHub patch dispatch payload requires mode=github-propose-patch");
   }
@@ -3773,7 +3801,7 @@ function normalizeGitHubPatchTaskRequest(request: CreateTaskRequest): CreateTask
     throw new BrokerError("bad_request", "GitHub patch dispatch payload requires repo in owner/name form");
   }
 
-  const normalizedIssueNumber = issueNumber ?? legacyIssueNumber;
+  const normalizedIssueNumber = issueNumber ?? legacyIssueNumber ?? issueNumberFromGithubIssueUrl(issueUrl ?? legacyIssueUrl);
   if (normalizedIssueNumber === undefined) {
     throw new BrokerError("bad_request", "GitHub patch dispatch payload requires issueNumber or issue");
   }
@@ -3792,7 +3820,7 @@ function normalizeGitHubPatchTaskRequest(request: CreateTaskRequest): CreateTask
   if (mode === undefined || repo === undefined || issueNumber === undefined || issueUrl === undefined) {
     normalizedPayload["githubDispatchCompatibility"] = {
       normalizedFromLegacyPayload: true,
-      legacyFields: Object.keys(payload).filter((key) => key.startsWith("github") || key === "workMode"),
+      legacyFields: Object.keys(payload).filter((key) => key.startsWith("github") || key === "workMode" || key === "githubWorkMode"),
     };
   }
 
@@ -3801,6 +3829,22 @@ function normalizeGitHubPatchTaskRequest(request: CreateTaskRequest): CreateTask
     taskOrigin: "github",
     payload: normalizedPayload,
   };
+}
+
+function containsGithubIssueUrl(value: unknown): boolean {
+  return typeof value === "string" && /https?:\/\/github\.com\/[^\s/]+\/[^\s/]+\/issues\/\d+/i.test(value);
+}
+
+function objectContainsGithubIssueUrl(value: unknown): boolean {
+  if (!value || typeof value !== "object") return false;
+  const record = value as Record<string, unknown>;
+  return containsGithubIssueUrl(record["issueUrl"]) || containsGithubIssueUrl(record["githubIssueUrl"]);
+}
+
+function issueNumberFromGithubIssueUrl(value: unknown): number | undefined {
+  if (typeof value !== "string") return undefined;
+  const match = value.match(/https?:\/\/github\.com\/[^\s/]+\/[^\s/]+\/issues\/(\d+)/i);
+  return match ? Number(match[1]) : undefined;
 }
 
 function readString(value: unknown): string | undefined {

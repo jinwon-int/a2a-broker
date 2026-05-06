@@ -59,7 +59,7 @@ test("versioned OpenClaw handler exposes credential-free build metadata", () => 
   assert.equal(result.status, 0, result.stderr);
   const payload = JSON.parse(result.stdout);
   assert.equal(payload.result.handler.name, "openclaw-a2a-task-handler");
-  assert.equal(payload.result.handler.version, "0.2.6");
+  assert.equal(payload.result.handler.version, "0.2.7");
   assert.match(payload.result.handler.sourceSha256, /^[a-f0-9]{64}$/);
   assert.equal(payload.result.handler.credentialFree, true);
   assert.equal(payload.result.handler.hostNeutral, true);
@@ -650,6 +650,50 @@ console.log(JSON.stringify({
     const payload = JSON.parse(result.stdout);
     assert.equal(payload.error.code, "docker_runner_evidence_missing");
     assert.match(payload.error.message, /docker runner completed but produced no PR\/Done\/Block evidence/);
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("docker runner failure surfaces OpenClaw bootstrap leak paths when runner reports them", () => {
+  const tempDir = mkdtempSync(join(tmpdir(), "handler-bootstrap-leak-test-"));
+  const fakeRunnerPath = join(tempDir, "fake-runner.mjs");
+  try {
+    writeFileSync(fakeRunnerPath, `
+import { readFileSync } from "node:fs";
+const taskPath = process.argv.at(-1);
+const task = JSON.parse(readFileSync(taskPath, "utf8"));
+if (!task.prompt.includes("Report the exact repo-relative offending paths")) {
+  throw new Error("missing bootstrap leak prompt guard");
+}
+console.log(JSON.stringify({
+  ok: false,
+  status: "blocked",
+  error: "openclaw_workspace_bootstrap_leak: AGENTS.md .openclaw/workspace-state.json",
+  artifacts: ["AGENTS.md", ".openclaw/workspace-state.json"]
+}));
+`);
+
+    const result = spawnSync(process.execPath, [handlerPath], {
+      input: JSON.stringify(githubTask()),
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        A2A_DOCKER_RUNNER_ENABLED: "1",
+        A2A_DOCKER_RUNNER_ALL_GITHUB: "1",
+        A2A_DOCKER_RUNNER_SCOPE: "all-github",
+        A2A_DOCKER_RUNNER_BIN: process.execPath,
+        A2A_DOCKER_RUNNER_ARGS_JSON: JSON.stringify([fakeRunnerPath]),
+      },
+    });
+
+    assert.equal(result.status, 1);
+    const payload = JSON.parse(result.stdout);
+    assert.equal(payload.error.code, "docker_runner_failed");
+    assert.deepEqual(payload.error.details.openclawBootstrapLeakPaths, [
+      ".openclaw/workspace-state.json",
+      "AGENTS.md",
+    ]);
   } finally {
     rmSync(tempDir, { recursive: true, force: true });
   }
