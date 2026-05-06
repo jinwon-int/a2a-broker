@@ -49,10 +49,10 @@ export interface BrokerRehearsalManifest {
     readyWhen: string[];
   };
   ackAuditDecisions: Array<{
-    receiptStatus: "accepted" | "provider_sent" | "operator_visible" | "failed" | "timed_out" | "stale";
+    receiptStatus: "accepted" | "provider_sent" | "current_session_visible" | "operator_visible" | "failed" | "timed_out" | "stale";
     decision: "pending" | "eligible" | "rejected";
     ackAllowed: boolean;
-    evidence?: "operator_visible" | "operator_confirmed" | "provider_delivery_receipt";
+    evidence?: "current_session_visible" | "operator_visible" | "operator_confirmed" | "provider_delivery_receipt";
     reason: string;
   }>;
   safeEvidenceFields: {

@@ -209,7 +209,7 @@ function buildReportLine(
   if (context.kind === "result") {
     const evidence = context.github?.prUrl ?? context.github?.doneCommentUrl ?? context.github?.blockCommentUrl;
     if (task.status === "succeeded") {
-      const receiptGap = context.receiptStatus && context.receiptStatus !== "operator_visible"
+      const receiptGap = context.receiptStatus && !["current_session_visible", "operator_visible"].includes(context.receiptStatus)
         ? ` — receipt gap: ${context.receiptStatus}`
         : "";
       const suffix = evidence ? ` — ${evidence}` : context.resultSummary ? ` — ${context.resultSummary}` : "";

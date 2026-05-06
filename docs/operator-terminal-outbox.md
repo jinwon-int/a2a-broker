@@ -23,10 +23,10 @@ A notifier can consume the broker-owned outbox without subscribing to raw task s
 - `GET /a2a/tasks/terminal-outbox?after_id=<cursor>&limit=<n>` returns `{ kind, count, cursor, events }`.
 - Save the response `cursor` (or the last event `id`) and pass it as `after_id` on the next poll.
 - Add `reconcile_unacked=true` after restart or when the notifier suspects a send/ack gap. The broker prepends retained records at/before `after_id` that still lack receipt-confirmed `ack`, then appends newer records. The returned cursor only advances for newer records; retrying an old unacknowledged record never marks the cursor complete by itself.
-- `POST /a2a/tasks/terminal-outbox/ack` requires receipt evidence, for example `{ "id": "...", "receipt": { "evidence": "operator_visible", "acknowledgedAt": "...", "receiptId": "message-id" } }`.
-- Valid receipt evidence values are `operator_visible`, `operator_confirmed`, and `provider_delivery_receipt`. Gateway/provider send success alone is not terminal ack evidence.
-- Receipt status is deliberately separate from task terminal status and provider send status. Broker records use the small vocabulary `accepted`, `started`, `produced`, `provider_sent`, `operator_visible`, `timed_out`, `stale`, and `failed`. A succeeded task with any receipt status other than `operator_visible` still has an operator-visible receipt gap; provider/API send success is recorded as `provider_sent`, not ACKed receipt.
-- One-shot live eligibility is stricter than send success: the dry-run projection remains `oneShotLiveEligible=false` until every retained terminal outbox row has manual receipt confirmation (`ack.status=receipt_confirmed`, `receipt.status=operator_visible`, and `ack.evidence`/receipt evidence of `operator_visible` or `operator_confirmed`). Provider send success, `provider_sent`, or `provider_delivery_receipt` alone are blocked evidence and must not be counted as live-send/ACK approval.
+- `POST /a2a/tasks/terminal-outbox/ack` requires receipt evidence, for example `{ "id": "...", "receipt": { "evidence": "current_session_visible", "acknowledgedAt": "...", "receiptId": "message-id" } }`.
+- Valid receipt evidence values are `current_session_visible`, `operator_visible`, `operator_confirmed`, and `provider_delivery_receipt`. Gateway/provider send success alone is not terminal ack evidence.
+- Receipt status is deliberately separate from task terminal status and provider send status. Broker records use the small vocabulary `accepted`, `started`, `produced`, `provider_sent`, `current_session_visible`, `operator_visible`, `timed_out`, `stale`, and `failed`. A succeeded task with any receipt status other than `current_session_visible` or `operator_visible` still has a current-session/operator-visible receipt gap; provider/API send success is recorded as `provider_sent`, not ACKed receipt.
+- One-shot live eligibility is stricter than send success: the dry-run projection remains `oneShotLiveEligible=false` until every retained terminal outbox row has manual receipt confirmation (`ack.status=receipt_confirmed`, `receipt.status=operator_visible`, and `ack.evidence`/receipt evidence of `operator_visible` or `operator_confirmed`). Provider send success, `provider_sent`, `current_session_visible`, or `provider_delivery_receipt` alone are blocked evidence and must not be counted as live-send/ACK approval.
 - Both routes require an authenticated hub/operator requester when edge identity enforcement is enabled.
 
 ## Operator read model
@@ -38,6 +38,18 @@ Worker assignment SSE (`GET /a2a/workers/{workerId}/assignment-events`) remains 
 ## Broker main vs live container deploy-readiness note
 
 The broker code on `origin/main` can be considered deploy-ready for Terminal Brief only after the local candidate passes build/tests plus the no-live outbox preflight, and the live container image/revision is confirmed to include that same broker commit. If the live container is behind `origin/main`, plugin/operator consumers may see older surfaces even though `main` is ready; close the gap by scheduling a normal broker rollout with operator approval, not by restarting or deploying from this readiness check.
+
+### Telegram/OpenClaw receipt mapping note
+
+In the seoseo OpenClaw checkout inspected for #396, the Telegram outbound provider path is `extensions/telegram/src/send.ts` (`sendMessageTelegram`; bundled dist module `dist/send-*.js`). That function resolves the target, calls Telegram Bot API send methods, records the sent `messageId`/`chatId`, and returns `{ messageId, chatId }`. It is provider-acceptance evidence only; it does not prove that the current OpenClaw session rendered the message and it is not manual operator confirmation.
+
+Recommended adapter contract from OpenClaw/plugin-notifier to this broker:
+
+- Telegram `sendMessageTelegram` success / `messageId` only: `POST /a2a/tasks/terminal-outbox/receipt` with `status: "provider_sent"` and no terminal-outbox ACK.
+- Current-session render of the terminal brief: `POST /a2a/tasks/terminal-outbox/ack` with `receipt.evidence: "current_session_visible"`, which maps to `receipt.status: "current_session_visible"`.
+- Manual operator confirmation: `POST /a2a/tasks/terminal-outbox/ack` with `receipt.evidence: "operator_confirmed"` or `"operator_visible"`, which maps to `receipt.status: "operator_visible"`.
+
+Negative test case: a Telegram provider send result shaped like `deliveryState: "provider_accepted"`, `providerAccepted: true`, `operatorVisible: false`, `ackRequired: false`, or any equivalent send-success-only response must remain `receipt.status: "provider_sent"` and must not call the terminal-outbox ACK route.
 
 Safe pre-deploy commands:
 
@@ -78,7 +90,7 @@ The report groups current post-cutoff gaps separately from cutoff-quarantined le
 - Once every id at/before the cursor is receipt-confirmed, reconciling that cursor returns no old records. The cursor remains stable instead of moving backward, preventing notifier ACK/replay loops from generating duplicate Telegram/operator pushes.
 - Retained outbox records are included in broker state version 8 snapshots as `terminalOutbox`, so replay cursors, acknowledgements, and dedupe IDs survive JSON/SQLite snapshot restart.
 - `POST /a2a/tasks/terminal-outbox/receipt` records non-ACK receipt progress such as `{ "status": "provider_sent" }`, timeouts, staleness, or failures without implying operator visibility.
-- `acknowledge(id, receipt)` stores receipt metadata in `ack`, updates the separate `receipt` projection, increments attempts, removes legacy `deliveredAt`, and leaves the record replayable until retention evicts it. `provider_delivery_receipt` maps to `receipt.status=provider_sent`; only `operator_visible` / `operator_confirmed` map to `receipt.status=operator_visible`.
+- `acknowledge(id, receipt)` stores receipt metadata in `ack`, updates the separate `receipt` projection, increments attempts, removes legacy `deliveredAt`, and leaves the record replayable until retention evicts it. `provider_delivery_receipt` maps to `receipt.status=provider_sent`; `current_session_visible` maps to `receipt.status=current_session_visible`; only `operator_visible` / `operator_confirmed` map to `receipt.status=operator_visible`.
 - Older snapshots with `deliveredAt` but no `ack` are migrated to receipt-confirmed ack state on restore.
 - Duplicate enqueue of the same terminal task state returns the retained record or is suppressed if recently seen.
 - Retention is bounded by `maxTerminalTaskOutboxEvents` (default `1000`), evicting oldest records FIFO.

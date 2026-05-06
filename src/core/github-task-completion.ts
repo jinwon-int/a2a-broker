@@ -97,7 +97,7 @@ function validateCompletionReceipt(result?: TaskResult): TaskError | null {
     return {
       code: "github_completion_receipt_invalid",
       message:
-        "github-origin propose_patch completion receipt status must be accepted, sent/provider_sent, operator_visible, timed_out, stale, or failed",
+        "github-origin propose_patch completion receipt status must be accepted, sent/provider_sent, current_session_visible, operator_visible, timed_out, stale, or failed",
       details: { receiptStatus: safeDetailValue(status) },
     };
   }
@@ -107,7 +107,7 @@ function validateCompletionReceipt(result?: TaskResult): TaskError | null {
     return {
       code: "github_completion_receipt_invalid",
       message:
-        "github-origin propose_patch completion receipt evidence must be operator_visible, operator_confirmed, or provider_delivery_receipt; provider send success is not receipt evidence",
+        "github-origin propose_patch completion receipt evidence must be current_session_visible, operator_visible, operator_confirmed, or provider_delivery_receipt; provider send success is not receipt evidence",
       details: { receiptEvidence: safeDetailValue(evidence) },
     };
   }
