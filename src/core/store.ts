@@ -639,7 +639,7 @@ const terminalOutboxEventSchema = z
       .optional(),
     receipt: z
       .object({
-        status: z.enum(["accepted", "started", "produced", "provider_sent", "operator_visible", "timed_out", "stale", "failed", "sent", "provider_delivered_if_known"]),
+        status: z.enum(["accepted", "started", "produced", "provider_sent", "provider_accepted", "operator_visible", "timed_out", "stale", "failed", "sent", "provider_delivered_if_known"]),
         updatedAt: z.string(),
         evidence: z.enum(["operator_visible", "operator_confirmed", "provider_delivery_receipt"]).optional(),
         receiptId: z.string().optional(),

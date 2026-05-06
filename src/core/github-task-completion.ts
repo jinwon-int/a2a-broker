@@ -7,6 +7,7 @@ const RECEIPT_STATUSES = new Set([
   "produced",
   "sent",
   "provider_sent",
+  "provider_accepted",
   "operator_visible",
   "timed_out",
   "stale",
@@ -97,7 +98,7 @@ function validateCompletionReceipt(result?: TaskResult): TaskError | null {
     return {
       code: "github_completion_receipt_invalid",
       message:
-        "github-origin propose_patch completion receipt status must be accepted, sent/provider_sent, operator_visible, timed_out, stale, or failed",
+        "github-origin propose_patch completion receipt status must be accepted, sent/provider_sent/provider_accepted, operator_visible, timed_out, stale, or failed",
       details: { receiptStatus: safeDetailValue(status) },
     };
   }

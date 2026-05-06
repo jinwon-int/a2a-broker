@@ -2737,6 +2737,7 @@ test("broker accepts canonical GitHub patch dispatch and stamps taskOrigin", () 
 
   const task = broker.createTask({
     intent: "propose_patch",
+    taskOrigin: "github",
     requester: { id: "hub-a", kind: "node", role: "hub" },
     target: { id: "worker-github-canonical", kind: "node", role: "analyst" },
     message: "fix issue",
@@ -2803,5 +2804,96 @@ test("broker rejects non-canonical GitHub dispatch with wrong taskOrigin", () =>
       },
     }),
     /taskOrigin=github/,
+  );
+});
+
+test("broker rejects GitHub issue URLs before generic handler fallback", () => {
+  const broker = new InMemoryA2ABroker();
+  registerWorker(broker, "worker-github-url-reject");
+
+  assert.throws(
+    () => broker.createTask({
+      intent: "chat",
+      requester: { id: "hub-a", kind: "node", role: "hub" },
+      target: { id: "worker-github-url-reject", kind: "node", role: "analyst" },
+      message: "please work https://github.com/acme/platform/issues/294",
+      payload: { mode: "terminal-brief-r4-receipt-automation" },
+    }),
+    /GitHub-looking tasks require canonical intent=propose_patch/,
+  );
+});
+
+test("broker rejects GitHub-looking generic task before worker fallback", () => {
+  const broker = new InMemoryA2ABroker();
+  registerWorker(broker, "worker-github-generic-reject");
+
+  assert.throws(
+    () => broker.createTask({
+      intent: "analyze",
+      requester: { id: "hub-a", kind: "node", role: "hub" },
+      target: { id: "worker-github-generic-reject", kind: "node", role: "analyst" },
+      message: "https://github.com/acme/platform/issues/294",
+      payload: { mode: "terminal-brief-r4-receipt-automation" },
+    }),
+    /GitHub-looking tasks require canonical intent=propose_patch/,
+  );
+});
+
+test("broker rejects ad-hoc legacy GitHub metadata dispatch before worker fallback", () => {
+  const broker = new InMemoryA2ABroker();
+  registerWorker(broker, "worker-github-legacy-generic-reject");
+
+  assert.throws(
+    () => broker.createTask({
+      intent: "analyze",
+      requester: { id: "hub-a", kind: "node", role: "hub" },
+      target: { id: "worker-github-legacy-generic-reject", kind: "node", role: "analyst" },
+      message: "run terminal brief automation",
+      payload: {
+        mode: "terminal-brief-r4-receipt-automation",
+        githubRepo: "acme/platform",
+        githubIssueNumber: 295,
+      },
+    }),
+    /GitHub-looking tasks require canonical intent=propose_patch/,
+  );
+});
+
+test("broker rejects repo plus issueNumber without canonical github-propose-patch mode", () => {
+  const broker = new InMemoryA2ABroker();
+  registerWorker(broker, "worker-github-shape-reject");
+
+  assert.throws(
+    () => broker.createTask({
+      intent: "propose_patch",
+      requester: { id: "hub-a", kind: "node", role: "hub" },
+      target: { id: "worker-github-shape-reject", kind: "node", role: "analyst" },
+      message: "fix issue",
+      payload: {
+        repo: "acme/platform",
+        issueNumber: 295,
+      },
+    }),
+    /payload\.mode=github-propose-patch/,
+  );
+});
+
+test("broker rejects repo plus issueUrl dispatch that is missing canonical GitHub mode", () => {
+  const broker = new InMemoryA2ABroker();
+  registerWorker(broker, "worker-github-mode-reject");
+
+  assert.throws(
+    () => broker.createTask({
+      intent: "propose_patch",
+      requester: { id: "hub-a", kind: "node", role: "hub" },
+      target: { id: "worker-github-mode-reject", kind: "node", role: "analyst" },
+      taskOrigin: "github",
+      message: "fix issue",
+      payload: {
+        repo: "acme/platform",
+        issueUrl: "https://github.com/acme/platform/issues/295",
+      },
+    }),
+    /mode=github-propose-patch/,
   );
 });

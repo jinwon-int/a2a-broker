@@ -126,7 +126,7 @@ function remediationHint({ event, row, stale, payloadError }) {
   if (event?.ack !== undefined && !isReceiptConfirmed(event)) return 'replace invalid/provider-send-only ACK with real operator-visible/provider-delivery receipt evidence, or clear and replay safely';
   if (row.acknowledgedAt && !event?.ack) return 'investigate legacy acknowledged_at cursor; add real receipt evidence only if independently verified';
   if (!stale) return 'still within replay window; monitor before ACK action';
-  if (event?.receipt?.status === 'provider_sent') return 'confirm operator-visible/provider-delivery receipt before ACK; provider send success alone is insufficient';
+  if (event?.receipt?.status === 'provider_sent' || event?.receipt?.status === 'provider_accepted') return 'confirm operator-visible/provider-delivery receipt before ACK; provider send success alone is insufficient';
   if (event?.receipt?.status === 'failed' || event?.receipt?.status === 'timed_out' || event?.receipt?.status === 'stale') return 'replay/remediate notifier path, then ACK only with confirmed receipt evidence';
   return 'obtain operator-visible/provider-delivery receipt evidence or remediate/replay notifier path before ACK';
 }
