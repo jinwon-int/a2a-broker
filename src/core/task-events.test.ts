@@ -629,6 +629,18 @@ describe("TerminalTaskEventOutbox", () => {
     assert.match(providerSent.ackAudit!.reason, /provider send-only success/);
     assert.equal(providerSent.ackAudit!.receiptStatus, "provider_sent");
 
+    const providerAccepted = outbox.recordReceiptStatus(event.id, {
+      status: "provider_accepted",
+      updatedAt: "2026-05-02T01:55:30.000Z",
+      note: "provider accepted but no operator-visible receipt",
+    });
+    assert.ok(providerAccepted);
+    assert.equal(providerAccepted.ack, undefined);
+    assert.equal(providerAccepted.receipt.status, "provider_accepted");
+    assert.equal(providerAccepted.ackAudit!.decision, "pending");
+    assert.match(providerAccepted.ackAudit!.reason, /provider send-only success/);
+    assert.equal(providerAccepted.ackAudit!.receiptStatus, "provider_accepted");
+
     const operatorVisible = outbox.recordReceiptStatus(event.id, {
       status: "operator_visible",
       updatedAt: "2026-05-02T01:56:00.000Z",

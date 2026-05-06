@@ -3471,6 +3471,24 @@ test("GET/POST /a2a/tasks/terminal-outbox replays and acknowledges compact recor
     assert.equal(report.items[0].terminalBrief.evidenceUrl, "https://github.com/acme/example/issues/246#issuecomment-done");
     assert.match(report.items[0].reportLine, /receipt gap: provider_sent/);
 
+    const providerAcceptedAt = "2026-05-01T23:59:30.000Z";
+    const providerAcceptedRes = await fetch(`${server.baseUrl}/a2a/tasks/terminal-outbox/receipt`, {
+      method: "POST",
+      headers: hubHeaders,
+      body: JSON.stringify({
+        id: event.id,
+        receipt: { status: "provider_accepted", updatedAt: providerAcceptedAt, note: "provider accepted only" },
+      }),
+    });
+    assert.equal(providerAcceptedRes.status, 200);
+    const providerAccepted = await providerAcceptedRes.json();
+    assert.equal(providerAccepted.event.ack, undefined);
+    assert.deepEqual(providerAccepted.event.receipt, {
+      status: "provider_accepted",
+      updatedAt: providerAcceptedAt,
+      note: "provider accepted only",
+    });
+
     const acknowledgedAt = "2026-05-02T00:00:00.000Z";
     const ackRes = await fetch(`${server.baseUrl}/a2a/tasks/terminal-outbox/ack`, {
       method: "POST",

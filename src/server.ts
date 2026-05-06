@@ -2285,7 +2285,7 @@ function parseTerminalOutboxReceiptUpdate(value: unknown): TerminalTaskOutboxRec
   if (!isTerminalTaskReceiptStatus(receipt.status)) {
     throw new BrokerError(
       "bad_request",
-      "terminal outbox receipt status must be accepted, started, produced, provider_sent, operator_visible, timed_out, stale, or failed",
+      "terminal outbox receipt status must be accepted, started, produced, provider_sent, provider_accepted, operator_visible, timed_out, stale, or failed",
     );
   }
   return {

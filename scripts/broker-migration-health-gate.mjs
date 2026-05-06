@@ -56,7 +56,7 @@ const terminalAckSchema = z.object({
 }).passthrough();
 
 const terminalReceiptSchema = z.object({
-  status: z.enum(['accepted', 'started', 'produced', 'provider_sent', 'operator_visible', 'timed_out', 'stale', 'failed', 'sent', 'provider_delivered_if_known']),
+  status: z.enum(['accepted', 'started', 'produced', 'provider_sent', 'provider_accepted', 'operator_visible', 'timed_out', 'stale', 'failed', 'sent', 'provider_delivered_if_known']),
   updatedAt: z.string(),
   evidence: z.enum(['operator_visible', 'operator_confirmed', 'provider_delivery_receipt']).optional(),
   receiptId: z.string().optional(),
@@ -430,7 +430,7 @@ function terminalReceiptGapClassification(event, { ageMs, maxUnackedAgeMs } = {}
       action: 'Replay/reconcile the terminal event; stale or timed-out send state is not ACK evidence.',
     };
   }
-  if (receiptStatus === 'provider_sent' || receiptStatus === 'started' || receiptStatus === 'produced') {
+  if (receiptStatus === 'provider_sent' || receiptStatus === 'provider_accepted' || receiptStatus === 'started' || receiptStatus === 'produced') {
     return {
       bucket: 'send_accepted_no_receipt',
       releaseBlocking: true,
