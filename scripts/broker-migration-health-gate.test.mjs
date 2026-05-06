@@ -264,6 +264,51 @@ describe('broker migration health gate', () => {
 });
 
 describe('broker migration health gate legacy residue cutoff', () => {
+  it('quarantines pre-cutoff failed proof terminal outbox rows without marking them ACKed', () => {
+    const { db, file } = createDb();
+    db.prepare('INSERT INTO broker_terminal_outbox (id, task_event_id, acknowledged_at, created_at, payload) VALUES (?, ?, ?, ?, ?)')
+      .run('terminal-legacy-failed-proof', 1, null, '2026-05-03T00:00:00.000Z', terminalPayload({
+        id: 'terminal-legacy-failed-proof',
+        attempts: 1,
+        receipt: { status: 'failed', updatedAt: '2026-05-03T00:00:00.000Z', note: 'proof send failed closed' },
+        payload: {
+          taskId: 'task-1',
+          status: 'failed',
+          createdAt: '2026-05-03T00:00:00.000Z',
+          updatedAt: '2026-05-03T00:00:00.000Z',
+          doneCommentUrl: 'https://github.com/jinwon-int/a2a-broker/issues/294#issuecomment-1',
+        },
+      }));
+    db.prepare('INSERT INTO broker_terminal_outbox (id, task_event_id, acknowledged_at, created_at, payload) VALUES (?, ?, ?, ?, ?)')
+      .run('terminal-current-failed-proof', 2, null, '2026-05-03T00:20:00.000Z', terminalPayload({
+        id: 'terminal-current-failed-proof',
+        taskEventId: 2,
+        createdAt: '2026-05-03T00:20:00.000Z',
+        attempts: 1,
+        receipt: { status: 'failed', updatedAt: '2026-05-03T00:20:00.000Z', note: 'current proof send failed' },
+      }));
+    db.close();
+
+    const report = runMigrationHealthGate({
+      dbFile: file,
+      nowMs: Date.parse('2026-05-03T00:40:00.000Z'),
+      maxUnackedAgeMs: 5 * 60 * 1000,
+      legacyResidueCutoffMs: Date.parse('2026-05-03T00:10:00.000Z'),
+      legacyResidueCutoff: '2026-05-03T00:10:00.000Z',
+    });
+    const outboxCheck = report.checks.find((check) => check.check === 'terminal-outbox ACK invariant');
+
+    assert.equal(report.ok, false);
+    assert.equal(outboxCheck?.legacyResidue.length, 1);
+    assert.equal(outboxCheck?.legacyResidue[0].id, 'terminal-legacy-failed-proof');
+    assert.equal(outboxCheck?.legacyResidue[0].reason, 'legacy_unacked_terminal_outbox');
+    assert.equal(outboxCheck?.legacyResidue[0].bucket, 'send_failed');
+    assert.equal(outboxCheck?.legacyResidue[0].canonicalEvidence, true);
+    assert.equal(outboxCheck?.violations.length, 1);
+    assert.equal(outboxCheck?.violations[0].id, 'terminal-current-failed-proof');
+    assert.equal(outboxCheck?.violations[0].bucket, 'send_failed');
+  });
+
   it('quarantines pre-cutoff accepted-only terminal outbox rows without marking them ACKed', () => {
     const { db, file } = createDb();
     db.prepare('INSERT INTO broker_terminal_outbox (id, task_event_id, acknowledged_at, created_at, payload) VALUES (?, ?, ?, ?, ?)')
