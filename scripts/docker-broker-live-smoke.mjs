@@ -132,11 +132,11 @@ async function requestJson(baseUrl, edgeSecret, requester, method, pathname, bod
   return parsed;
 }
 
-function buildNoopTask(workerId) {
+function buildNoopTask(workerId, requester) {
   const stamp = new Date().toISOString();
   return {
     intent: 'analyze',
-    requester: { id: 'operator-docker-smoke', kind: 'service', role: 'operator' },
+    requester,
     target: { id: workerId, kind: 'node', role: 'analyst' },
     assignedWorkerId: workerId,
     taskOrigin: 'operator',
@@ -234,11 +234,14 @@ async function waitForTerminalEvidence(baseUrl, edgeSecret, taskId, timeoutMs, i
 
 async function runSmokeForWorker(baseUrl, edgeSecret, workerId, options) {
   const createRequester = makeRequester('operator', 'docker-smoke-create');
-  const created = await requestJson(baseUrl, edgeSecret, createRequester, 'POST', '/tasks', buildNoopTask(workerId));
+  const created = await requestJson(baseUrl, edgeSecret, createRequester, 'POST', '/tasks', buildNoopTask(workerId, createRequester));
   const evidence = await waitForTerminalEvidence(baseUrl, edgeSecret, created.id, options.timeoutMs, options.intervalMs);
 
+  const summary = typeof evidence.task.result?.summary === 'string' ? evidence.task.result.summary : '';
+  const genericFallback = /generic .* accepted by versioned OpenClaw A2A handler/.test(summary);
+
   return {
-    ok: evidence.task.status === 'succeeded' && evidence.sawClaim && evidence.sawStart,
+    ok: evidence.task.status === 'succeeded' && evidence.sawClaim && evidence.sawStart && !genericFallback,
     taskId: created.id,
     workerId,
     finalStatus: evidence.task.status,
@@ -250,6 +253,7 @@ async function runSmokeForWorker(baseUrl, edgeSecret, workerId, options) {
     },
     completedAt: evidence.task.completedAt ?? null,
     summary: evidence.task.result?.summary ?? null,
+    genericFallback,
   };
 }
 
@@ -273,7 +277,7 @@ async function main() {
       requiredWorkers: expectedWorkers,
       fleet: options.fleet,
       forcedWorker: options.worker ?? null,
-      wouldCreateTasks: targetWorkers.map((workerId) => buildNoopTask(workerId)),
+      wouldCreateTasks: targetWorkers.map((workerId) => buildNoopTask(workerId, makeRequester('operator', 'docker-smoke-create'))),
       secretPrinted: false,
     }, null, 2));
     return 0;

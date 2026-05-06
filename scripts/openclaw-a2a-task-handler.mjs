@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
-const HANDLER_VERSION = "0.2.7";
+const HANDLER_VERSION = "0.2.8";
 const SOURCE_PATH = fileURLToPath(import.meta.url);
 const sourceSha256 = createHash("sha256").update(readFileSync(SOURCE_PATH)).digest("hex");
 
@@ -35,6 +35,11 @@ function taskMode(task) {
 
 function isTruthyEnv(value) {
   return /^(1|true|yes|on)$/i.test(String(value ?? "").trim());
+}
+
+function isDockerBrokerNoopSmokeTask(task) {
+  const payload = taskPayload(task);
+  return taskMode(task) === "docker-broker-noop-smoke" && payload.noOp === true;
 }
 
 function normalizedExecutorMode(env = process.env) {
@@ -663,6 +668,35 @@ function handleBuiltinTask(task, env = process.env) {
   }
 
   const mode = taskMode(task);
+  const payload = taskPayload(task);
+
+  if (isDockerBrokerNoopSmokeTask(task)) {
+    return {
+      result: {
+        summary: `docker broker noop smoke completed ${safeText(task.id, "unknown")}`,
+        handler: BUILD_INFO,
+        lifecycle: {
+          intent: safeText(task.intent, "unknown"),
+          mode,
+          taskId: safeText(task.id, "unknown"),
+          proposalId: safeText(task.proposalId, undefined),
+          exchangeId: safeText(task.exchangeId, undefined),
+        },
+        output: {
+          message: safeText(task.message, ""),
+          smoke: {
+            ok: true,
+            noOp: true,
+            runId: safeText(payload.runId, undefined),
+            worker: safeText(payload.worker, safeText(task.assignedWorkerId, undefined)),
+            completedAt: new Date().toISOString(),
+          },
+          payloadKeys: Object.keys(payload).sort(),
+        },
+      },
+    };
+  }
+
   const summary = `generic ${mode} task accepted by versioned OpenClaw A2A handler`;
 
   return {
