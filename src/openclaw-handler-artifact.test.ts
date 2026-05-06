@@ -59,7 +59,7 @@ test("versioned OpenClaw handler exposes credential-free build metadata", () => 
   assert.equal(result.status, 0, result.stderr);
   const payload = JSON.parse(result.stdout);
   assert.equal(payload.result.handler.name, "openclaw-a2a-task-handler");
-  assert.equal(payload.result.handler.version, "0.2.7");
+  assert.equal(payload.result.handler.version, "0.2.8");
   assert.match(payload.result.handler.sourceSha256, /^[a-f0-9]{64}$/);
   assert.equal(payload.result.handler.credentialFree, true);
   assert.equal(payload.result.handler.hostNeutral, true);
@@ -786,6 +786,39 @@ console.log(JSON.stringify({
   } finally {
     rmSync(tempDir, { recursive: true, force: true });
   }
+});
+
+test("docker broker noop smoke has dedicated non-generic handler evidence", () => {
+  const smokeTask = githubTask();
+  smokeTask.id = "smoke-task-1";
+  smokeTask.intent = "analyze";
+  (smokeTask as unknown as { assignedWorkerId: string }).assignedWorkerId = "bangtong";
+  smokeTask.payload = {
+    schemaVersion: 1,
+    mode: "docker-broker-noop-smoke",
+    noOp: true,
+    runId: "smoke-run-1",
+    worker: "bangtong",
+  };
+
+  const result = spawnSync(process.execPath, [handlerPath], {
+    input: JSON.stringify(smokeTask),
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      A2A_DOCKER_RUNNER_ENABLED: "1",
+      A2A_DOCKER_RUNNER_ALL_GITHUB: "1",
+      A2A_DOCKER_RUNNER_BIN: "/path/that/should/not/run",
+    },
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.result.summary, "docker broker noop smoke completed smoke-task-1");
+  assert.equal(payload.result.lifecycle.mode, "docker-broker-noop-smoke");
+  assert.equal(payload.result.output.smoke.ok, true);
+  assert.equal(payload.result.output.smoke.runId, "smoke-run-1");
+  assert.doesNotMatch(payload.result.summary, /generic .* accepted by versioned OpenClaw A2A handler/);
 });
 
 test("evidence-missing check skips non-github tasks on built-in handler path (contract #169)", () => {
