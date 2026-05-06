@@ -49,16 +49,16 @@ const workerSchema = z.object({
 
 const terminalAckSchema = z.object({
   status: z.literal('receipt_confirmed'),
-  evidence: z.enum(['operator_visible', 'operator_confirmed', 'provider_delivery_receipt']),
+  evidence: z.enum(['current_session_visible', 'operator_visible', 'operator_confirmed', 'provider_delivery_receipt']),
   acknowledgedAt: z.string(),
   receiptId: z.string().optional(),
   note: z.string().optional(),
 }).passthrough();
 
 const terminalReceiptSchema = z.object({
-  status: z.enum(['accepted', 'started', 'produced', 'provider_sent', 'provider_accepted', 'operator_visible', 'timed_out', 'stale', 'failed', 'sent', 'provider_delivered_if_known']),
+  status: z.enum(['accepted', 'started', 'produced', 'provider_sent', 'provider_accepted', 'current_session_visible', 'operator_visible', 'timed_out', 'stale', 'failed', 'sent', 'provider_delivered_if_known']),
   updatedAt: z.string(),
-  evidence: z.enum(['operator_visible', 'operator_confirmed', 'provider_delivery_receipt']).optional(),
+  evidence: z.enum(['current_session_visible', 'operator_visible', 'operator_confirmed', 'provider_delivery_receipt']).optional(),
   receiptId: z.string().optional(),
   note: z.string().optional(),
 }).passthrough();
