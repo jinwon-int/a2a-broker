@@ -18,6 +18,7 @@ const RECEIPT_STATUSES = new Set([
   'produced',
   'sent',
   'provider_sent',
+  'provider_accepted',
   'operator_visible',
   'timed_out',
   'stale',

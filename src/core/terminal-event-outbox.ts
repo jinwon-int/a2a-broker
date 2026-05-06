@@ -13,6 +13,7 @@ const TERMINAL_TASK_RECEIPT_STATUSES = new Set<TerminalTaskReceiptStatus>([
   "started",
   "produced",
   "provider_sent",
+  "provider_accepted",
   "operator_visible",
   "timed_out",
   "stale",
@@ -88,6 +89,7 @@ export type TerminalTaskReceiptStatus =
   | "started"
   | "produced"
   | "provider_sent"
+  | "provider_accepted"
   | "operator_visible"
   | "timed_out"
   | "stale"
@@ -288,7 +290,7 @@ export class TerminalTaskEventOutbox {
   /** Record provider-side send/timeout/staleness without implying operator visibility. */
   recordReceiptStatus(id: string, receipt: TerminalTaskOutboxReceiptUpdateInput): TerminalTaskOutboxEvent | null {
     if (!receipt || !isTerminalTaskReceiptStatus(receipt.status)) {
-      throw new TypeError("terminal outbox receipt status must be accepted, started, produced, provider_sent, operator_visible, timed_out, stale, or failed");
+      throw new TypeError("terminal outbox receipt status must be accepted, started, produced, provider_sent, provider_accepted, operator_visible, timed_out, stale, or failed");
     }
     const event = this.events.find((candidate) => candidate.id === id);
     if (!event) return null;
@@ -582,6 +584,7 @@ function ackAuditFromReceipt(receipt: TerminalTaskOutboxReceiptState): Omit<Term
         receiptId: receipt.receiptId,
       };
     case "provider_sent":
+    case "provider_accepted":
       return {
         decision: "pending",
         reason: "provider send-only success recorded; awaiting provider-delivery receipt or operator-visible evidence before ACK",

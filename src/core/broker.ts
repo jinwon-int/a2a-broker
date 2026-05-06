@@ -3735,10 +3735,6 @@ function normalizePolicyError(error: unknown): BrokerError {
 }
 
 function normalizeGitHubPatchTaskRequest(request: CreateTaskRequest): CreateTaskRequest {
-  if (request.intent !== "propose_patch") {
-    return request;
-  }
-
   const payload = request.payload ?? {};
   const mode = readString(payload["mode"]);
   const repo = readString(payload["repo"]);
@@ -3747,33 +3743,54 @@ function normalizeGitHubPatchTaskRequest(request: CreateTaskRequest): CreateTask
   const legacyIssueNumber = readIssueNumber(payload["githubIssueNumber"]);
   const issueUrl = readString(payload["issueUrl"]);
   const legacyIssueUrl = readString(payload["githubIssueUrl"]);
-  const looksLikeGithubTask =
+  const workMode = readString(payload["workMode"]);
+  const githubWorkMode = readString(payload["githubWorkMode"]);
+  const messageIssue = readGitHubIssueUrl(request.message);
+  const payloadIssue = readGitHubIssueUrl(issueUrl ?? legacyIssueUrl);
+  const payloadHasRepoIssuePair =
+    (repo !== undefined || legacyRepo !== undefined) &&
+    (issueNumber !== undefined || legacyIssueNumber !== undefined || issueUrl !== undefined || legacyIssueUrl !== undefined);
+  const hasLegacyGitHubMetadata = legacyRepo !== undefined || legacyIssueNumber !== undefined || legacyIssueUrl !== undefined;
+  const hasExplicitGithubDispatchSignal =
     mode === "github-propose-patch" ||
-    legacyRepo !== undefined ||
-    legacyIssueNumber !== undefined ||
-    legacyIssueUrl !== undefined ||
-    readString(payload["workMode"]) === "github" ||
-    readString(payload["githubWorkMode"]) === "github";
+    (mode !== undefined && hasLegacyGitHubMetadata) ||
+    messageIssue !== undefined ||
+    payloadIssue !== undefined ||
+    workMode === "github" ||
+    githubWorkMode === "github";
+  const looksLikeGithubTask =
+    hasExplicitGithubDispatchSignal ||
+    (request.intent === "propose_patch" && (mode === undefined || mode === "github-propose-patch") && payloadHasRepoIssuePair);
 
   if (!looksLikeGithubTask) {
     return request;
+  }
+
+  if (request.intent !== "propose_patch") {
+    if (request.taskOrigin === "github") {
+      return request;
+    }
+    throw new BrokerError(
+      "bad_request",
+      "GitHub-looking tasks require canonical intent=propose_patch, taskOrigin=github, and payload.mode=github-propose-patch",
+    );
   }
 
   if (request.taskOrigin !== undefined && request.taskOrigin !== "github") {
     throw new BrokerError("bad_request", "GitHub patch dispatch tasks require taskOrigin=github");
   }
 
-  const normalizedMode = mode ?? (legacyRepo || legacyIssueNumber !== undefined || legacyIssueUrl ? "github-propose-patch" : undefined);
+  const normalizedMode = mode ?? (legacyRepo || legacyIssueNumber !== undefined || legacyIssueUrl || workMode === "github" ? "github-propose-patch" : undefined);
   if (normalizedMode !== "github-propose-patch") {
     throw new BrokerError("bad_request", "GitHub patch dispatch payload requires mode=github-propose-patch");
   }
 
-  const normalizedRepo = repo ?? legacyRepo;
+  const normalizedRepo = repo ?? legacyRepo ?? payloadIssue?.repo ?? messageIssue?.repo;
   if (!normalizedRepo || !/^[^/\s]+\/[^/\s]+$/.test(normalizedRepo)) {
     throw new BrokerError("bad_request", "GitHub patch dispatch payload requires repo in owner/name form");
   }
 
-  const normalizedIssueNumber = issueNumber ?? legacyIssueNumber;
+  const normalizedIssueNumber = issueNumber ?? legacyIssueNumber ?? payloadIssue?.issueNumber ?? messageIssue?.issueNumber;
   if (normalizedIssueNumber === undefined) {
     throw new BrokerError("bad_request", "GitHub patch dispatch payload requires issueNumber or issue");
   }
@@ -3801,6 +3818,17 @@ function normalizeGitHubPatchTaskRequest(request: CreateTaskRequest): CreateTask
     taskOrigin: "github",
     payload: normalizedPayload,
   };
+}
+
+function readGitHubIssueUrl(value: unknown): { repo: string; issueNumber: number } | undefined {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  const match = value.match(/https?:\/\/github\.com\/([^/\s]+\/[^/\s]+)\/issues\/(\d+)/);
+  if (!match) {
+    return undefined;
+  }
+  return { repo: match[1], issueNumber: Number(match[2]) };
 }
 
 function readString(value: unknown): string | undefined {
