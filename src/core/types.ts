@@ -576,6 +576,11 @@ export interface WorkerView extends WorkerRecord {
   status: WorkerStatus;
 }
 
+export interface WorkerRegistrationResponse extends WorkerView {
+  /** Durable broker identity that accepted the registration. */
+  brokerId: string;
+}
+
 export interface CreateProposalRequest {
   source: A2APartyRef;
   target: A2APartyRef;

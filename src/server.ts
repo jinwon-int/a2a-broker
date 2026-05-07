@@ -269,7 +269,7 @@ export interface BrokerServerOptions {
    * `BROKER_MAX_REQUEUE_ATTEMPTS`.
    */
   maxRequeueAttempts?: number;
-  /** Broker identity stamped onto new tasks as broker-of-record. Env: `A2A_BROKER_ID`. */
+  /** Optional broker identity exposed on health/worker registration and stamped onto new tasks as broker-of-record. Env: `A2A_BROKER_ID` or `BROKER_ID`. */
   brokerId?: string;
   /** Team/tenant identity stamped onto new tasks for lifecycle ownership checks. Env: `A2A_TEAM_ID`. */
   teamId?: string;
@@ -345,6 +345,7 @@ export interface BrokerServerRuntime {
     maxRequeueAttempts: number;
     taskSubscribeHeartbeatSec: number;
     peerStatusEnabled: boolean;
+    brokerId: string;
     version: string;
     build: BrokerBuildInfo;
   };
@@ -408,7 +409,7 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
   );
   const peerStatusEnabled =
     options.peerStatusEnabled ?? resolveBooleanEnv(process.env.A2A_PEER_STATUS_ENABLED, false);
-  const brokerId = resolveStringOption(options.brokerId, process.env.A2A_BROKER_ID, serviceName);
+  const brokerId = resolveBrokerId(options.brokerId, serviceName);
   const teamId = resolveStringOption(options.teamId, process.env.A2A_TEAM_ID);
   const buildInfo = resolveBrokerBuildInfo(options, serviceName);
 
@@ -684,6 +685,7 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
         return sendJson(res, 200, {
           ok: true,
           service: serviceName,
+          brokerId,
           version: buildInfo.version,
           build: buildInfo.build,
           publicBaseUrl,
@@ -953,7 +955,7 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
           );
         }
         const worker = broker.registerWorker(body);
-        return sendJson(res, 201, { ...worker, status: "online" });
+        return sendJson(res, 201, { ...worker, status: "online", brokerId });
       }
 
       if (req.method === "GET" && segments[0] === "workers" && segments[1] && segments.length === 2) {
@@ -1494,6 +1496,7 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
       maxRequeueAttempts,
       taskSubscribeHeartbeatSec,
       peerStatusEnabled,
+      brokerId,
       version: buildInfo.version,
       build: buildInfo.build,
     },
@@ -1595,6 +1598,13 @@ function resolveBooleanEnv(value: string | undefined, fallback: boolean): boolea
   return fallback;
 }
 
+function resolveBrokerId(explicit: string | undefined, serviceName: string): string {
+  return sanitizeBuildToken(explicit ?? process.env.A2A_BROKER_ID ?? process.env.BROKER_ID ?? serviceName, {
+    fallback: serviceName,
+    unsafeFallback: "redacted",
+  }) ?? serviceName;
+}
+
 function resolveBrokerBuildInfo(options: BrokerServerOptions, serviceName: string): { version: string; build: BrokerBuildInfo } {
   const generated = readGeneratedBuildInfo(options.buildInfoFile);
   const version = sanitizeBuildToken(options.version ?? process.env.A2A_BROKER_VERSION ?? generated.version ?? readPackageVersion(), {
@@ -1659,6 +1669,17 @@ function readPackageVersion(): string | undefined {
   } catch {
     return undefined;
   }
+}
+
+function sanitizeBrokerId(value: string | undefined): string | undefined {
+  const normalized = value?.trim();
+  if (!normalized) {
+    return undefined;
+  }
+  if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(normalized)) {
+    throw new Error("A2A_BROKER_ID must be a stable id using only letters, numbers, dots, underscores, colons, or hyphens");
+  }
+  return normalized;
 }
 
 function sanitizeBuildToken(value: string | undefined, options: { fallback: string | undefined; unsafeFallback: string | undefined }): string | undefined {

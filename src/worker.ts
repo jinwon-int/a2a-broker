@@ -1,4 +1,6 @@
 import { spawn } from "node:child_process";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { dirname } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 
 import { validateGithubTaskCompletionEvidence } from "./core/github-task-completion.js";
@@ -6,6 +8,7 @@ import type {
   A2APartyKind,
   A2APartyRole,
   WorkerView,
+  WorkerRegistrationResponse,
   RegisterWorkerRequest,
   SubmitValidationRequest,
   ProposalActorRequest,
@@ -46,6 +49,8 @@ export interface ExternalWorkerHandlerConfig {
 export interface BrokerWorkerConfig {
   brokerUrl: string;
   edgeSecret?: string;
+  homeBrokerId?: string;
+  homeBrokerLeaseFile?: string;
   worker: RegisterWorkerRequest;
   requesterKind: A2APartyKind;
   pollIntervalMs: number;
@@ -64,6 +69,17 @@ interface ErrorResponseBody {
     code?: string;
     message?: string;
   };
+}
+
+interface BrokerHealthResponse {
+  brokerId?: unknown;
+}
+
+interface HomeBrokerLease {
+  brokerId: string;
+  brokerUrl: string;
+  workerId: string;
+  createdAt: string;
 }
 
 export class BrokerApiError extends Error {
@@ -86,6 +102,7 @@ export class A2ABrokerWorker {
   private stopping = false;
   private stopHeartbeatLoop: (() => void) | null = null;
   private loopAbort: (() => void) | null = null;
+  private homeBrokerVerified = false;
 
   constructor(config: BrokerWorkerConfig, options?: { fetchImpl?: FetchLike }) {
     this.config = config;
@@ -97,8 +114,8 @@ export class A2ABrokerWorker {
     return this.config.worker.nodeId;
   }
 
-  async register(): Promise<WorkerView> {
-    return this.requestJson<WorkerView>("/workers/register", {
+  async register(): Promise<WorkerRegistrationResponse> {
+    return this.requestJson<WorkerRegistrationResponse>("/workers/register", {
       method: "POST",
       body: this.config.worker,
     });
@@ -365,7 +382,58 @@ export class A2ABrokerWorker {
     }
   }
 
+  private async ensureHomeBrokerLease(): Promise<void> {
+    const expectedBrokerId = this.config.homeBrokerId?.trim();
+    if (!expectedBrokerId || this.homeBrokerVerified) {
+      return;
+    }
+
+    const actualBrokerId = await this.fetchBrokerId();
+    if (actualBrokerId !== expectedBrokerId) {
+      throw new Error(
+        `home broker mismatch: expected A2A_HOME_BROKER_ID=${expectedBrokerId}, got ${actualBrokerId ?? "<missing>"}`,
+      );
+    }
+
+    if (this.config.homeBrokerLeaseFile) {
+      await assertHomeBrokerLease(this.config.homeBrokerLeaseFile, {
+        brokerId: expectedBrokerId,
+        brokerUrl: this.brokerUrl,
+        workerId: this.workerId,
+        createdAt: new Date().toISOString(),
+      });
+    }
+
+    this.homeBrokerVerified = true;
+  }
+
+  private async fetchBrokerId(): Promise<string | undefined> {
+    const response = await this.fetchImpl(new URL("/health", this.brokerUrl), {
+      method: "GET",
+      headers: new Headers({
+        accept: "application/json",
+        "user-agent": this.config.userAgent,
+      }),
+    });
+    const text = await response.text();
+    const json = parseJsonText(text) as BrokerHealthResponse | null;
+
+    if (!response.ok) {
+      const payload = json as ErrorResponseBody | null;
+      throw new BrokerApiError(
+        response.status,
+        payload?.error?.code ?? `http_${response.status}`,
+        (payload?.error?.message ?? response.statusText) || `broker identity request failed with ${response.status}`,
+        json,
+      );
+    }
+
+    return typeof json?.brokerId === "string" && json.brokerId.trim() ? json.brokerId.trim() : undefined;
+  }
+
   private async requestJson<T>(path: string, init?: { method?: string; body?: unknown }): Promise<T> {
+    await this.ensureHomeBrokerLease();
+
     const headers = new Headers({
       accept: "application/json",
       "x-a2a-requester-id": this.workerId,
@@ -561,6 +629,8 @@ export function createWorkerConfigFromEnv(env: NodeJS.ProcessEnv = process.env):
     edgeSecret: optionalTrimmed(
       env.BROKER_EDGE_SECRET ?? env.A2A_BROKER_EDGE_SECRET ?? env.EDGE_SECRET ?? env.A2A_EDGE_SECRET,
     ),
+    homeBrokerId: parseBrokerIdEnv(env.A2A_HOME_BROKER_ID ?? env.HOME_BROKER_ID, "A2A_HOME_BROKER_ID"),
+    homeBrokerLeaseFile: optionalTrimmed(env.A2A_HOME_BROKER_LEASE_FILE ?? env.HOME_BROKER_LEASE_FILE),
     worker,
     requesterKind,
     pollIntervalMs: parsePositiveInt(
@@ -761,6 +831,41 @@ function toTaskError(error: unknown): TaskError {
   return { message: typeof error === "string" ? error : "task failed" };
 }
 
+async function assertHomeBrokerLease(path: string, expected: HomeBrokerLease): Promise<void> {
+  try {
+    const text = await readFile(path, "utf8");
+    const parsed = JSON.parse(text) as Partial<HomeBrokerLease>;
+    if (parsed.brokerId !== expected.brokerId) {
+      throw new Error(
+        `home broker lease mismatch at ${path}: expected ${expected.brokerId}, found ${parsed.brokerId ?? "<missing>"}`,
+      );
+    }
+    return;
+  } catch (error: unknown) {
+    if (!isFileNotFoundError(error)) {
+      throw error;
+    }
+  }
+
+  await mkdir(dirname(path), { recursive: true });
+  try {
+    await writeFile(path, `${JSON.stringify(expected, null, 2)}\n`, { encoding: "utf8", flag: "wx" });
+  } catch (error: unknown) {
+    if (!isFileAlreadyExistsError(error)) {
+      throw error;
+    }
+    await assertHomeBrokerLease(path, expected);
+  }
+}
+
+function isFileNotFoundError(error: unknown): boolean {
+  return typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT";
+}
+
+function isFileAlreadyExistsError(error: unknown): boolean {
+  return typeof error === "object" && error !== null && "code" in error && error.code === "EEXIST";
+}
+
 function normalizeBrokerUrl(value: string): string {
   const trimmed = value.trim();
   return trimmed.endsWith("/") ? trimmed : `${trimmed}/`;
@@ -779,6 +884,17 @@ function requiredEnv(env: NodeJS.ProcessEnv, names: string[]): string {
 function optionalTrimmed(value: string | undefined): string | undefined {
   const trimmed = value?.trim();
   return trimmed ? trimmed : undefined;
+}
+
+function parseBrokerIdEnv(value: string | undefined, label: string): string | undefined {
+  const normalized = optionalTrimmed(value);
+  if (!normalized) {
+    return undefined;
+  }
+  if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(normalized)) {
+    throw new Error(`${label} must use only letters, numbers, dots, underscores, colons, or hyphens`);
+  }
+  return normalized;
 }
 
 function parsePositiveInt(
