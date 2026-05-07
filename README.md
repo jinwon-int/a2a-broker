@@ -138,6 +138,16 @@ for (const worker of workers) {
 
 `GET /workers/capacity` returns a compact pre-dispatch view for repeated A2A rounds. It omits task payloads/messages and reports per-worker `queued`, `claimed`, `running`, `stale`, and `active` counts plus `latestTaskUpdatedAt`.
 
+Before a seoseo → gwakga broker cutover, run the read-only two-broker guard to fail closed if the same worker id is online in both broker worker lists:
+
+```bash
+SEOSEO_BROKER_URL=http://127.0.0.1:8787 \
+GWAKGA_BROKER_URL=http://127.0.0.1:8788 \
+npm run two_broker_worker_preflight
+```
+
+The guard only calls `GET /workers` on each broker. It exits `0` when no duplicate online worker ids are found, `1` when duplicates are found, and `2` for setup/fetch errors.
+
 Example gate before assigning another round:
 
 ```bash
