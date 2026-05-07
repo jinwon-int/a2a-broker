@@ -317,7 +317,7 @@ test("projects partial GitHub evidence from failed docker runner details without
             ok: false,
             status: "failed",
             error: "github evidence step failed",
-            stdout: "opened https://github.com/jinwon-int/a2a-broker/pull/321 from /work/repo and token ghp_should_not_leak",
+            stdout: "opened https://github.com/jinwon-int/a2a-broker/pull/321 from /work/repo and token fake-token-placeholder",
             branchUrl: "https://github.com/jinwon-int/a2a-broker/tree/a2a-patch-208",
           },
         },
@@ -333,7 +333,7 @@ test("projects partial GitHub evidence from failed docker runner details without
   assert.equal(item.github?.prUrl, "https://github.com/jinwon-int/a2a-broker/pull/321");
   assert.equal(item.github?.branchUrl, "https://github.com/jinwon-int/a2a-broker/tree/a2a-patch-208");
   assert.match(item.nextAction ?? "", /review recovered PR evidence/);
-  assert.doesNotMatch(JSON.stringify(item), /ghp_should_not_leak|\/work\/repo/);
+  assert.doesNotMatch(JSON.stringify(item), /fake-token-placeholder|\/work\/repo/);
 });
 
 test("returns undefined evidence when output has no GitHub fields", () => {

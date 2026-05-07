@@ -80,12 +80,12 @@ describe('terminal brief activation report', () => {
   it('redacts non-http evidence and unsafe diagnostic strings from markdown', () => {
     const report = runTerminalBriefActivationReport({
       codeMerged: 'file:///work/repo/private.log',
-      oneShotFreshTaskSent: 'https://github.com/jinwon-int/a2a-broker/issues/392?token=ghp_secretvalue',
+      oneShotFreshTaskSent: 'https://github.com/jinwon-int/a2a-broker/issues/392?token=fake-token-placeholder',
     });
     const markdown = renderMarkdown(report);
 
     assert.equal(report.gates.find((gate) => gate.id === 'codeMerged')?.status, 'pending');
-    assert.doesNotMatch(markdown, /file:\/\/|\/work\/repo|ghp_secretvalue/);
+    assert.doesNotMatch(markdown, /file:\/\/|\/work\/repo|fake-token-placeholder/);
     assert.match(markdown, /token=\[redacted\]/);
   });
 });

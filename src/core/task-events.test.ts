@@ -215,7 +215,7 @@ describe("TaskEventStream", () => {
       payload: {
         githubRepo: "acme/example",
         githubIssueNumber: 217,
-        githubIssueTitle: "Broker receipt/evidence gate token=ghp_do_not_leak /home/alice/secret",
+        githubIssueTitle: "Broker receipt/evidence gate token=fake-token-placeholder /home/alice/secret",
         sessionPrompt: "do-not-leak",
       },
     });
@@ -269,7 +269,7 @@ describe("TerminalTaskEventOutbox", () => {
         githubIssueNumber: 218,
         run: "a2a-terminal-push-1",
         traceId: "trace-terminal-1",
-        taskDescription: "Fix terminal closeout from /work/private token=ghp_secretvalue",
+        taskDescription: "Fix terminal closeout from /work/private token=fake-token-placeholder",
       },
     });
 
@@ -390,7 +390,7 @@ describe("TerminalTaskEventOutbox", () => {
     });
     broker.claimTask(failed.id, "worker-1");
     broker.failTask(failed.id, "worker-1", {
-      message: "tests failed token=ghp_secretvalue at /work/private/raw-session.log",
+      message: "tests failed token=fake-token-placeholder at /work/private/raw-session.log",
     });
     broker.failTask(failed.id, "worker-1", { message: "duplicate failure ignored" });
 
@@ -463,7 +463,7 @@ describe("TerminalTaskEventOutbox", () => {
       "rawLog",
       "rawTranscript",
       "do-not-leak",
-      "ghp_secretvalue",
+      "fake-token-placeholder",
       "hunter2",
       "/work/private",
       "/work/repo",
@@ -562,7 +562,7 @@ describe("TerminalTaskEventOutbox", () => {
       evidence: "provider_delivery_receipt",
       acknowledgedAt,
       receiptId: "receipt-123",
-      note: "operator saw message at /work/private token=ghp_secretvalue",
+      note: "operator saw message at /work/private token=fake-token-placeholder",
     });
     assert.ok(acked);
     assert.deepEqual(acked.ack, {
@@ -712,7 +712,7 @@ describe("TerminalTaskEventOutbox", () => {
     const failed = outbox.recordReceiptStatus(event.id, {
       status: "failed",
       updatedAt: "2026-05-02T02:00:00.000Z",
-      note: "provider send failed token=ghp_secretvalue",
+      note: "provider send failed token=fake-token-placeholder",
     });
     assert.ok(failed);
     assert.equal(failed.ack, undefined);

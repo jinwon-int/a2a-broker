@@ -49,7 +49,7 @@ describe('parent aggregate comment helper', () => {
   it('renders a preview with task-report and closeout markdown without leaking secrets or local paths', () => {
     const markdown = buildParentAggregateMarkdown({
       taskReport: taskReport(),
-      closeoutMarkdown: 'Done: closeout\nTOKEN=ghp_abcdefghijklmnopqrstuvwxyz1234567890\npath=/work/repo/secret.txt',
+      closeoutMarkdown: 'Done: closeout\nTOKEN=<fake-token-placeholder>\npath=/work/repo/secret.txt',
       repo: 'jinwon-int/a2a-broker',
       issue: '#364',
     });
@@ -59,8 +59,8 @@ describe('parent aggregate comment helper', () => {
     assert.match(markdown, /Tasks: total=2 active=1 terminal=1 stale=1 reportable=2/);
     assert.match(markdown, /완료: dungae \/ #369/);
     assert.match(markdown, /Done: closeout/);
-    assert.doesNotMatch(markdown, /ghp_/);
-    assert.doesNotMatch(markdown, /TOKEN=ghp_/);
+    assert.doesNotMatch(markdown, /fake-token-placeholder/);
+    assert.doesNotMatch(markdown, /TOKEN=<fake-token-placeholder>/);
     assert.doesNotMatch(markdown, /\/work\/repo/);
   });
 

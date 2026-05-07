@@ -361,12 +361,12 @@ describe("ConferenceRoomManager", () => {
     const room = manager.createRoom("parent-1");
     manager.invite(room.id, ["worker-a"]);
 
-    const secret = "Bearer sk-live-secret prompt=session dump\nrate-limit";
+    const secret = "Bearer fake-secret-placeholder prompt=session dump\nrate-limit";
     const blocked = manager.block(room.id, "worker-a", secret);
 
     assert.equal(blocked.metadata.reasonCode, "other");
     const serialized = JSON.stringify(blocked);
-    assert.ok(!serialized.includes("sk-live-secret"));
+    assert.ok(!serialized.includes("fake-secret-placeholder"));
     assert.ok(!serialized.includes("prompt=session"));
     assert.ok(!serialized.includes(secret));
     assert.equal(Object.prototype.hasOwnProperty.call(blocked.metadata, "reason"), false);
