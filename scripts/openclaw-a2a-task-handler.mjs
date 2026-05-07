@@ -168,6 +168,13 @@ function buildRunnerTask(task, env = process.env) {
     if (safeText(payload.baseBranch, "")) runnerTask.baseBranch = safeText(payload.baseBranch);
   }
 
+  if (Array.isArray(payload.repos) && payload.repos.length > 0) {
+    runnerTask.repos = payload.repos;
+  }
+  if (Array.isArray(payload.commands) && payload.commands.every((item) => typeof item === "string")) {
+    runnerTask.commands = payload.commands;
+  }
+
   return runnerTask;
 }
 
