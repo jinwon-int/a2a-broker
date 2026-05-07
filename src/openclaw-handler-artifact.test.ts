@@ -741,6 +741,59 @@ console.log(JSON.stringify({
 });
 
 
+test("explicit GitHub runner commands propagate to docker runner", () => {
+  const tempDir = mkdtempSync(join(tmpdir(), "handler-explicit-commands-test-"));
+  const fakeRunnerPath = join(tempDir, "fake-runner.mjs");
+  try {
+    writeFileSync(fakeRunnerPath, `
+import { readFileSync } from "node:fs";
+const taskPath = process.argv.at(-1);
+const task = JSON.parse(readFileSync(taskPath, "utf8"));
+if (task.intent !== "verify") throw new Error("expected verify intent propagation");
+if (task.mode !== "github-verify") throw new Error("expected github-verify mode propagation");
+if (task.repo !== "owner/repo") throw new Error("expected repo mapping");
+if (JSON.stringify(task.commands) !== JSON.stringify(["python -m pytest -q tests"])) {
+  throw new Error(` + "`expected explicit commands propagation, got ${JSON.stringify(task.commands)}`" + `);
+}
+console.log(JSON.stringify({
+  ok: true,
+  taskId: task.id,
+  status: "completed",
+  workDir: "/tmp/work-fixture",
+  artifacts: [],
+  doneCommentUrl: "https://github.com/owner/repo/issues/1#issuecomment-456"
+}));
+`);
+
+    const result = spawnSync(process.execPath, [handlerPath], {
+      input: JSON.stringify(githubTask({
+        intent: "verify",
+        payload: {
+          mode: "github-verify",
+          repo: "owner/repo",
+          issue: "#1",
+          commands: ["python -m pytest -q tests"],
+        },
+      })),
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        A2A_DOCKER_RUNNER_ENABLED: "1",
+        A2A_DOCKER_RUNNER_ALL_GITHUB: "1",
+        A2A_DOCKER_RUNNER_SCOPE: "all-github",
+        A2A_DOCKER_RUNNER_BIN: process.execPath,
+        A2A_DOCKER_RUNNER_ARGS_JSON: JSON.stringify([fakeRunnerPath]),
+      },
+    });
+
+    assert.equal(result.status, 0, result.stderr);
+    const payload = JSON.parse(result.stdout);
+    assert.equal(payload.result.output.doneCommentUrl, "https://github.com/owner/repo/issues/1#issuecomment-456");
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
 test("github-verify tasks route through docker runner instead of built-in generic success", () => {
   const tempDir = mkdtempSync(join(tmpdir(), "handler-github-verify-test-"));
   const fakeRunnerPath = join(tempDir, "fake-runner.mjs");
