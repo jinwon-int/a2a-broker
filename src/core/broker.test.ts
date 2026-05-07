@@ -23,7 +23,7 @@ import {
   type BrokerStateSaveHints,
   type BrokerStateStore,
 } from "./store.js";
-import type { ArtifactRecord, AuditEvent, ChangeProposal, TaskTombstone, ValidationResult, WorkerRecord } from "./types.js";
+import type { ArtifactRecord, AuditEvent, ChangeProposal, CreateTaskRequest, TaskTombstone, ValidationResult, WorkerRecord } from "./types.js";
 
 function registerWorker(broker: InMemoryA2ABroker, nodeId: string): void {
   broker.registerWorker({
@@ -68,6 +68,79 @@ function createGithubPatchTask(broker: InMemoryA2ABroker, id: string, workerId: 
     taskOrigin: "github",
   });
 }
+
+function createOwnedTask(broker: InMemoryA2ABroker, id: string, workerId: string, overrides: Partial<CreateTaskRequest> = {}) {
+  return broker.createTask({
+    id,
+    intent: "chat",
+    requester: { id: "hub-a", kind: "node", role: "hub" },
+    target: { id: workerId, kind: "node", role: "analyst" },
+    assignedWorkerId: workerId,
+    message: `owned task ${id}`,
+    ...overrides,
+  });
+}
+
+test("broker annotates tasks with owner metadata and rejects mismatched lifecycle ownership", () => {
+  const broker = new InMemoryA2ABroker(undefined, undefined, {
+    brokerId: "broker-a",
+    teamId: "team-a",
+  });
+  registerWorker(broker, "worker-owned");
+
+  const owned = createOwnedTask(broker, "task-owned-defaults", "worker-owned");
+  assert.equal(owned.brokerOfRecord, "broker-a");
+  assert.equal(owned.teamId, "team-a");
+
+  const wrongBroker = createOwnedTask(broker, "task-wrong-broker", "worker-owned", {
+    brokerOfRecord: "broker-b",
+    teamId: "team-a",
+  });
+  assert.throws(() => broker.claimTask(wrongBroker.id, "worker-owned"), {
+    name: "BrokerError",
+    code: "policy_denied",
+    message: "claim requires broker-of-record broker-b",
+  });
+
+  const wrongTeam = createOwnedTask(broker, "task-wrong-team", "worker-owned", {
+    brokerOfRecord: "broker-a",
+    teamId: "team-b",
+  });
+  assert.throws(() => broker.claimTask(wrongTeam.id, "worker-owned"), {
+    name: "BrokerError",
+    code: "policy_denied",
+    message: "claim requires teamId team-b",
+  });
+
+  const startGuard = createOwnedTask(broker, "task-start-guard", "worker-owned");
+  broker.claimTask(startGuard.id, "worker-owned");
+  startGuard.brokerOfRecord = "broker-b";
+  assert.throws(() => broker.startTask(startGuard.id, "worker-owned"), {
+    name: "BrokerError",
+    code: "policy_denied",
+    message: "start requires broker-of-record broker-b",
+  });
+
+  const completeGuard = createOwnedTask(broker, "task-complete-guard", "worker-owned");
+  broker.claimTask(completeGuard.id, "worker-owned");
+  broker.startTask(completeGuard.id, "worker-owned");
+  completeGuard.teamId = "team-b";
+  assert.throws(() => broker.completeTask(completeGuard.id, "worker-owned", { summary: "done" }), {
+    name: "BrokerError",
+    code: "policy_denied",
+    message: "complete requires teamId team-b",
+  });
+
+  const failGuard = createOwnedTask(broker, "task-fail-guard", "worker-owned");
+  broker.claimTask(failGuard.id, "worker-owned");
+  broker.startTask(failGuard.id, "worker-owned");
+  failGuard.brokerOfRecord = "broker-b";
+  assert.throws(() => broker.failTask(failGuard.id, "worker-owned", { message: "boom" }), {
+    name: "BrokerError",
+    code: "policy_denied",
+    message: "fail requires broker-of-record broker-b",
+  });
+});
 
 test("broker fail-closes GitHub patch completion when evidence is missing", () => {
   const broker = new InMemoryA2ABroker();

@@ -269,6 +269,10 @@ export interface BrokerServerOptions {
    * `BROKER_MAX_REQUEUE_ATTEMPTS`.
    */
   maxRequeueAttempts?: number;
+  /** Optional broker identity exposed on health/worker registration and stamped onto new tasks as broker-of-record. Env: `A2A_BROKER_ID` or `BROKER_ID`. */
+  brokerId?: string;
+  /** Team/tenant identity stamped onto new tasks for lifecycle ownership checks. Env: `A2A_TEAM_ID`. */
+  teamId?: string;
   /**
    * SSE heartbeat interval for `/a2a/tasks/:id/events`. Comments (`: heartbeat ...`) keep
    * intermediaries from timing out idle subscriptions. `0` disables heartbeats. Env:
@@ -287,8 +291,6 @@ export interface BrokerServerOptions {
   buildRevision?: string;
   /** Backward-compatible alias for older draft callers. Prefer `buildRevision`. */
   releaseRevision?: string;
-  /** Optional broker identity exposed on health, worker registration, and worker home-broker pinning. Env: `A2A_BROKER_ID` or `BROKER_ID`. */
-  brokerId?: string;
   /** Optional broker version override. Defaults to package metadata. Env: `A2A_BROKER_VERSION`. */
   version?: string;
   /** Optional generated build-info JSON path. Defaults to bundled `dist/build-info.json` when present. */
@@ -408,6 +410,7 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
   const peerStatusEnabled =
     options.peerStatusEnabled ?? resolveBooleanEnv(process.env.A2A_PEER_STATUS_ENABLED, false);
   const brokerId = resolveBrokerId(options.brokerId, serviceName);
+  const teamId = resolveStringOption(options.teamId, process.env.A2A_TEAM_ID);
   const buildInfo = resolveBrokerBuildInfo(options, serviceName);
 
   const stateStore =
@@ -451,6 +454,8 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
         : undefined,
       retention: retentionPolicy,
       maxRequeueAttempts,
+      brokerId,
+      teamId,
     });
   const rateLimiter = new InMemoryRateLimiter(
     Math.max(1, rateLimitMaxRequests),
@@ -1543,6 +1548,23 @@ function resolveBrokerRetentionPolicy(
       DEFAULT_BROKER_RETENTION_POLICY.maxAuditEvents,
     ),
   };
+}
+
+function resolveStringOption(
+  explicit: string | undefined,
+  fromEnv: string | undefined,
+  fallback?: string,
+): string | undefined {
+  if (typeof explicit === "string" && explicit.trim()) {
+    return explicit.trim();
+  }
+  if (typeof fromEnv === "string" && fromEnv.trim()) {
+    return fromEnv.trim();
+  }
+  if (typeof fallback === "string" && fallback.trim()) {
+    return fallback.trim();
+  }
+  return undefined;
 }
 
 function resolveIntegerOption(

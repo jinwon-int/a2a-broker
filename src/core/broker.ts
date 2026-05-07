@@ -163,6 +163,18 @@ export interface InMemoryA2ABrokerOptions {
    * In-memory worker liveness still updates on every heartbeat. Default: 60000ms.
    */
   workerHeartbeatPersistIntervalMs?: number;
+  /**
+   * Stable broker identity for ownership-guarded tasks. When a task carries
+   * brokerOfRecord metadata, lifecycle mutation is accepted only by a broker
+   * configured with the same id.
+   */
+  brokerId?: string;
+  /**
+   * Stable team/tenant identity for ownership-guarded tasks. When a task
+   * carries teamId metadata, lifecycle mutation is accepted only by a broker
+   * configured with the same team id.
+   */
+  teamId?: string;
   /** Optional lightweight profiling hook for broker internals. Listener errors are ignored. */
   profilingListener?: BrokerProfilingListener;
 }
@@ -329,6 +341,8 @@ export class InMemoryA2ABroker {
   private readonly artifactRepository?: ArtifactRuntimeRepository;
   private readonly validationRepository?: ValidationRuntimeRepository;
   private readonly optionProfilingListener?: BrokerProfilingListener;
+  private readonly brokerId?: string;
+  private readonly teamId?: string;
   private readonly workerHeartbeatPersistIntervalMs: number;
 
   constructor(
@@ -346,6 +360,8 @@ export class InMemoryA2ABroker {
     this.artifactRepository = options.artifactRepository;
     this.validationRepository = options.validationRepository;
     this.optionProfilingListener = options.profilingListener;
+    this.brokerId = normalizeOwnershipString(options.brokerId);
+    this.teamId = normalizeOwnershipString(options.teamId);
     this.workerHeartbeatPersistIntervalMs = Math.max(0, options.workerHeartbeatPersistIntervalMs ?? DEFAULT_WORKER_HEARTBEAT_PERSIST_INTERVAL_MS);
     this.retentionPolicy = normalizeBrokerRetentionPolicy(options.retention);
     this.maxRequeueAttempts = normalizeMaxRequeueAttempts(options.maxRequeueAttempts);
@@ -1118,6 +1134,8 @@ export class InMemoryA2ABroker {
     const now = isoNow();
     const policyContext = normalizeTaskPolicyContext(normalizedRequest);
     const initialStatus: TaskStatus = policyContext?.requiresApproval === true ? "blocked" : "queued";
+    const brokerOfRecord = normalizeOwnershipString(normalizedRequest.brokerOfRecord) ?? this.brokerId;
+    const teamId = normalizeOwnershipString(normalizedRequest.teamId) ?? this.teamId;
     const task: TaskRecord = {
       id: normalizedRequest.id ?? randomUUID(),
       exchangeId: normalizedRequest.exchangeId,
@@ -1138,6 +1156,8 @@ export class InMemoryA2ABroker {
       createdAt: normalizedRequest.createdAt ?? now,
       updatedAt: now,
       taskOrigin: normalizedRequest.taskOrigin ?? "unknown",
+      ...(brokerOfRecord ? { brokerOfRecord } : {}),
+      ...(teamId ? { teamId } : {}),
     };
 
     this.setTaskRecord(task);
@@ -3244,6 +3264,7 @@ export class InMemoryA2ABroker {
   }
 
   private assertTaskWorker(task: TaskRecord, workerId: string, action: string): void {
+    this.assertTaskOwnership(task, action);
     this.requireWorker(workerId);
     const expectedWorkerId = task.assignedWorkerId ?? task.targetNodeId;
     if (workerId !== expectedWorkerId) {
@@ -3257,6 +3278,24 @@ export class InMemoryA2ABroker {
       throw new BrokerError(
         "policy_denied",
         `${action} requires the worker that claimed the task`,
+      );
+    }
+  }
+
+  private assertTaskOwnership(task: TaskRecord, action: string): void {
+    const taskBroker = normalizeOwnershipString(task.brokerOfRecord);
+    if (taskBroker && this.brokerId !== taskBroker) {
+      throw new BrokerError(
+        "policy_denied",
+        `${action} requires broker-of-record ${taskBroker}`,
+      );
+    }
+
+    const taskTeam = normalizeOwnershipString(task.teamId);
+    if (taskTeam && this.teamId !== taskTeam) {
+      throw new BrokerError(
+        "policy_denied",
+        `${action} requires teamId ${taskTeam}`,
       );
     }
   }
@@ -3848,6 +3887,10 @@ function readString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }
 
+function normalizeOwnershipString(value: unknown): string | undefined {
+  return readString(value);
+}
+
 function readIssueNumber(value: unknown): number | undefined {
   if (typeof value === "number" && Number.isInteger(value) && value > 0) {
     return value;
@@ -4265,6 +4308,10 @@ function normalizeTaskRecord(task: TaskRecord): TaskRecord {
     attemptId: task.attemptId,
     wake: normalizeTaskWakeState(task.wake),
     taskOrigin: task.taskOrigin ?? "unknown",
+    ...(normalizeOwnershipString(task.brokerOfRecord)
+      ? { brokerOfRecord: normalizeOwnershipString(task.brokerOfRecord) }
+      : {}),
+    ...(normalizeOwnershipString(task.teamId) ? { teamId: normalizeOwnershipString(task.teamId) } : {}),
   };
 }
 
