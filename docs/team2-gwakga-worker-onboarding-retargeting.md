@@ -48,7 +48,7 @@ Run these as read-only checks first. Replace placeholders in your local shell; k
 export WORKER_ID=soonwook
 export OLD_BROKER_URL=https://seoseo-broker.example.invalid
 export NEW_BROKER_URL=https://gwakga-broker.example.invalid
-export BROKER_EDGE_SECRET='<set in local shell only; never paste>'
+export BROKER_EDGE_SECRET=<edge-secret-placeholder>
 
 # Old broker: worker registration should be absent or stale after stop.
 curl -fsS \

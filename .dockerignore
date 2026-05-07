@@ -3,3 +3,13 @@ dist
 .git
 npm-debug.log
 
+# OpenClaw runtime/bootstrap context must never enter Docker build contexts.
+AGENTS.md
+SOUL.md
+USER.md
+TOOLS.md
+HEARTBEAT.md
+IDENTITY.md
+.openclaw/
+.openclaw/**
+

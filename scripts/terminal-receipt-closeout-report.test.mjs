@@ -112,7 +112,7 @@ describe('terminal receipt closeout report', () => {
       payload: terminalPayload({
         id: '/var/lib/terminal-secret',
         payload: {
-          taskId: '/srv/token=ghp_abcdef1234567890',
+          taskId: '/srv/token=<fake-token-placeholder>',
           status: 'blocked',
           createdAt: '2026-05-04T07:30:00.000Z',
           updatedAt: '2026-05-04T07:30:00.000Z',
@@ -133,7 +133,7 @@ describe('terminal receipt closeout report', () => {
 
     assert.equal(report.currentPostCutoff[0].terminalEventId, '[path]');
     assert.equal(report.currentPostCutoff[0].taskId, '[path]=[redacted]');
-    assert.doesNotMatch(markdown, /super-secret|ghp_abcdef|raw payload brief|must not be rendered/);
+    assert.doesNotMatch(markdown, /super-secret|fake-token-placeholder|raw payload brief|must not be rendered/);
     assert.match(markdown, /rawPayloadsIncluded=false/);
     assert.match(markdown, /provider send success alone is insufficient/);
   });

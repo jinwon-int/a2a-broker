@@ -333,7 +333,7 @@ test("E2E: terminal notification outbox enforces auth and replays compact ack-sa
           githubRepo: "jinwon-int/a2a-broker",
           githubIssueNumber: 250,
           rawPrompt: "do-not-leak",
-          token: "ghp_do_not_leak",
+          token: "fake-token-placeholder",
         },
         message: "private prompt that must not enter operator notification payloads",
       }),
@@ -354,7 +354,7 @@ test("E2E: terminal notification outbox enforces auth and replays compact ack-sa
       body: JSON.stringify({
         workerId: "worker-a",
         result: {
-          summary: "Done: terminal outbox regression passed from /work/private token=ghp_do_not_leak",
+          summary: "Done: terminal outbox regression passed from /work/private token=fake-token-placeholder",
           output: {
             prUrl: "https://github.com/jinwon-int/a2a-broker/pull/251",
             doneUrl: "https://github.com/jinwon-int/a2a-broker/issues/250#issuecomment-done",
@@ -447,7 +447,7 @@ test("E2E: terminal notification outbox enforces auth and replays compact ack-sa
       "rawPrompt",
       "rawLog",
       "do-not-leak",
-      "ghp_do_not_leak",
+      "fake-token-placeholder",
       "/work/private",
     ]) {
       assert.ok(!serialized.includes(forbidden), forbidden);

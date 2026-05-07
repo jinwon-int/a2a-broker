@@ -353,13 +353,13 @@ describe("conference: transcript artifact", () => {
     f.joinParticipant({ nodeId: "alpha", role: "presenter" });
     f.addContribution(contrib({
       participantId: "alpha",
-      summary: "PRIVATE: call 010-1234-5678, mail human@example.com, token sk-secretvalue123, [raw]verbatim private text[/raw]",
+      summary: "PRIVATE: call 010-1234-5678, mail human@example.com, token fake-secret-placeholder, [raw]verbatim private text[/raw]",
     }));
 
     const summary = f.buildTranscriptArtifact().contributions[0]?.summary ?? "";
     assert.equal(summary.includes("010-1234-5678"), false);
     assert.equal(summary.includes("human@example.com"), false);
-    assert.equal(summary.includes("sk-secretvalue123"), false);
+    assert.equal(summary.includes("fake-secret-placeholder"), false);
     assert.equal(summary.includes("verbatim private text"), false);
     assert.ok(summary.includes("[REDACTED"));
   });

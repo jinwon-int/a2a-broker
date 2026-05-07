@@ -3431,7 +3431,7 @@ test("GET/POST /a2a/tasks/terminal-outbox replays and acknowledges compact recor
       body: JSON.stringify({
         workerId: "worker-a",
         result: {
-          summary: "Done from /work/repo/dist/server.test.js token=ghp_secretvalue",
+          summary: "Done from /work/repo/dist/server.test.js token=fake-token-placeholder",
           output: {
             doneUrl: "https://github.com/acme/example/issues/246#issuecomment-done",
             rawLog: "do-not-leak",
@@ -3570,7 +3570,7 @@ test("GET/POST /a2a/tasks/terminal-outbox replays and acknowledges compact recor
     assert.equal(ack.event.attempts, 1);
 
     const serialized = JSON.stringify({ list, ack });
-    for (const forbidden of ["do not leak", "rawPrompt", "rawLog", "do-not-leak", "ghp_secretvalue", "/work/repo"]) {
+    for (const forbidden of ["do not leak", "rawPrompt", "rawLog", "do-not-leak", "fake-token-placeholder", "/work/repo"]) {
       assert.ok(!serialized.includes(forbidden), forbidden);
     }
   } finally {
