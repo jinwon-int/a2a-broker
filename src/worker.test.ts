@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -46,10 +46,12 @@ async function startTestServer(options: Partial<BrokerServerOptions> = {}) {
   };
 }
 
-function createWorker(baseUrl: string, options: { edgeSecret?: string } = {}) {
+function createWorker(baseUrl: string, options: { edgeSecret?: string; homeBrokerId?: string; homeBrokerLeaseFile?: string } = {}) {
   return new A2ABrokerWorker({
     brokerUrl: baseUrl,
     edgeSecret: options.edgeSecret,
+    homeBrokerId: options.homeBrokerId,
+    homeBrokerLeaseFile: options.homeBrokerLeaseFile,
     requesterKind: "node",
     pollIntervalMs: 25,
     heartbeatIntervalMs: 25,
@@ -201,6 +203,68 @@ test("worker env config prefers broker-specific edge secrets over generic ones",
   });
 
   assert.equal(config.edgeSecret, "broker-secret");
+});
+
+test("worker env config reads A2A home broker id and lease file", () => {
+  const config = createWorkerConfigFromEnv({
+    BROKER_URL: "http://127.0.0.1:8787",
+    WORKER_ID: "worker-a",
+    WORKER_HANDLER_BUILTIN: "echo",
+    A2A_HOME_BROKER_ID: "team2-broker",
+    A2A_HOME_BROKER_LEASE_FILE: "/tmp/a2a-home-broker-lease.json",
+  });
+
+  assert.equal(config.homeBrokerId, "team2-broker");
+  assert.equal(config.homeBrokerLeaseFile, "/tmp/a2a-home-broker-lease.json");
+});
+
+test("worker validates matching A2A_HOME_BROKER_ID and writes local lease before registering", async () => {
+  const server = await startTestServer({ brokerId: "team2-broker" });
+  const tempDir = await mkdtemp(join(tmpdir(), "a2a-worker-lease-test-"));
+  const leaseFile = join(tempDir, "home-broker.json");
+  const worker = createWorker(server.baseUrl, { homeBrokerId: "team2-broker", homeBrokerLeaseFile: leaseFile });
+
+  try {
+    const registered = await worker.register();
+    assert.equal(registered.nodeId, "worker-a");
+
+    const lease = JSON.parse(await readFile(leaseFile, "utf8"));
+    assert.equal(lease.brokerId, "team2-broker");
+    assert.equal(lease.workerId, "worker-a");
+    assert.equal(lease.brokerUrl, `${server.baseUrl}/`);
+  } finally {
+    await worker.stop();
+    await server.close();
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("worker fails closed when broker identity mismatches A2A_HOME_BROKER_ID", async () => {
+  const server = await startTestServer({ brokerId: "other-broker" });
+  const worker = createWorker(server.baseUrl, { homeBrokerId: "team2-broker" });
+
+  try {
+    await assert.rejects(() => worker.register(), /home broker mismatch: expected A2A_HOME_BROKER_ID=team2-broker, got other-broker/);
+  } finally {
+    await worker.stop();
+    await server.close();
+  }
+});
+
+test("worker fails closed when local home-broker lease points at a different broker", async () => {
+  const server = await startTestServer({ brokerId: "team2-broker" });
+  const tempDir = await mkdtemp(join(tmpdir(), "a2a-worker-lease-test-"));
+  const leaseFile = join(tempDir, "home-broker.json");
+  await writeFile(leaseFile, JSON.stringify({ brokerId: "old-broker" }), "utf8");
+  const worker = createWorker(server.baseUrl, { homeBrokerId: "team2-broker", homeBrokerLeaseFile: leaseFile });
+
+  try {
+    await assert.rejects(() => worker.register(), /home broker lease mismatch/);
+  } finally {
+    await worker.stop();
+    await server.close();
+    await rm(tempDir, { recursive: true, force: true });
+  }
 });
 
 test("worker fails tasks when an external handler exits non-zero", async () => {

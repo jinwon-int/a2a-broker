@@ -287,7 +287,7 @@ export interface BrokerServerOptions {
   buildRevision?: string;
   /** Backward-compatible alias for older draft callers. Prefer `buildRevision`. */
   releaseRevision?: string;
-  /** Optional broker identity exposed on health and worker registration. Env: `A2A_BROKER_ID` or `BROKER_ID`. */
+  /** Optional broker identity exposed on health, worker registration, and worker home-broker pinning. Env: `A2A_BROKER_ID` or `BROKER_ID`. */
   brokerId?: string;
   /** Optional broker version override. Defaults to package metadata. Env: `A2A_BROKER_VERSION`. */
   version?: string;
@@ -1647,6 +1647,17 @@ function readPackageVersion(): string | undefined {
   } catch {
     return undefined;
   }
+}
+
+function sanitizeBrokerId(value: string | undefined): string | undefined {
+  const normalized = value?.trim();
+  if (!normalized) {
+    return undefined;
+  }
+  if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(normalized)) {
+    throw new Error("A2A_BROKER_ID must be a stable id using only letters, numbers, dots, underscores, colons, or hyphens");
+  }
+  return normalized;
 }
 
 function sanitizeBuildToken(value: string | undefined, options: { fallback: string | undefined; unsafeFallback: string | undefined }): string | undefined {
