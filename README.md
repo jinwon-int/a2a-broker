@@ -341,6 +341,17 @@ npm run start:worker
 
 The worker registers itself, sends heartbeats, polls queued tasks assigned to `WORKER_ID`, claims and starts them, then completes or fails them.
 
+For two-broker deployments, set a stable broker id on the broker and pin workers to it:
+
+```bash
+A2A_BROKER_ID=team2-broker npm start
+A2A_HOME_BROKER_ID=team2-broker \
+A2A_HOME_BROKER_LEASE_FILE=/var/lib/a2a-broker-worker/home-broker.json \
+npm run start:worker
+```
+
+When `A2A_HOME_BROKER_ID` is set, the worker verifies `/health.brokerId` before any broker API request. If the broker id is missing, mismatched, or the local lease file was created for another broker id, startup fails closed.
+
 Run the end-to-end smoke stack (broker plus built-in echo worker in Docker):
 
 ```bash

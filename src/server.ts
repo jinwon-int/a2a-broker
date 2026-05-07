@@ -289,6 +289,8 @@ export interface BrokerServerOptions {
   releaseRevision?: string;
   /** Optional broker version override. Defaults to package metadata. Env: `A2A_BROKER_VERSION`. */
   version?: string;
+  /** Stable logical broker id exposed for workers that pin `A2A_HOME_BROKER_ID`. Env: `A2A_BROKER_ID`. */
+  brokerId?: string;
   /** Optional generated build-info JSON path. Defaults to bundled `dist/build-info.json` when present. */
   buildInfoFile?: string;
 }
@@ -341,6 +343,7 @@ export interface BrokerServerRuntime {
     maxRequeueAttempts: number;
     taskSubscribeHeartbeatSec: number;
     peerStatusEnabled: boolean;
+    brokerId?: string;
     version: string;
     build: BrokerBuildInfo;
   };
@@ -404,6 +407,7 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
   );
   const peerStatusEnabled =
     options.peerStatusEnabled ?? resolveBooleanEnv(process.env.A2A_PEER_STATUS_ENABLED, false);
+  const brokerId = sanitizeBrokerId(options.brokerId ?? process.env.A2A_BROKER_ID ?? process.env.BROKER_ID);
   const buildInfo = resolveBrokerBuildInfo(options, serviceName);
 
   const stateStore =
@@ -676,6 +680,7 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
         return sendJson(res, 200, {
           ok: true,
           service: serviceName,
+          brokerId,
           version: buildInfo.version,
           build: buildInfo.build,
           publicBaseUrl,
@@ -1486,6 +1491,7 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
       maxRequeueAttempts,
       taskSubscribeHeartbeatSec,
       peerStatusEnabled,
+      brokerId,
       version: buildInfo.version,
       build: buildInfo.build,
     },
@@ -1634,6 +1640,17 @@ function readPackageVersion(): string | undefined {
   } catch {
     return undefined;
   }
+}
+
+function sanitizeBrokerId(value: string | undefined): string | undefined {
+  const normalized = value?.trim();
+  if (!normalized) {
+    return undefined;
+  }
+  if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(normalized)) {
+    throw new Error("A2A_BROKER_ID must be a stable id using only letters, numbers, dots, underscores, colons, or hyphens");
+  }
+  return normalized;
 }
 
 function sanitizeBuildToken(value: string | undefined, options: { fallback: string | undefined; unsafeFallback: string | undefined }): string | undefined {
