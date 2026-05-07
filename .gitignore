@@ -13,3 +13,12 @@ coverage/
 *.bak_*
 .DS_Store
 handlers/
+
+# OpenClaw runtime/bootstrap context files are local-only and must not enter PRs.
+.openclaw/
+AGENTS.md
+SOUL.md
+USER.md
+TOOLS.md
+HEARTBEAT.md
+IDENTITY.md
