@@ -266,6 +266,10 @@ export interface CreateTaskRequest extends Omit<A2ATaskRequest, "id" | "createdA
   createdAt?: string;
   payload?: Record<string, unknown>;
   taskOrigin?: TaskOrigin;
+  /** Broker instance that owns lifecycle mutation authority for this task. */
+  brokerOfRecord?: string;
+  /** Team/tenant boundary that owns lifecycle mutation authority for this task. */
+  teamId?: string;
 }
 
 export interface TaskValidationPayload {
@@ -426,6 +430,10 @@ export interface TaskRecord extends A2ATaskRequest {
    * request. Optional/additive for backward compatibility.
    */
   taskOrigin?: TaskOrigin;
+  /** Broker instance that owns claim/start/complete/fail authority. Optional for legacy tasks. */
+  brokerOfRecord?: string;
+  /** Team/tenant boundary that owns claim/start/complete/fail authority. Optional for legacy tasks. */
+  teamId?: string;
 }
 
 export interface TaskClaimRequest {
