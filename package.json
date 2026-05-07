@@ -32,7 +32,8 @@
     "test:terminal_brief_activation_report": "node --test scripts/terminal-brief-activation-report.test.mjs",
     "closeout_release_report": "node scripts/closeout-release-report.mjs",
     "rehearsal_manifest": "node scripts/broker-rehearsal-manifest.mjs",
-    "scan:public-readiness": "node scripts/public-readiness-scan.mjs"
+    "scan:public-readiness": "node scripts/public-readiness-scan.mjs",
+    "two_broker_worker_preflight": "node scripts/two-broker-worker-preflight.mjs"
   },
   "engines": {
     "node": ">=22"

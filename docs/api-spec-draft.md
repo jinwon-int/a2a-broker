@@ -190,6 +190,7 @@ Response:
 {
   "ok": true,
   "service": "a2a-broker",
+  "brokerId": "broker-primary",
   "version": "0.2.3",
   "build": {
     "component": "a2a-broker",
@@ -217,7 +218,7 @@ Response:
 }
 ```
 
-`version` is always a non-empty package/release version fallback. `build.revision` is sourced from `A2A_BROKER_REVISION`, legacy `BROKER_RELEASE_REVISION` / `RELEASE_REVISION`, or generated build-info metadata; it falls back to `"unknown"` rather than `null`. Unsafe values such as tokenized remotes, host paths, or oversized strings are redacted/omitted before they reach health or dashboard JSON.
+`brokerId` is a durable broker identity sourced from `brokerId` server config, `A2A_BROKER_ID`, `BROKER_ID`, or the service name fallback. `version` is always a non-empty package/release version fallback. `build.revision` is sourced from `A2A_BROKER_REVISION`, legacy `BROKER_RELEASE_REVISION` / `RELEASE_REVISION`, or generated build-info metadata; it falls back to `"unknown"` rather than `null`. Unsafe values such as tokenized remotes, host paths, or oversized strings are redacted/omitted before they reach health or dashboard JSON.
 The same `version` and `build` fields are also included in `GET /dashboard` for operator status views.
 
 ### `GET /exchanges`
@@ -330,7 +331,8 @@ Response:
   "createdAt": "2026-04-12T15:00:00.000Z",
   "updatedAt": "2026-04-12T15:00:00.000Z",
   "lastSeenAt": "2026-04-12T15:00:00.000Z",
-  "status": "online"
+  "status": "online",
+  "brokerId": "broker-primary"
 }
 ```
 

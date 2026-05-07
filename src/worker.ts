@@ -8,6 +8,7 @@ import type {
   A2APartyKind,
   A2APartyRole,
   WorkerView,
+  WorkerRegistrationResponse,
   RegisterWorkerRequest,
   SubmitValidationRequest,
   ProposalActorRequest,
@@ -113,8 +114,8 @@ export class A2ABrokerWorker {
     return this.config.worker.nodeId;
   }
 
-  async register(): Promise<WorkerView> {
-    return this.requestJson<WorkerView>("/workers/register", {
+  async register(): Promise<WorkerRegistrationResponse> {
+    return this.requestJson<WorkerRegistrationResponse>("/workers/register", {
       method: "POST",
       body: this.config.worker,
     });
