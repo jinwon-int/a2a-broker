@@ -47,6 +47,7 @@ map.
 - `docs/operator-dashboard-snapshot.md` for the `GET /dashboard` operator snapshot JSON projection: workers, task status counters, stale/retry/dead-letter summary, and attention items
 - `docs/wake-on-task-live-canary-runbook.md` for the live Wake-on-Task canary proof, resource-warning classification, and rollback/reset checklist
 - `docs/docker-runner-rollout-runbook.md` for the A2A docker-runner worker rollout and rollback procedure: canary smoke, node expansion, feature flags, and failure rollback
+- `docs/team2-gwakga-worker-onboarding-retargeting.md` plus `examples/team2-gwakga.worker.env.example` for the Team2/Gwakga worker onboarding and Seoseo→Gwakga retarget safety runbook
 - `docs/docker-broker-live-smoke.md` for the repeatable live Docker broker no-op smoke script and <broker-host> run command
 - `docs/edge-secret-rotation-runbook.md` for the no-secret-values rotation checklist after an edge secret exposure
 - `docs/durable-persistence-path.md` for the recommended next persistence step beyond the phase-1 JSON snapshot backend
@@ -137,6 +138,16 @@ for (const worker of workers) {
 ## Worker capacity preflight
 
 `GET /workers/capacity` returns a compact pre-dispatch view for repeated A2A rounds. It omits task payloads/messages and reports per-worker `queued`, `claimed`, `running`, `stale`, and `active` counts plus `latestTaskUpdatedAt`.
+
+Before a seoseo → gwakga broker cutover, run the read-only two-broker guard to fail closed if the same worker id is online in both broker worker lists:
+
+```bash
+SEOSEO_BROKER_URL=http://127.0.0.1:8787 \
+GWAKGA_BROKER_URL=http://127.0.0.1:8788 \
+npm run two_broker_worker_preflight
+```
+
+The guard only calls `GET /workers` on each broker. It exits `0` when no duplicate online worker ids are found, `1` when duplicates are found, and `2` for setup/fetch errors.
 
 Example gate before assigning another round:
 
