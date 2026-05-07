@@ -19,6 +19,7 @@ import {
   type TradingDialecticTaskInputV1,
   type TradingDialecticTaskV1,
 } from "./trading-dialectic/types.js";
+import type { WorkerRegistrationResponse } from "./core/types.js";
 
 function createInMemoryStateStore(): BrokerStateStore {
   let snapshot = emptySnapshot();
@@ -199,6 +200,55 @@ test("server surfaces env-injected broker version/build revision on health and d
       const dashboard = await dashboardRes.json();
       assert.equal(dashboard.version, health.version);
       assert.deepEqual(dashboard.build, health.build);
+    } finally {
+      await server.close();
+    }
+  });
+});
+
+test("server exposes durable broker identity on health and worker registration", async () => {
+  await withEnv({ A2A_BROKER_ID: "broker-env-1", BROKER_ID: undefined }, async () => {
+    const envServer = await startTestServer();
+    try {
+      assert.equal(envServer.runtime.config.brokerId, "broker-env-1");
+
+      const healthRes = await fetch(`${envServer.baseUrl}/health`);
+      assert.equal(healthRes.status, 200);
+      const health = await healthRes.json();
+      assert.equal(health.brokerId, "broker-env-1");
+    } finally {
+      await envServer.close();
+    }
+  });
+
+  await withEnv({ A2A_BROKER_ID: "broker-env-ignored", BROKER_ID: undefined }, async () => {
+    const server = await startTestServer({ brokerId: "broker-option-1" });
+    try {
+      assert.equal(server.runtime.config.brokerId, "broker-option-1");
+
+      const registerRes = await fetch(`${server.baseUrl}/workers/register`, {
+        method: "POST",
+        headers: jsonHeaders({
+          "x-a2a-requester-id": "worker-a",
+          "x-a2a-requester-role": "analyst",
+        }),
+        body: JSON.stringify({
+          nodeId: "worker-a",
+          role: "analyst",
+          capabilities: {
+            canAnalyze: true,
+            canBackfill: false,
+            canPatchWorkspace: false,
+            canPromoteLive: false,
+            workspaceIds: ["test"],
+            environments: ["research"],
+          },
+        }),
+      });
+      assert.equal(registerRes.status, 201);
+      const registration = await registerRes.json() as WorkerRegistrationResponse;
+      assert.equal(registration.status, "online");
+      assert.equal(registration.brokerId, "broker-option-1");
     } finally {
       await server.close();
     }
