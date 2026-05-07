@@ -47,6 +47,7 @@ map.
 - `docs/operator-dashboard-snapshot.md` for the `GET /dashboard` operator snapshot JSON projection: workers, task status counters, stale/retry/dead-letter summary, and attention items
 - `docs/wake-on-task-live-canary-runbook.md` for the live Wake-on-Task canary proof, resource-warning classification, and rollback/reset checklist
 - `docs/docker-runner-rollout-runbook.md` for the A2A docker-runner worker rollout and rollback procedure: canary smoke, node expansion, feature flags, and failure rollback
+- `docs/team2-gwakga-worker-onboarding-retargeting.md` plus `examples/team2-gwakga.worker.env.example` for the Team2/Gwakga worker onboarding and Seoseo→Gwakga retarget safety runbook
 - `docs/docker-broker-live-smoke.md` for the repeatable live Docker broker no-op smoke script and <broker-host> run command
 - `docs/edge-secret-rotation-runbook.md` for the no-secret-values rotation checklist after an edge secret exposure
 - `docs/durable-persistence-path.md` for the recommended next persistence step beyond the phase-1 JSON snapshot backend
