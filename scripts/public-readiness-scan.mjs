@@ -3,7 +3,9 @@ import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
 
 const root = process.cwd();
-const scanRoots = ["README.md", ".env.example", "docs", "examples"].map((path) => join(root, path));
+const scanRoots = ["README.md", ".env.example", "docs", "examples"]
+  .map((path) => join(root, path))
+  .filter((path) => { try { return statSync(path); } catch { return false; } });
 const allowedUrlHosts = new Set([
   "127.0.0.1",
   "localhost",
@@ -67,6 +69,68 @@ function inspectUrl(file, lineNumber, line) {
   }
 }
 
+/**
+ * Test for secret-like concrete values in assignments.
+ *
+ * Covers two key-name styles:
+ * 1. UPPER_CASE  (ENV_VAR style):  EDGE_SECRET=...,  BROKER_TOKEN=...
+ * 2. camelCase / PascalCase (JSON / YAML / doc style):
+ *    edgeSecret: ...,  apiToken: ...,  brokerPassword=...
+ *
+ * Both `=` and `:` separators are checked.
+ * Boolean-like values (true, false, yes, no) are excluded to avoid false
+ * positives on feature flags like ENABLE_SECRET=true, but camelCase secret-key
+ * names ARE still flagged even when the value is a boolean so that public-card
+ * documentation does not weaken detection.
+ */
+function inspectSecretAssignment(file, lineNumber, line) {
+  // ---- 1) UPPER_CASE with =  (existing behaviour from #438) ----
+  const upperAssignment = line.match(
+    /\b([A-Z0-9_]*(?:SECRET|TOKEN|PASSWORD|API_KEY)[A-Z0-9_]*)\s*=\s*([^\s#]+)/i,
+  );
+  if (upperAssignment) {
+    const key = upperAssignment[1];
+    const value = upperAssignment[2]
+      .replace(/^['"]|['"]$/g, "")
+      .replace(/[)\]`'".,;:]+$/, "");
+    if (concreteSecretValue(key, value)) {
+      addFinding(file, lineNumber, "fail", "secret-value", "Secret-like setting has a concrete value.", line);
+    }
+    return; // already handled this key
+  }
+
+  // ---- 2) camelCase / PascalCase with = or :  (new after #438) ----
+  // Detect any key containing a secret-related substring (case-insensitive)
+  // followed by = or : and a value.
+  const secretSubstrings = /secret|token|password|api[_-]?key|edge[_-]?secret|auth[_-]?token|access[_-]?token|bearer[_-]?token|refresh[_-]?token|client[_-]?secret|jwt[_-]?secret|oauth[_-]?token|api[_-]?secret/i;
+  const mixedAssignment = line.match(
+    /\b([a-z][a-z0-9_]*(?:[a-z0-9_]*))\s*[:=]\s*([^\s#,]+)/i,
+  );
+  if (mixedAssignment && secretSubstrings.test(mixedAssignment[1])) {
+    const key = mixedAssignment[1];
+    const value = mixedAssignment[2]
+      .replace(/^['"]|['"]$/g, "")
+      .replace(/[)\]`'".,;:]+$/, "");
+    if (concreteSecretValue(key, value)) {
+      addFinding(file, lineNumber, "fail", "secret-value", "Secret-like camelCase property has a concrete value.", line);
+    }
+  }
+}
+
+/**
+ * Returns true when `value` looks like a concrete (non-placeholder, non-boolean,
+ * non-shell-expansion, non-file-pointer) assignment that should be flagged.
+ */
+function concreteSecretValue(key, value) {
+  if (!value) return false;
+  const isShellExpansion = value.includes("${") || value.startsWith("$");
+  const isFilePointer = /_(?:FILE|PATH)$/i.test(key);
+  const isBooleanLiteral = /^(?:true|false|yes|no)$/i.test(value);
+  if (isShellExpansion || isFilePointer || isBooleanLiteral) return false;
+  if (placeholderPattern.test(value)) return false;
+  return true;
+}
+
 function inspectLine(file, lineNumber, line) {
   if (/\b(seoseo|racknerd[-\w]*)\b/i.test(line) && !/<(?:private|broker|worker|notifier)-host>/i.test(line)) {
     addFinding(file, lineNumber, "warn", "host-alias", "Private host alias should be replaced with a role placeholder in public docs.", line);
@@ -76,17 +140,7 @@ function inspectLine(file, lineNumber, line) {
     addFinding(file, lineNumber, "fail", "telegram-target", "Telegram chat targets must not appear in public docs/examples.", line);
   }
 
-  const assignment = line.match(/\b([A-Z0-9_]*(?:SECRET|TOKEN|PASSWORD|API_KEY)[A-Z0-9_]*)\s*=\s*([^\s#]+)/i);
-  if (assignment) {
-    const key = assignment[1];
-    const value = assignment[2].replace(/^['"]|['"]$/g, "");
-    const isShellExpansion = value.includes("${") || value.startsWith("$");
-    const isFilePointer = /_(?:FILE|PATH)$/i.test(key);
-    const isBooleanLiteral = /^(?:true|false|yes|no)$/i.test(value);
-    if (value && !isShellExpansion && !isFilePointer && !isBooleanLiteral && !placeholderPattern.test(value) && value !== "") {
-      addFinding(file, lineNumber, "fail", "secret-value", "Secret-like setting has a concrete value.", line);
-    }
-  }
+  inspectSecretAssignment(file, lineNumber, line);
 
   inspectUrl(file, lineNumber, line);
 }
