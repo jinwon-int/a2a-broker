@@ -220,8 +220,12 @@ async function liveDashboardEvidence({ dashboardUrl, edgeSecretEnv }) {
   return { dashboard: await response.json() };
 }
 
+function completionEvidenceUrlForGithub(github = {}) {
+  return firstDefined(github.prUrl, github.doneCommentUrl, github.blockCommentUrl);
+}
+
 function evidenceUrlForGithub(github = {}) {
-  return firstDefined(github.prUrl, github.doneCommentUrl, github.blockCommentUrl, github.branchUrl);
+  return firstDefined(completionEvidenceUrlForGithub(github), github.branchUrl);
 }
 
 function issueRefFromGithub(github = {}) {
@@ -240,26 +244,32 @@ function laneIssueLabel(github = {}) {
 
 export function classifyCommandCenterLane(item) {
   const github = item?.github ?? {};
-  const evidenceUrl = evidenceUrlForGithub(github);
+  const completionEvidenceUrl = completionEvidenceUrlForGithub(github);
+  const hasRecoveredBranchEvidence = Boolean(github.branchUrl && (github.partial || item?.status === 'failed' || item?.status === 'canceled' || item?.status === 'blocked' || item?.errorCode));
   const hasIssue = Boolean(github.repo && issueRefFromGithub(github));
-  const final = Boolean(item?.final) || ['succeeded', 'failed', 'canceled'].includes(String(item?.status));
+  const final = Boolean(item?.final) || ['succeeded', 'failed', 'canceled', 'blocked'].includes(String(item?.status));
   const stale = Boolean(item?.stale) || item?.kind === 'stale';
 
   if (!final) return stale ? 'stuck' : 'waiting';
-  if (!evidenceUrl || !hasIssue) return 'needs-evidence';
-  if (item?.status === 'failed' || github.blockCommentUrl || item?.errorCode) return 'blocked';
+  if (!hasIssue || (!completionEvidenceUrl && !hasRecoveredBranchEvidence)) return 'needs-evidence';
+  if (item?.status === 'failed' || item?.status === 'canceled' || item?.status === 'blocked' || github.blockCommentUrl || item?.errorCode || hasRecoveredBranchEvidence) return 'blocked';
   if (item?.status === 'succeeded') return 'ready';
   return 'blocked';
 }
 
 export function nextActionForCommandCenterLane(item, state = classifyCommandCenterLane(item)) {
   const github = item?.github ?? {};
+  const completionEvidenceUrl = completionEvidenceUrlForGithub(github);
   const evidenceUrl = evidenceUrlForGithub(github);
   if (item?.nextAction) return sanitize(item.nextAction);
   if (state === 'ready') return github.prUrl ? 'review/merge PR or mark Done evidence' : 'verify Done evidence and close lane';
-  if (state === 'blocked') return evidenceUrl ? 'inspect Block evidence and resolve blocker' : 'resolve failed lane blocker';
+  if (state === 'blocked') {
+    if (github.branchUrl && !completionEvidenceUrl) return 'inspect recovered branch evidence before retrying or replacing the worker';
+    return evidenceUrl ? 'inspect Block evidence and resolve blocker' : 'resolve failed lane blocker';
+  }
   if (state === 'stuck') return `check worker heartbeat or reassign stale ${item?.status ?? 'active'} task`;
   if (state === 'waiting') return `wait for ${item?.status ?? 'active'} task update`;
+  if (github.branchUrl && !completionEvidenceUrl) return 'recover PR/Done/Block evidence; branch-only evidence is not completion evidence for succeeded lanes';
   return 'recover PR/Done/Block evidence before closeout';
 }
 

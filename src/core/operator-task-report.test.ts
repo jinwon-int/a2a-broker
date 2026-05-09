@@ -336,6 +336,38 @@ test("projects partial GitHub evidence from failed docker runner details without
   assert.doesNotMatch(JSON.stringify(item), /fake-token-placeholder|\/work\/repo/);
 });
 
+test("surfaces branch-only failed docker runner evidence as recovery action", () => {
+  const report = buildOperatorTaskReport([
+    task({
+      id: "fail-branch-only-1",
+      status: "failed",
+      completedAt: "2026-05-01T00:05:00.000Z",
+      updatedAt: "2026-05-01T00:05:00.000Z",
+      error: {
+        code: "pr_create_failed_or_missing_url",
+        message: "No commits between main and runner branch",
+        details: {
+          runnerTask: {
+            repo: "jinwon-int/a2a-broker",
+            issue: "#443",
+            issueUrl: "https://github.com/jinwon-int/a2a-broker/issues/443",
+          },
+          runnerResult: {
+            status: "failed",
+            branchUrl: "https://github.com/jinwon-int/a2a-broker/tree/a2a-patch-scanner-closeout-evidence-442",
+          },
+        },
+      },
+    }),
+  ], { nowMs: Date.parse("2026-05-01T00:06:00.000Z") });
+
+  const item = report.items[0];
+  assert.equal(item.github?.partial, true);
+  assert.equal(item.github?.branchUrl, "https://github.com/jinwon-int/a2a-broker/tree/a2a-patch-scanner-closeout-evidence-442");
+  assert.match(item.nextAction ?? "", /inspect recovered branch evidence before rerunning or replacing the worker/);
+  assert.doesNotMatch(JSON.stringify(item), /fake-token-placeholder|\/work\/repo/);
+});
+
 test("returns undefined evidence when output has no GitHub fields", () => {
   const report = buildOperatorTaskReport([
     task({

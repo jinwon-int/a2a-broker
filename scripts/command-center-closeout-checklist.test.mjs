@@ -182,4 +182,46 @@ describe('command-center closeout checklist', () => {
     assert.match(markdown, /haneul \| jinwon-int\/a2a-broker#372 \| missing-evidence \| needs-evidence \| next: recover PR\/Done\/Block evidence before closeout/);
     assert.doesNotMatch(markdown, /ghp_|BROKER_EDGE_SECRET=|\/work\/repo/);
   });
+
+  it('treats branch-only evidence as recovered failed evidence, not completed work', () => {
+    const taskReport = {
+      items: [
+        {
+          taskId: 'task-recovered-branch',
+          status: 'failed',
+          final: true,
+          errorCode: 'pr_create_failed_or_missing_url',
+          targetNodeId: 'nosuk',
+          github: {
+            repo: 'jinwon-int/a2a-broker',
+            issue: '#443',
+            branchUrl: 'https://github.com/jinwon-int/a2a-broker/tree/a2a-patch-scanner-closeout-evidence-442',
+            partial: true,
+          },
+        },
+        {
+          taskId: 'task-branch-only-success',
+          status: 'succeeded',
+          final: true,
+          targetNodeId: 'yukson',
+          github: {
+            repo: 'jinwon-int/a2a-broker',
+            issue: '#448',
+            branchUrl: 'https://github.com/jinwon-int/a2a-broker/tree/a2a-patch-no-terminal-marker',
+          },
+        },
+      ],
+    };
+
+    assert.equal(classifyCommandCenterLane(taskReport.items[0]), 'blocked');
+    assert.equal(classifyCommandCenterLane(taskReport.items[1]), 'needs-evidence');
+
+    const report = buildCommandCenterRoundCloseout(taskReport, { parent: '#446', round: 'branchguard', nowMs: Date.parse('2026-05-09T08:30:00.000Z') });
+    assert.equal(report.ok, false);
+    assert.deepEqual(report.counts, { blocked: 1, 'needs-evidence': 1 });
+
+    const markdown = renderCommandCenterRoundCloseoutMarkdown(report);
+    assert.match(markdown, /nosuk \| jinwon-int\/a2a-broker#443 \| https:\/\/github.com\/jinwon-int\/a2a-broker\/tree\/a2a-patch-scanner-closeout-evidence-442 \| blocked \| next: inspect recovered branch evidence before retrying or replacing the worker/);
+    assert.match(markdown, /yukson \| jinwon-int\/a2a-broker#448 \| https:\/\/github.com\/jinwon-int\/a2a-broker\/tree\/a2a-patch-no-terminal-marker \| needs-evidence \| next: recover PR\/Done\/Block evidence; branch-only evidence is not completion evidence for succeeded lanes/);
+  });
 });
