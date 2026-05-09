@@ -9,6 +9,7 @@
 export const TERMINAL_RECEIPT_VOCABULARY_STATES = [
   "accepted",
   "sent",
+  "provider_sent",
   "provider-delivered-if-known",
   "operator-visible",
   "timed_out",
@@ -21,6 +22,7 @@ export type TerminalReceiptVocabularyState = (typeof TERMINAL_RECEIPT_VOCABULARY
 export const CURRENT_POST_CUTOFF_GAP_SCENARIOS = [
   "accepted_current_gap",
   "sent_current_gap",
+  "provider_sent_current_gap",
   "provider_delivery_unknown_current_gap",
   "timed_out_current_gap",
   "stale_current_gap",
@@ -87,9 +89,18 @@ export function defaultTerminalReceiptGapFixtures(cutoff = "2026-05-04T07:10:00.
       postCutoff: true,
     },
     {
-      scenarioId: "provider_delivery_unknown_current_gap",
-      outboxId: "terminal-gap-provider-unknown-3",
+      scenarioId: "provider_sent_current_gap",
+      outboxId: "terminal-gap-provider-sent-3",
       createdAt: "2026-05-04T07:10:03.000Z",
+      receiptState: "provider_sent",
+      providerSendAccepted: true,
+      providerDeliveryKnown: false,
+      postCutoff: true,
+    },
+    {
+      scenarioId: "provider_delivery_unknown_current_gap",
+      outboxId: "terminal-gap-provider-unknown-5",
+      createdAt: "2026-05-04T07:10:04.000Z",
       receiptState: "provider-delivered-if-known",
       providerSendAccepted: true,
       providerDeliveryKnown: false,
@@ -97,24 +108,24 @@ export function defaultTerminalReceiptGapFixtures(cutoff = "2026-05-04T07:10:00.
     },
     {
       scenarioId: "timed_out_current_gap",
-      outboxId: "terminal-gap-timeout-4",
-      createdAt: "2026-05-04T07:10:04.000Z",
+      outboxId: "terminal-gap-timeout-5",
+      createdAt: "2026-05-04T07:10:05.000Z",
       receiptState: "timed_out",
       providerSendAccepted: true,
       postCutoff: true,
     },
     {
       scenarioId: "stale_current_gap",
-      outboxId: "terminal-gap-stale-5",
-      createdAt: "2026-05-04T07:10:05.000Z",
+      outboxId: "terminal-gap-stale-6",
+      createdAt: "2026-05-04T07:10:06.000Z",
       receiptState: "stale",
       providerSendAccepted: true,
       postCutoff: true,
     },
     {
       scenarioId: "failed_current_gap",
-      outboxId: "terminal-gap-failed-6",
-      createdAt: "2026-05-04T07:10:06.000Z",
+      outboxId: "terminal-gap-failed-7",
+      createdAt: "2026-05-04T07:10:07.000Z",
       receiptState: "failed",
       providerSendAccepted: false,
       postCutoff: true,
@@ -215,7 +226,9 @@ function summarizeGapFixture(fixture: TerminalReceiptGapFixture, decision: Termi
     case "accepted":
       return "provider accepted the send request only; keep current gap operator-visible and replayable";
     case "sent":
-      return "send handoff is not delivery evidence; keep current gap unacked for reconciliation replay";
+      return "legacy send handoff is not delivery evidence; keep current gap unacked for reconciliation replay";
+    case "provider_sent":
+      return "provider send-only success recorded; provider send acceptance is never terminal ACK evidence; keep unacked for operator-visible/provider-delivery reconciliation";
     case "provider-delivered-if-known":
       return "provider delivery is unknown in this shaped gap; do not infer receipt from send acceptance";
     case "timed_out":

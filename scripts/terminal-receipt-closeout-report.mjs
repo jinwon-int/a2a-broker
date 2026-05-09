@@ -66,6 +66,8 @@ function parseArgs(argv) {
     dbFile: readOption('--db') ?? process.env.BROKER_SQLITE_FILE ?? process.env.SQLITE_STATE_FILE,
     json: argv.includes('--json'),
     markdown: argv.includes('--markdown') || argv.includes('--md'),
+    compact: argv.includes('--compact') || argv.includes('--telegram'),
+    telegram: argv.includes('--telegram'),
     nowMs: nowRaw === undefined ? Date.now() : Number(nowRaw),
     maxUnackedAgeMs: Number.isFinite(maxUnackedAgeMs) && maxUnackedAgeMs >= 0 ? maxUnackedAgeMs : DEFAULT_MAX_UNACKED_AGE_MS,
     legacyResidueCutoff: Number.isFinite(legacyResidueCutoffMs) ? new Date(legacyResidueCutoffMs).toISOString() : null,
@@ -289,14 +291,35 @@ export function renderMarkdown(report) {
   return lines.join('\n');
 }
 
+export function renderCompact(report) {
+  const current = report.currentPostCutoff ?? [];
+  const legacy = report.legacyResidue ?? [];
+  const gapSummary = current.map((g) => `${g.receiptState}:${g.terminalEventId}`).join(', ') || 'none';
+  const providerSentGaps = current.filter((g) => g.receiptState === 'unacked:provider_sent' || g.receiptState === 'unacked:provider_accepted');
+  const lines = [
+    `Receipt closeout: ${report.ok ? 'PASS' : 'BLOCK'} | rows=${report.summary?.totalRows ?? 0} confirmed=${report.summary?.receiptConfirmedRows ?? 0}`,
+    `Gaps: current=${report.summary?.currentPostCutoffGapCount ?? 0} (provider-send-only=${providerSentGaps.length}) legacy=${report.summary?.legacyResidueGapCount ?? 0}`,
+  ];
+  if (current.length > 0) {
+    lines.push(`Current: ${gapSummary}`);
+  }
+  lines.push('read-only | no-live-send | no-db-mutation | no-terminal-ack');
+  return lines.join('\n');
+}
+
 function printHuman(report) {
   console.log(renderMarkdown(report));
+}
+
+function printCompact(report) {
+  console.log(renderCompact(report));
 }
 
 async function main() {
   const options = parseArgs(process.argv.slice(2));
   const report = runTerminalReceiptCloseoutReport(options);
   if (options.json) console.log(JSON.stringify(report, null, 2));
+  else if (options.compact || options.telegram) printCompact(report);
   else printHuman(report);
   process.exit(report.ok ? 0 : 1);
 }

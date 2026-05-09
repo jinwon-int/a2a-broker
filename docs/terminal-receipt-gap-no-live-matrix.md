@@ -22,6 +22,7 @@ npm run terminal_receipt_gap_matrix
 
 Expected proof shape:
 
-- The six current post-cutoff gap-shaped rows stay **operator-visible**, **replayable**, and **not ACKed**.
-- Receipt vocabulary states are covered: `accepted`, `sent`, `provider-delivered-if-known`, `operator-visible`, `timed_out`, `stale`, `failed`.
+- The seven current post-cutoff gap-shaped rows stay **operator-visible**, **replayable**, and **not ACKed**.
+- Receipt vocabulary states are covered: `accepted`, `sent`, `provider_sent`, `provider-delivered-if-known`, `operator-visible`, `timed_out`, `stale`, `failed`.
+- `provider_sent` is provider send-only acceptance — it is never terminal ACK evidence, and the broker enforces `hold_unacked_replayable`.
 - ACK is modeled as allowed only for the positive-control case with real operator-visible/receipt-confirmed evidence; even that control performs no production ACK.

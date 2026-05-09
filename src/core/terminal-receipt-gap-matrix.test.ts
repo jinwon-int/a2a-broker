@@ -8,13 +8,13 @@ import {
 } from "./terminal-receipt-gap-matrix.js";
 
 describe("terminal receipt gap no-live matrix", () => {
-  it("models the six current post-cutoff gaps as visible, replayable, and unacked", () => {
+  it("models the seven current post-cutoff gaps as visible, replayable, and unacked", () => {
     const matrix = runTerminalReceiptGapMatrix({ generatedAt: "2026-05-04T11:10:00.000Z" });
 
     assert.equal(matrix.kind, "terminal-receipt-gap.no-live.matrix");
     assert.equal(matrix.runMode, "no-live");
     assert.equal(matrix.overallVerdict, "pass");
-    assert.equal(matrix.currentGapCount, 6);
+    assert.equal(matrix.currentGapCount, 7);
 
     const currentGaps = matrix.cells.filter((cell) => CURRENT_POST_CUTOFF_GAP_SCENARIOS.includes(cell.scenarioId as never));
     assert.deepEqual(currentGaps.map((cell) => cell.scenarioId), [...CURRENT_POST_CUTOFF_GAP_SCENARIOS]);
@@ -44,7 +44,7 @@ describe("terminal receipt gap no-live matrix", () => {
     const matrix = runTerminalReceiptGapMatrix({ generatedAt: "2026-05-04T11:10:00.000Z" });
     const sendAcceptedOnly = matrix.cells.filter((cell) => cell.providerSendAcceptanceOnly);
 
-    assert.ok(sendAcceptedOnly.length >= 3);
+    assert.ok(sendAcceptedOnly.length >= 4);
     assert.equal(sendAcceptedOnly.every((cell) => cell.decision === "hold_unacked_replayable"), true);
     assert.equal(sendAcceptedOnly.every((cell) => cell.ackAllowed === false), true);
     assert.equal(sendAcceptedOnly.every((cell) => cell.summary.length > 0), true);
@@ -54,7 +54,7 @@ describe("terminal receipt gap no-live matrix", () => {
     const matrix = runTerminalReceiptGapMatrix({ generatedAt: "2026-05-04T11:10:00.000Z" });
     const markdown = renderTerminalReceiptGapMarkdown(matrix);
 
-    assert.match(markdown, /Current post-cutoff gaps modeled: 6/);
+    assert.match(markdown, /Current post-cutoff gaps modeled: 7/);
     assert.match(markdown, /provider-delivered-if-known/);
     assert.match(markdown, /productionAckAttempted=false/);
     assert.doesNotMatch(markdown, /token|secret|password|file:\/\//i);
