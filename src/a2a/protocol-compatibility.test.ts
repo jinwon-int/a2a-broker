@@ -9,6 +9,8 @@ import {
   A2A_COMPATIBILITY_PROFILE,
   A2A_TASK_PROJECTION_GOLDEN,
 } from "../fixtures/a2a-protocol-compatibility.js";
+import type { AgentCapabilities } from "./agent-card.js";
+import type { WorkerCapabilities } from "../core/types.js";
 
 const BASE_TIME = "2026-05-04T00:00:00.000Z";
 const UPDATED_TIME = "2026-05-04T00:00:05.000Z";
@@ -112,4 +114,36 @@ test("list projection keeps result details summarized and artifacts stable", () 
   assert.equal(projection.metadata.resultSummary, "completed golden result");
   assert.equal("result" in projection.metadata, false);
   assert.deepEqual(projection.artifacts, [{ id: "artifact-1" }]);
+});
+
+// ---------------------------------------------------------------------------
+// AgentCard capabilities vs WorkerCapabilities shape guard (#433)
+// ---------------------------------------------------------------------------
+
+test("AgentCard.capabilities and WorkerCapabilities are disjoint public-seam shapes", () => {
+  // AgentCard.capabilities carries A2A protocol-level flags.
+  const agentCardCapabilityKeys: ReadonlyArray<keyof AgentCapabilities> = ["streaming", "pushNotifications"] as const;
+
+  // WorkerCapabilities carries broker-internal worker runtime abilities.
+  const workerCapabilityKeys: ReadonlyArray<keyof WorkerCapabilities> = [
+    "canAnalyze", "canBackfill", "canPatchWorkspace", "canPromoteLive",
+    "workspaceIds", "environments",
+  ] as const;
+
+  // They MUST NOT share any key names. Accidental overlap would mean a
+  // public A2A client could interpret worker runtime data or vice versa.
+  const agentCardKeys = new Set<string>(agentCardCapabilityKeys);
+  for (const key of workerCapabilityKeys) {
+    assert.ok(
+      !agentCardKeys.has(key),
+      `WorkerCapabilities key "${key}" must not appear in AgentCard.capabilities`,
+    );
+  }
+
+  // AgentCard.capabilities values are booleans; WorkerCapabilities has arrays too.
+  // This structural difference guards against accidental shape convergence.
+  assert.ok(
+    workerCapabilityKeys.some((k) => k === "workspaceIds" || k === "environments"),
+    "WorkerCapabilities must contain array-typed fields distinct from AgentCard.capabilities",
+  );
 });

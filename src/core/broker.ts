@@ -1313,7 +1313,7 @@ export class InMemoryA2ABroker {
     if (request.actor.role !== "hub" && request.actor.role !== "operator") {
       throw new BrokerError("policy_denied", "task reassignment requires a hub or operator actor");
     }
-    if (task.status === "succeeded" || task.status === "canceled") {
+    if (isTerminalTaskStatus(task.status)) {
       throw new BrokerError("invalid_transition", `cannot reassign task while status is ${task.status}`);
     }
 

@@ -16,6 +16,16 @@ export interface AgentSkill {
   examples?: string[];
 }
 
+/**
+ * A2A 1.0 AgentCard (public discovery shape).
+ *
+ * **Naming guard:** `AgentCard.capabilities` carries A2A protocol-level flags
+ * (`streaming`, `pushNotifications`). This is deliberately distinct from
+ * {@link WorkerCapabilities} (`canAnalyze`, `canBackfill`, …) which describe
+ * broker-internal worker runtime abilities. The two capability types MUST NOT
+ * be merged into a single shape; they serve different consumers (public A2A
+ * clients vs. internal broker scheduler).
+ */
 export interface AgentCard {
   name: string;
   description: string;
@@ -23,6 +33,8 @@ export interface AgentCard {
   version: string;
   protocolVersion: string;
   provider?: AgentProvider;
+  /** A2A protocol-level capabilities. Not to be confused with worker runtime
+   * {@link WorkerCapabilities}. */
   capabilities: AgentCapabilities;
   defaultInputModes: string[];
   defaultOutputModes: string[];
