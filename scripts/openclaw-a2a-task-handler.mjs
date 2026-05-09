@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
-const HANDLER_VERSION = "0.2.8";
+const HANDLER_VERSION = "0.2.9";
 const SOURCE_PATH = fileURLToPath(import.meta.url);
 const sourceSha256 = createHash("sha256").update(readFileSync(SOURCE_PATH)).digest("hex");
 
@@ -611,6 +611,48 @@ function runDockerRunner(task, env = process.env) {
     if (filesChanged.length) output.filesChanged = filesChanged;
     const risks = normalizeStringArray(parsed.risks);
     if (risks.length) output.risks = risks;
+
+    // --- fail-closed branch/no-diff guard (issue #447) ---
+    // The docker runner owns branch creation and can report the runner branch it expected.
+    // Do not compare against baseBranch: baseBranch is normally `main`, while successful
+    // patch evidence branches are feature branches. Only fail when the runner explicitly
+    // reports an expected/runner branch and the completed branch differs.
+    const expectedRunnerBranch = safeText(parsed.expectedBranch ?? parsed.runnerBranch ?? parsed.prBranch, "");
+    if (expectedRunnerBranch && branch && branch !== expectedRunnerBranch) {
+      return {
+        error: {
+          code: "docker_runner_branch_mismatch",
+          message:
+            `docker runner completed on branch "${branch}" but expected runner branch "${expectedRunnerBranch}"; ` +
+            "refusing to merge evidence from an unexpected branch",
+          details: {
+            runnerTask,
+            expectedRunnerBranch,
+            actualBranch: branch,
+            runnerResult: parsed,
+          },
+        },
+      };
+    }
+
+    // Preserve the older missing-evidence contract for generic fake-runner outputs.
+    // Treat no-diff as a hard failure only when the runner explicitly detected it.
+    const runnerReportedNoDiff = parsed.noDiff === true || safeText(parsed.diffStatus, "") === "empty";
+    if (isGithubEvidenceTask(task) && runnerReportedNoDiff) {
+      return {
+        error: {
+          code: "docker_runner_no_diff",
+          message:
+            "docker runner completed but reported no file changes; " +
+            "github-propose-patch tasks must produce a non-empty diff before PR creation",
+          details: {
+            runnerTask,
+            runnerResult: parsed,
+            branch,
+          },
+        },
+      };
+    }
 
     // map all evidence URLs from runner result through both github sub-object and top-level output
     const githubEvidence = buildOutputGithub(parsed);
