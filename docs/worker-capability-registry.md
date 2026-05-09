@@ -36,6 +36,16 @@ Public cards must be sanitized:
 
 Team/private cards may expose more operational hints, but still must not include secrets or raw credential paths. Capacity and liveness are hints only; they are not lease authority.
 
+### Public AgentCard-style seam review (#460)
+
+For public-safe worker discovery, the registry maps the current worker read model into two deliberately small surfaces:
+
+- Public-safe registry fields: `schemaVersion`, `worker.id`, `worker.name`, `worker.role`, `worker.mode`, `team.teamId`, `team.lane`, `team.brokerOfRecord`, `assignment.roles`, `assignment.supportedTaskTypes`, `assignment.environments`, `capabilities.canAnalyze`, `capabilities.canBackfill`, `capabilities.canPatchWorkspace`, `capabilities.canPromoteLive`, `capabilities.environments`, `skills`, `safety.canTouchLive`, `safety.requiresApprovalForLive`, `safety.boundaries`, `visibility`, optional capacity hints, and optional liveness summary when explicitly enabled.
+- AgentCard-compatible discovery fields: `agentCard.protocolVersion`, `agentCard.capabilities.streaming`, `agentCard.capabilities.pushNotifications`, `agentCard.defaultInputModes`, `agentCard.defaultOutputModes`, and `agentCard.skills`.
+- Forbidden public fields: worker `brokerUrl`, raw `metadata`, terminal/provider identifiers, private hostnames, tokens, credentials, private keys, raw provider payloads, raw session or prompt text, and `workspaceIds` unless a non-public reviewed card explicitly enables `visibility.exposeWorkspaceIds`.
+
+Assignment safety remains broker-owned and fail-closed: cards may help select candidate workers for #432 readiness lanes such as Team2/gwakga `dungae`, but they do not grant a lease, approve live work, ACK terminal receipts, or bypass operator approval. Public cards must keep `visibility.safeForDiscovery=true`, `visibility.exposeBrokerUrl=false`, `visibility.exposeWorkspaceIds=false`, and `safety.requiresApprovalForLive=true`.
+
 ## Representative cards
 
 ### Team1 implementation worker
