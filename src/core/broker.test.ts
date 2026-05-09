@@ -1617,6 +1617,110 @@ test("reassignTask resets requeueCount so the new target gets a fresh attempt bu
   assert.equal(result.requeued[0].requeueCount, 1);
 });
 
+// ---------------------------------------------------------------------------
+// Terminal immutability: failed/succeeded/canceled tasks reject further mutations
+// ---------------------------------------------------------------------------
+
+test("cannot reassign a failed task", () => {
+  const broker = new InMemoryA2ABroker();
+  registerWorker(broker, "worker-a");
+  registerWorker(broker, "worker-b");
+
+  const task = createWorkerTask(broker, "task-reassign-failed", "worker-a");
+  broker.claimTask(task.id, "worker-a");
+  broker.startTask(task.id, "worker-a");
+  broker.failTask(task.id, "worker-a", { code: "error", message: "boom" });
+
+  assert.throws(
+    () => broker.reassignTask(task.id, {
+      actor: { id: "ops", kind: "node", role: "operator" },
+      targetNodeId: "worker-b",
+      assignedWorkerId: "worker-b",
+    }),
+    { name: "BrokerError", message: /cannot reassign task while status is failed/ },
+  );
+});
+
+test("cannot reassign a succeeded task", () => {
+  const broker = new InMemoryA2ABroker();
+  registerWorker(broker, "worker-a");
+
+  const task = createWorkerTask(broker, "task-reassign-succeeded", "worker-a");
+  broker.claimTask(task.id, "worker-a");
+  broker.startTask(task.id, "worker-a");
+  broker.completeTask(task.id, "worker-a", { summary: "done" });
+
+  assert.throws(
+    () => broker.reassignTask(task.id, {
+      actor: { id: "ops", kind: "node", role: "operator" },
+      targetNodeId: "worker-a",
+    }),
+    { name: "BrokerError", message: /cannot reassign task while status is succeeded/ },
+  );
+});
+
+test("cannot reassign a canceled task", () => {
+  const broker = new InMemoryA2ABroker();
+  registerWorker(broker, "worker-a");
+
+  const task = createWorkerTask(broker, "task-reassign-canceled", "worker-a");
+  broker.cancelTask(task.id, { actor: { id: "hub-a", kind: "node", role: "hub" } });
+
+  assert.throws(
+    () => broker.reassignTask(task.id, {
+      actor: { id: "ops", kind: "node", role: "operator" },
+      targetNodeId: "worker-a",
+    }),
+    { name: "BrokerError", message: /cannot reassign task while status is canceled/ },
+  );
+});
+
+test("terminal task idempotency: completeTask returns existing terminal task without mutation", () => {
+  const broker = new InMemoryA2ABroker();
+  registerWorker(broker, "worker-a");
+
+  const task = createWorkerTask(broker, "task-idempotent-complete", "worker-a");
+  broker.claimTask(task.id, "worker-a");
+  broker.startTask(task.id, "worker-a");
+  const completed = broker.completeTask(task.id, "worker-a", { summary: "first" });
+  assert.equal(completed.result?.summary, "first");
+
+  // Second completion attempt: returns existing task with original result
+  const second = broker.completeTask(task.id, "worker-a", { summary: "second" });
+  assert.equal(second.result?.summary, "first");
+  assert.equal(second.status, "succeeded");
+});
+
+test("terminal task idempotency: failTask returns existing terminal task without mutation", () => {
+  const broker = new InMemoryA2ABroker();
+  registerWorker(broker, "worker-a");
+
+  const task = createWorkerTask(broker, "task-idempotent-fail", "worker-a");
+  broker.claimTask(task.id, "worker-a");
+  broker.startTask(task.id, "worker-a");
+  const failed = broker.failTask(task.id, "worker-a", { code: "ERR", message: "first fail" });
+  assert.equal(failed.error?.message, "first fail");
+
+  // Second fail attempt: returns existing task with original error
+  const second = broker.failTask(task.id, "worker-a", { code: "ERR2", message: "second fail" });
+  assert.equal(second.error?.message, "first fail");
+  assert.equal(second.status, "failed");
+});
+
+test("terminal task idempotency: cancelTask returns existing canceled task without mutation", () => {
+  const broker = new InMemoryA2ABroker();
+  registerWorker(broker, "worker-a");
+
+  const task = createWorkerTask(broker, "task-idempotent-cancel", "worker-a");
+  const canceled = broker.cancelTask(task.id, { actor: { id: "hub-a", kind: "node", role: "hub" }, reason: "first cancel" });
+  assert.equal(canceled.cancellation?.reason, "first cancel");
+
+  // Second cancel: returns existing task with original cancellation
+  const second = broker.cancelTask(task.id, { actor: { id: "hub-a", kind: "node", role: "hub" }, reason: "second cancel" });
+  assert.equal(second.cancellation?.reason, "first cancel");
+  assert.equal(second.status, "canceled");
+});
+
 test("completing an accepted exchange task marks the exchange completed", () => {
   const broker = new InMemoryA2ABroker();
   registerWorker(broker, "worker-a");
