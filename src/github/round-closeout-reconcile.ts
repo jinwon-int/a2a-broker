@@ -278,19 +278,21 @@ function classifyWorker(
     };
   }
 
-  if (!evidenceUrl) {
-    return {
-      ...baseWorker(workerId, observation, ageMs, evidenceUrl),
-      required: true,
-      state: "missing-evidence",
-      reason: `${observation.status} task is terminal but has no PR, Done, Block, or branch evidence URL.`,
-      action: "Recover or post evidence before marking the round closed.",
-    };
-  }
+  const completionEvidenceUrl = pickCompletionEvidenceUrl(observation.evidence);
+  const branchEvidenceUrl = observation.evidence?.branchUrl;
 
   if (observation.status === "succeeded") {
+    if (!completionEvidenceUrl) {
+      return {
+        ...baseWorker(workerId, observation, ageMs, evidenceUrl),
+        required: true,
+        state: "missing-evidence",
+        reason: "Succeeded task is terminal but has no PR, Done, or Block evidence URL; branch-only evidence is not completion evidence.",
+        action: "Recover or post PR/Done/Block evidence before marking the round closed.",
+      };
+    }
     return {
-      ...baseWorker(workerId, observation, ageMs, evidenceUrl),
+      ...baseWorker(workerId, observation, ageMs, completionEvidenceUrl),
       required: true,
       state: "completed",
       reason: "Succeeded with closeout evidence.",
@@ -298,12 +300,26 @@ function classifyWorker(
     };
   }
 
+  if (!completionEvidenceUrl && !branchEvidenceUrl) {
+    return {
+      ...baseWorker(workerId, observation, ageMs, evidenceUrl),
+      required: true,
+      state: "missing-evidence",
+      reason: `${observation.status} task is terminal but has no PR, Done, Block, or recovered branch evidence URL.`,
+      action: "Recover or post evidence before marking the round closed.",
+    };
+  }
+
   return {
     ...baseWorker(workerId, observation, ageMs, evidenceUrl),
     required: true,
     state: "blocked",
-    reason: `${observation.status} with operator evidence.`,
-    action: "Inspect Block/PR evidence and decide whether to retry, split, or defer.",
+    reason: branchEvidenceUrl && !completionEvidenceUrl
+      ? `${observation.status} with recovered branch evidence.`
+      : `${observation.status} with operator evidence.`,
+    action: branchEvidenceUrl && !completionEvidenceUrl
+      ? "Inspect recovered branch evidence before retrying, replacing the worker, or closing the round."
+      : "Inspect Block/PR evidence and decide whether to retry, split, or defer.",
   };
 }
 
@@ -359,7 +375,11 @@ function summarizeWorkerStatus(worker: RoundWorkerReconciliation): RoundWorkerSu
 }
 
 function pickEvidenceUrl(evidence?: RoundEvidence): string | undefined {
-  return evidence?.prUrl ?? evidence?.doneCommentUrl ?? evidence?.blockCommentUrl ?? evidence?.branchUrl;
+  return pickCompletionEvidenceUrl(evidence) ?? evidence?.branchUrl;
+}
+
+function pickCompletionEvidenceUrl(evidence?: RoundEvidence): string | undefined {
+  return evidence?.prUrl ?? evidence?.doneCommentUrl ?? evidence?.blockCommentUrl;
 }
 
 function classifyRoundState(counts: RoundCloseoutReconciliation["counts"]): RoundCloseoutState {
