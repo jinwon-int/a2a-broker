@@ -1511,3 +1511,232 @@ console.log(JSON.stringify({ ok: true, taskId: task.id, status: "completed", wor
     rmSync(tempDir, { recursive: true, force: true });
   }
 });
+
+// ─── analysis-only / read-only task mode regression tests ───
+
+test("analysis-only mode produces Done evidence without requiring PR/patch", () => {
+  const task = githubTask();
+  task.intent = "analyze";
+  task.payload = {
+    mode: "analysis-only",
+    summary: "market regime analysis complete",
+    findings: ["BTC dominance rising", "ETH/BTC ratio declining"],
+    risks: ["low liquidity in alt pairs"],
+    artifacts: ["analysis-20260509.json"],
+  };
+
+  const result = spawnSync(process.execPath, [handlerPath], {
+    input: JSON.stringify(task),
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      A2A_EXECUTOR_MODE: "builtin",
+    },
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  const payload = JSON.parse(result.stdout);
+  assert.ok(payload.result, "analysis-only task should succeed");
+  assert.match(payload.result.summary, /analysis-only completed/);
+  assert.equal(payload.result.lifecycle.intent, "analyze");
+  assert.equal(payload.result.lifecycle.mode, "analysis-only");
+  assert.equal(payload.result.output.analysisSummary, "market regime analysis complete");
+  assert.deepEqual(payload.result.output.findings, ["BTC dominance rising", "ETH/BTC ratio declining"]);
+  assert.deepEqual(payload.result.output.risks, ["low liquidity in alt pairs"]);
+  assert.deepEqual(payload.result.output.artifacts, ["analysis-20260509.json"]);
+  // No PR evidence required — output must not carry prUrl or github.prUrl
+  assert.equal(payload.result.output.prUrl, undefined);
+  assert.equal(payload.result.output.github, undefined);
+});
+
+test("analysis-only mode with doneCommentUrl carries URL evidence", () => {
+  const task = githubTask();
+  task.intent = "analyze";
+  task.payload = {
+    mode: "analysis-only",
+    summary: "research findings",
+    doneCommentUrl: "https://github.com/owner/repo/issues/1#issuecomment-done",
+    findings: ["signal: bullish divergence"],
+  };
+
+  const result = spawnSync(process.execPath, [handlerPath], {
+    input: JSON.stringify(task),
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      A2A_EXECUTOR_MODE: "builtin",
+    },
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  const payload = JSON.parse(result.stdout);
+  assert.match(payload.result.summary, /analysis-only completed/);
+  assert.equal(payload.result.output.doneCommentUrl, "https://github.com/owner/repo/issues/1#issuecomment-done");
+  assert.equal(payload.result.output.analysisSummary, "research findings");
+  assert.equal(payload.result.output.prUrl, undefined, "no PR URL for analysis-only");
+});
+
+test("analysis-only mode with blockCommentUrl produces Block evidence", () => {
+  const task = githubTask();
+  task.intent = "analyze";
+  task.payload = {
+    mode: "analysis-only",
+    summary: "cannot complete analysis",
+    blockCommentUrl: "https://github.com/owner/repo/issues/1#issuecomment-block",
+    risks: ["data feed unavailable"],
+  };
+
+  const result = spawnSync(process.execPath, [handlerPath], {
+    input: JSON.stringify(task),
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      A2A_EXECUTOR_MODE: "builtin",
+    },
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  const payload = JSON.parse(result.stdout);
+  assert.match(payload.result.summary, /analysis-only blocked/);
+  assert.equal(payload.result.output.blockCommentUrl, "https://github.com/owner/repo/issues/1#issuecomment-block");
+  assert.deepEqual(payload.result.output.risks, ["data feed unavailable"]);
+  assert.equal(payload.result.output.prUrl, undefined, "no PR URL for blocked analysis");
+  assert.equal(payload.result.output.doneCommentUrl, undefined, "no done URL for blocked analysis");
+});
+
+test("analysis-only mode with startCommentUrl preserves Start marker", () => {
+  const task = githubTask();
+  task.intent = "analyze";
+  task.payload = {
+    mode: "analysis-only",
+    summary: "thesis analysis",
+    startCommentUrl: "https://github.com/owner/repo/issues/1#issuecomment-start",
+    doneCommentUrl: "https://github.com/owner/repo/issues/1#issuecomment-done",
+    findings: ["regime: trending"],
+  };
+
+  const result = spawnSync(process.execPath, [handlerPath], {
+    input: JSON.stringify(task),
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      A2A_EXECUTOR_MODE: "builtin",
+    },
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.result.output.startCommentUrl, "https://github.com/owner/repo/issues/1#issuecomment-start");
+  assert.equal(payload.result.output.doneCommentUrl, "https://github.com/owner/repo/issues/1#issuecomment-done");
+  assert.match(payload.result.summary, /analysis-only completed/);
+});
+
+test("analysis-only mode with read-only-analysis alias works identically", () => {
+  const task = githubTask();
+  task.intent = "analyze";
+  task.payload = {
+    mode: "read-only-analysis",
+    summary: "read-only market scan",
+    findings: ["no anomalies"],
+    risks: [],
+  };
+
+  const result = spawnSync(process.execPath, [handlerPath], {
+    input: JSON.stringify(task),
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      A2A_EXECUTOR_MODE: "builtin",
+    },
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  const payload = JSON.parse(result.stdout);
+  assert.match(payload.result.summary, /analysis-only completed/);
+  assert.equal(payload.result.lifecycle.mode, "read-only-analysis");
+  assert.equal(payload.result.output.analysisSummary, "read-only market scan");
+});
+
+test("GitHub propose_patch evidence requirements are preserved when intent is not analyze", () => {
+  // propose_patch with github taskOrigin still fails without executor config
+  const task = githubTask();
+  task.intent = "propose_patch";
+  task.payload = { mode: "github-propose-patch", repo: "owner/repo", issue: "#1" };
+
+  const result = spawnSync(process.execPath, [handlerPath], {
+    input: JSON.stringify(task),
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      A2A_EXECUTOR_MODE: "builtin",
+    },
+  });
+
+  assert.equal(result.status, 1);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.error.code, "github_executor_not_configured");
+});
+
+test("analyze intent with unknown mode falls through to generic handler, not analysis-only", () => {
+  // intent=analyze but mode is not a recognized analysis-only mode → generic handler
+  const task = githubTask();
+  task.intent = "analyze";
+  task.payload = { mode: "unknown-mode", detail: "something" };
+
+  const result = spawnSync(process.execPath, [handlerPath], {
+    input: JSON.stringify(task),
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      A2A_EXECUTOR_MODE: "builtin",
+    },
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  const payload = JSON.parse(result.stdout);
+  // Falls through to generic handler — not analysis-only
+  assert.match(payload.result.summary, /accepted by versioned OpenClaw A2A handler/);
+  assert.doesNotMatch(payload.result.summary, /analysis-only/);
+});
+
+test("analysis-only mode passes validateTaskCompletionEvidence without PR evidence", () => {
+  const task = githubTask();
+  task.intent = "analyze";
+  task.payload = { mode: "analysis-only", summary: "safe analysis" };
+
+  const evidenceError = validateTaskCompletionEvidence(
+    makeTaskRecord(task),
+    {
+      summary: "analysis-only completed: safe analysis",
+      output: {
+        analysisSummary: "safe analysis",
+        findings: [],
+        risks: [],
+      },
+    } as any,
+  );
+  // Analysis-only tasks must NOT require PR evidence
+  assert.equal(evidenceError, null, `analysis-only should not require PR evidence: ${JSON.stringify(evidenceError)}`);
+});
+
+test("analysis-only mode with Done evidence passes validateTaskCompletionEvidence", () => {
+  const taskFixture = githubTask();
+  taskFixture.intent = "analyze";
+  taskFixture.payload = { mode: "analysis-only", summary: "regime analysis", doneCommentUrl: "https://github.com/o/r/issues/1#issuecomment-1" };
+  const task = makeTaskRecord(taskFixture);
+  // Override taskOrigin to github to verify github-origin analysis-only tasks pass
+  (task as any).taskOrigin = "github";
+
+  const evidenceError = validateTaskCompletionEvidence(
+    task,
+    {
+      summary: "analysis-only completed: regime analysis",
+      output: {
+        analysisSummary: "regime analysis",
+        doneCommentUrl: "https://github.com/o/r/issues/1#issuecomment-1",
+        findings: ["bullish"],
+      },
+    } as any,
+  );
+  assert.equal(evidenceError, null, `analysis-only done should pass: ${JSON.stringify(evidenceError)}`);
+});

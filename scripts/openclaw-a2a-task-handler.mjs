@@ -186,6 +186,26 @@ function isGithubEvidenceTask(task) {
   return false;
 }
 
+const READ_ONLY_ANALYSIS_MODES = new Set(["analysis-only", "read-only-analysis", "analyze-only"]);
+
+/**
+ * Detects analysis-only / read-only A2A task modes.
+ *
+ * These tasks produce Start+Done/Block evidence (findings, summary, risks)
+ * without requiring a patch/PR. They are strictly read-only: no code changes,
+ * no workspace modification, no file writes.
+ *
+ * GitHub propose_patch PR evidence requirements are preserved — analysis-only
+ * tasks do not bypass the propose_patch evidence gate.
+ */
+function isReadOnlyAnalysisTask(task) {
+  const intent = safeText(task.intent, "").toLowerCase();
+  const mode = taskMode(task).toLowerCase();
+  // Explicit mode match: payload.mode must name a recognized analysis-only mode.
+  if (intent === "analyze" && READ_ONLY_ANALYSIS_MODES.has(mode)) return true;
+  return false;
+}
+
 
 function shouldUseOpenClawBridge(task, env = process.env) {
   if (!isGithubEvidenceTask(task)) return false;
@@ -740,6 +760,70 @@ function handleBuiltinTask(task, env = process.env) {
             worker: safeText(payload.worker, safeText(task.assignedWorkerId, undefined)),
             completedAt: new Date().toISOString(),
           },
+          payloadKeys: Object.keys(payload).sort(),
+        },
+      },
+    };
+  }
+
+  if (isReadOnlyAnalysisTask(task)) {
+    // Read-only analysis task: produces Done/Block evidence without requiring a patch/PR.
+    // These tasks are strictly read-only — no code changes, no workspace modifications.
+    // GitHub propose_patch PR evidence requirements are preserved (see isGithubEvidenceTask above).
+    const analysisSummary = safeText(payload.summary, safeText(payload.analysisSummary, payload.finding))
+      || safeText(task.message, `analysis-only task completed`);
+    const doneCommentUrl = safeText(payload.doneCommentUrl, "");
+    const blockCommentUrl = safeText(payload.blockCommentUrl, "");
+    const startCommentUrl = safeText(payload.startCommentUrl, "");
+    const findings = Array.isArray(payload.findings) ? [...payload.findings] : [];
+    const risks = Array.isArray(payload.risks) ? [...payload.risks] : [];
+    const artifacts = Array.isArray(payload.artifacts) ? [...payload.artifacts] : [];
+
+    if (blockCommentUrl) {
+      return {
+        result: {
+          summary: `analysis-only blocked: ${analysisSummary}`,
+          note: `analysis-only task blocked with Block evidence`,
+          handler: BUILD_INFO,
+          lifecycle: {
+            intent: "analyze",
+            mode,
+            taskId: safeText(task.id, "unknown"),
+            proposalId: safeText(task.proposalId, undefined),
+            exchangeId: safeText(task.exchangeId, undefined),
+          },
+          output: {
+            analysisSummary,
+            blockCommentUrl,
+            startCommentUrl: startCommentUrl || undefined,
+            findings,
+            risks,
+            artifacts,
+            payloadKeys: Object.keys(payload).sort(),
+          },
+        },
+      };
+    }
+
+    return {
+      result: {
+        summary: `analysis-only completed: ${analysisSummary}`,
+        note: `analysis-only task completed with Done evidence (no PR required)`,
+        handler: BUILD_INFO,
+        lifecycle: {
+          intent: "analyze",
+          mode,
+          taskId: safeText(task.id, "unknown"),
+          proposalId: safeText(task.proposalId, undefined),
+          exchangeId: safeText(task.exchangeId, undefined),
+        },
+        output: {
+          analysisSummary,
+          doneCommentUrl: doneCommentUrl || undefined,
+          startCommentUrl: startCommentUrl || undefined,
+          findings,
+          risks,
+          artifacts,
           payloadKeys: Object.keys(payload).sort(),
         },
       },
