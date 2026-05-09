@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
-const HANDLER_VERSION = "0.2.8";
+const HANDLER_VERSION = "0.2.9";
 const SOURCE_PATH = fileURLToPath(import.meta.url);
 const sourceSha256 = createHash("sha256").update(readFileSync(SOURCE_PATH)).digest("hex");
 
@@ -611,6 +611,42 @@ function runDockerRunner(task, env = process.env) {
     if (filesChanged.length) output.filesChanged = filesChanged;
     const risks = normalizeStringArray(parsed.risks);
     if (risks.length) output.risks = risks;
+
+    // --- fail-closed branch mismatch guard (issue #447) ---
+    const expectedBaseBranch = safeText(runnerTask.baseBranch, "");
+    if (expectedBaseBranch && branch && branch !== expectedBaseBranch) {
+      return {
+        error: {
+          code: "docker_runner_branch_mismatch",
+          message:
+            `docker runner completed on branch "${branch}" but task expected baseBranch "${expectedBaseBranch}"; ` +
+            "refusing to merge evidence from an unexpected branch",
+          details: {
+            runnerTask,
+            expectedBaseBranch,
+            actualBranch: branch,
+            runnerResult: parsed,
+          },
+        },
+      };
+    }
+
+    // --- fail-closed no-diff guard (issue #447) ---
+    if (isGithubEvidenceTask(task) && filesChanged.length === 0) {
+      return {
+        error: {
+          code: "docker_runner_no_diff",
+          message:
+            "docker runner completed but produced no file changes; " +
+            "github-propose-patch tasks must modify at least one tracked file",
+          details: {
+            runnerTask,
+            runnerResult: parsed,
+            branch,
+          },
+        },
+      };
+    }
 
     // map all evidence URLs from runner result through both github sub-object and top-level output
     const githubEvidence = buildOutputGithub(parsed);
