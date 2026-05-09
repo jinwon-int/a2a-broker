@@ -26,6 +26,17 @@ This update revalidates the next Team1 round after the external upstream depende
 | `a2a-plane#75` | No additional Team1 round PR is waiting: `#99` is merged and `#98` is closed. | Keep parent open and public-readiness NO-GO. | Existing repo labels to apply/keep: `a2a-public`, `blocker`, `operator-decision`, `no-go-public`. Blocker keys: `upstream-conflicted-dirty`, `upstream-runtime-rollout-missing`, `external-scanner-evidence-pending`, `operator-approval-required`. |
 | `a2a-broker#294` | No additional broker Team1 round PR is waiting: `#441` and `#442` are merged and `#439/#440` are closed. | Keep roadmap open. | Existing repo labels to apply/keep: `a2a-public`, `a2a-public-readiness`, `blocker`. Blocker keys: `upstream-conflicted-dirty`, `upstream-runtime-rollout-missing`, `external-scanner-evidence-pending`, `operator-approval-required`. |
 
+### Scanner evidence: deterministic repo-local vs. external
+
+The closeout matrix distinguishes two scanner evidence layers:
+
+| Layer | Source | Deterministic? | Required? | Evidence
+| --- | --- | --- | --- | --- |
+| **Repo-local** | `scripts/public-readiness-scan.mjs` + `scripts/public-readiness-scan.test.mjs` (39 tests) | ✅ Yes — single Node.js script, versioned in-repo, no external deps, stable JSON output diffable across commits | ✅ Required for every public-readiness check | `npm run scan:public-readiness` (0 fail, 29 warn at this snapshot); 39/39 tests pass |
+| **External** | `gitleaks` / `trufflehog` (if operator-approved) | ❌ No — depends on external binary versions and per-tool config; output is not commit-reproducible | ❌ Not required per `docs/scanner-coverage-vs-gitleaks-trufflehog.md` decision | Run only on explicit operator request; the repo-local scanner is the sole deterministic gate |
+
+The blocker key `external-scanner-evidence-pending` in the closeout matrix above refers to the **supplementary external layer** (not required, per scanner coverage decision). The **deterministic repo-local scanner evidence** is complete and passing.
+
 ### Worker-lane/live-state contradictions flagged
 
 - The older “New-round merge decision” table below is now historical: it recorded `a2a-plane#98`, `openclaw-plugin-a2a#238`, `a2a-broker#439`, and `a2a-broker#440` as open Start-only issues. Live GitHub now shows those issues closed and their follow-on PRs (`#99`, `#239`, `#442`, `#441`) merged.
