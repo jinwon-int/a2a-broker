@@ -602,3 +602,111 @@ test("worker returns 404 for non-existent proposal", async () => {
     await server.close();
   }
 });
+
+// ─── analysis-only / read-only task mode regression tests ───
+
+test("worker completes analysis-only tasks without PR evidence", async () => {
+  const server = await startTestServer();
+  const worker = createWorker(server.baseUrl);
+
+  try {
+    await worker.register();
+    const task = await createTask(server.baseUrl, {
+      intent: "analyze",
+      requester: { id: "hub-a", kind: "node", role: "hub" },
+      target: { id: "worker-a", kind: "node", role: "analyst" },
+      assignedWorkerId: "worker-a",
+      message: "run market regime analysis",
+      payload: {
+        mode: "analysis-only",
+        summary: "BTC dominance scan",
+        findings: ["dominance at 58%"],
+        risks: ["volume declining"],
+      },
+      taskOrigin: "api",
+    });
+
+    const processed = await worker.runOnce();
+    assert.equal(processed, 1);
+
+    const taskResponse = await fetch(`${server.baseUrl}/tasks/${task.id}`);
+    assert.equal(taskResponse.status, 200);
+    const completedTask = await taskResponse.json();
+
+    assert.equal(completedTask.status, "succeeded", "analysis-only task should succeed");
+    assert.equal(completedTask.claimedBy, "worker-a");
+    assert.match(completedTask.result.summary, /echo analyze/);
+  } finally {
+    await worker.stop();
+    await server.close();
+  }
+});
+
+test("worker completes analysis-only tasks with github origin without PR evidence", async () => {
+  const server = await startTestServer();
+  const worker = createWorker(server.baseUrl);
+
+  try {
+    await worker.register();
+    const task = await createTask(server.baseUrl, {
+      intent: "analyze",
+      requester: { id: "hub-a", kind: "node", role: "hub" },
+      target: { id: "worker-a", kind: "node", role: "analyst" },
+      assignedWorkerId: "worker-a",
+      message: "read-only thesis analysis",
+      payload: {
+        mode: "analysis-only",
+        summary: "thesis for BTC/USDT",
+        doneCommentUrl: "https://github.com/owner/repo/issues/1#issuecomment-done",
+        findings: ["bullish divergence on 4h"],
+      },
+      taskOrigin: "github",
+    });
+
+    const processed = await worker.runOnce();
+    assert.equal(processed, 1);
+
+    const taskResponse = await fetch(`${server.baseUrl}/tasks/${task.id}`);
+    assert.equal(taskResponse.status, 200);
+    const completedTask = await taskResponse.json();
+
+    // Analysis-only tasks with github origin must succeed without PR evidence
+    assert.equal(completedTask.status, "succeeded",
+      `analysis-only github-origin task should succeed, got: ${JSON.stringify(completedTask.error)}`);
+  } finally {
+    await worker.stop();
+    await server.close();
+  }
+});
+
+test("worker fails github propose_patch tasks without PR evidence (existing contract preserved)", async () => {
+  const server = await startTestServer();
+  const worker = createWorker(server.baseUrl);
+
+  try {
+    await worker.register();
+    const task = await createTask(server.baseUrl, {
+      intent: "propose_patch",
+      requester: { id: "hub-a", kind: "node", role: "hub" },
+      target: { id: "worker-a", kind: "node", role: "analyst" },
+      assignedWorkerId: "worker-a",
+      message: "open a PR",
+      payload: { mode: "github-propose-patch", repo: "owner/repo", issue: "#1" },
+      taskOrigin: "github",
+    });
+
+    const processed = await worker.runOnce();
+    assert.equal(processed, 1);
+
+    const taskResponse = await fetch(`${server.baseUrl}/tasks/${task.id}`);
+    assert.equal(taskResponse.status, 200);
+    const failedTask = await taskResponse.json();
+
+    // Existing contract: github propose_patch tasks MUST have PR evidence
+    assert.equal(failedTask.status, "failed");
+    assert.equal(failedTask.error.code, "github_completion_evidence_missing");
+  } finally {
+    await worker.stop();
+    await server.close();
+  }
+});

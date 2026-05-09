@@ -1,6 +1,7 @@
 import type { TaskError, TaskRecord, TaskResult } from "./types.js";
 
 const GITHUB_TASK_MODES = new Set(["github-propose-patch", "github-issue-instruction"]);
+const READ_ONLY_ANALYSIS_MODES = new Set(["analysis-only", "read-only-analysis", "analyze-only"]);
 const RECEIPT_STATUSES = new Set([
   "accepted",
   "started",
@@ -56,12 +57,23 @@ export function validateGithubTaskCompletionEvidence(task: TaskRecord, result?: 
 }
 
 export function requiresGithubCompletionEvidence(task: TaskRecord): boolean {
+  // Analysis-only / read-only tasks with intent "analyze" are exempt from PR evidence
+  // requirements. They carry Done/Block evidence (findings, summary, risks) without
+  // producing a patch or pull request.
+  if (task.intent === "analyze" && isReadOnlyAnalysisMode(task.payload?.mode)) {
+    return false;
+  }
+
   const mode = typeof task.payload?.mode === "string" ? task.payload.mode : undefined;
   return task.intent === "propose_patch" && (task.taskOrigin === "github" || isGithubTaskMode(mode));
 }
 
 function isGithubTaskMode(mode: string | undefined): boolean {
   return mode !== undefined && GITHUB_TASK_MODES.has(mode);
+}
+
+function isReadOnlyAnalysisMode(mode: unknown): boolean {
+  return typeof mode === "string" && READ_ONLY_ANALYSIS_MODES.has(mode);
 }
 
 function hasGithubCompletionEvidence(result?: TaskResult): boolean {
