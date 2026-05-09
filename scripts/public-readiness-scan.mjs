@@ -82,7 +82,10 @@ function inspectLine(file, lineNumber, line) {
     const value = assignment[2].replace(/^['"]|['"]$/g, "");
     const isShellExpansion = value.includes("${") || value.startsWith("$");
     const isFilePointer = /_(?:FILE|PATH)$/i.test(key);
-    if (value && !isShellExpansion && !isFilePointer && !placeholderPattern.test(value) && value !== "") {
+    const isBooleanLiteral = /^(?:true|false|yes|no)$/i.test(value);
+    // CamelCase keys like `exposesSecrets` are property names, not secret env vars.
+    const isCamelCaseKey = /[a-z]/.test(key) && /[A-Z]/.test(key);
+    if (value && !isShellExpansion && !isFilePointer && !isBooleanLiteral && !isCamelCaseKey && !placeholderPattern.test(value) && value !== "") {
       addFinding(file, lineNumber, "fail", "secret-value", "Secret-like setting has a concrete value.", line);
     }
   }
