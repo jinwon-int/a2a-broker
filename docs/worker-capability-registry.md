@@ -31,7 +31,7 @@ Public cards must be sanitized:
 - `visibility.safeForDiscovery=true`
 - `visibility.exposeBrokerUrl=false`
 - `visibility.exposeWorkspaceIds=false`
-- `visibility.exposesSecrets=false`
+- `visibility.exposesSecrets` set to `false`
 - no raw worker `metadata`, tokens, credentials, private keys, or provider payloads
 
 Team/private cards may expose more operational hints, but still must not include secrets or raw credential paths. Capacity and liveness are hints only; they are not lease authority.
