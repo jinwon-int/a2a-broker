@@ -78,6 +78,89 @@ test("worker capability card projects Team1 libero metadata without leaking priv
   assert.deepEqual(validateWorkerCapabilityCard(card), { ok: true, errors: [] });
 });
 
+test("worker capability card maps Team2 dungae discovery to public AgentCard-style fields", () => {
+  const dungaeWorker: WorkerView = {
+    nodeId: "dungae",
+    role: "researcher",
+    displayName: "Dungae docs/compat",
+    brokerUrl: "http://192.0.2.23:3000",
+    capabilities: {
+      canAnalyze: true,
+      canBackfill: false,
+      canPatchWorkspace: false,
+      canPromoteLive: false,
+      workspaceIds: ["team2-private-workspace"],
+      environments: ["research"],
+    },
+    workerMode: "persistent",
+    metadata: {
+      teamId: "team2",
+      terminalOutboxId: "private-terminal-id",
+    },
+    createdAt: "2026-05-09T00:00:00.000Z",
+    updatedAt: "2026-05-09T00:01:00.000Z",
+    lastSeenAt: "2026-05-09T00:01:00.000Z",
+    status: "online",
+  };
+
+  const card = createWorkerCapabilityCard(dungaeWorker, {
+    teamId: "team2",
+    lane: "team2",
+    brokerOfRecord: "gwakga",
+    assignmentRoles: ["docs-compat"],
+    supportedTaskTypes: ["analyze", "validate_change"],
+    skills: [
+      {
+        id: "agent-card-public-seam-review",
+        name: "AgentCard public seam review",
+        description: "Review public-safe AgentCard and capability-registry fields for #432 readiness.",
+        tags: ["agent-card", "capability-registry", "public-safe"],
+      },
+    ],
+    visibility: {
+      scope: "public",
+      safeForDiscovery: true,
+      exposeCapacity: true,
+      exposeLiveness: false,
+    },
+    maxConcurrentTasks: 1,
+    currentAssignedTasks: 0,
+    safetyBoundaries: [
+      "broker-owned assignment only",
+      "no live provider send",
+      "no terminal-outbox ACK",
+      "operator approval required for live impact",
+    ],
+  });
+
+  assert.deepEqual(card.team, { teamId: "team2", brokerOfRecord: "gwakga", lane: "team2" });
+  assert.deepEqual(card.assignment.roles, ["docs-compat"]);
+  assert.deepEqual(card.assignment.supportedTaskTypes, ["analyze", "validate_change"]);
+  assert.deepEqual(card.assignment.environments, ["research"]);
+  assert.deepEqual(card.capabilities.workspaceIds, []);
+  assert.equal(card.safety.canTouchLive, false);
+  assert.equal(card.safety.requiresApprovalForLive, true);
+  assert.match(card.safety.boundaries.join("\n"), /broker-owned assignment only/);
+  assert.deepEqual(Object.keys(card.agentCard).sort(), [
+    "capabilities",
+    "defaultInputModes",
+    "defaultOutputModes",
+    "protocolVersion",
+    "skills",
+  ]);
+  assert.deepEqual(card.agentCard.capabilities, { streaming: true, pushNotifications: false });
+  assert.equal(card.visibility.exposeBrokerUrl, false);
+  assert.equal(card.visibility.exposeWorkspaceIds, false);
+  assert.equal(card.liveness, undefined);
+
+  const serialized = JSON.stringify(card);
+  assert.equal(serialized.includes("192.0.2.23"), false);
+  assert.equal(serialized.includes("team2-private-workspace"), false);
+  assert.equal(serialized.includes("private-terminal-id"), false);
+
+  assert.deepEqual(validateWorkerCapabilityCard(card), { ok: true, errors: [] });
+});
+
 test("worker capability card validation fails closed for unsafe public visibility", () => {
   const card = createWorkerCapabilityCard(BASE_WORKER, {
     teamId: "team2",
