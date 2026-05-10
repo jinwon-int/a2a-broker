@@ -246,11 +246,33 @@ export class TaskEventStream {
     const taskBrief = buildTaskBrief(task, output);
     if (taskBrief) event.taskBrief = taskBrief;
 
-    const prUrl = firstHttpUrl(output["prUrl"], output["pullRequestUrl"], task.payload?.["prUrl"]);
+    const githubOutput = isRecord(output["github"]) ? output["github"] : {};
+    const prUrl = firstHttpUrl(
+      output["prUrl"],
+      output["pullRequestUrl"],
+      githubOutput["prUrl"],
+      githubOutput["pullRequestUrl"],
+      task.payload?.["prUrl"],
+      task.payload?.["pullRequestUrl"],
+    );
     if (prUrl) event.prUrl = prUrl;
-    const doneUrl = firstHttpUrl(output["doneUrl"], task.payload?.["doneUrl"]);
+    const doneUrl = firstHttpUrl(
+      output["doneUrl"],
+      output["doneCommentUrl"],
+      githubOutput["doneUrl"],
+      githubOutput["doneCommentUrl"],
+      task.payload?.["doneUrl"],
+      task.payload?.["doneCommentUrl"],
+    );
     if (doneUrl) event.doneUrl = doneUrl;
-    const blockUrl = firstHttpUrl(output["blockUrl"], task.payload?.["blockUrl"]);
+    const blockUrl = firstHttpUrl(
+      output["blockUrl"],
+      output["blockCommentUrl"],
+      githubOutput["blockUrl"],
+      githubOutput["blockCommentUrl"],
+      task.payload?.["blockUrl"],
+      task.payload?.["blockCommentUrl"],
+    );
     if (blockUrl) event.blockUrl = blockUrl;
 
     const testSummary = normalizeTestSummary(output["testSummary"]);
