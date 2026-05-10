@@ -36,6 +36,8 @@ map.
 - `docs/a2a-protocol.md` for the canonical A2A task protocol: envelope shape, lifecycle, cancel semantics, event/state model, and the migration map from the retired legacy library entrypoints
 - `docs/protocol-compatibility.md` for the public A2A compatibility matrix, current supported profile, non-goals, and conformance/golden gate
 - `docs/public-stable-readiness.md` for the public/stable release decision checklist, license/secret/history gates, and broker/plugin/runner responsibility boundaries
+- `docs/source-public-risk-audit-20260510.md` for the Team2 independent broker source-public risk audit and parity evidence for the 2026-05-10 gate
+- `SECURITY.md` and `CONTRIBUTING.md` for vulnerability-reporting, contribution, and release-safety boundaries
 - `docs/v1-acceptance-handoff.md` for the v1 acceptance gate, the plugin-facing contract, and the cross-repo handoff bar for `openclaw-plugin-a2a`
 - `docs/trading-partner-refactor-design.md` for the broker evolution plan that supports stateful trading-partner workers such as `bangtong` and `dengae`
 - `docs/phase-1-implementation-checklist.md` for the first implementation slice
