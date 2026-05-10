@@ -603,6 +603,87 @@ test("server reports SQLite persistence metadata when SQLite backend is enabled"
   }
 });
 
+test("health p99 stays under 500ms with SQLite cache over 50 requests", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "a2a-broker-health-p99-"));
+  const runtime = createBrokerServer({
+    host: "127.0.0.1",
+    port: 0,
+    publicBaseUrl: "https://broker.test/",
+    stateFile: join(dir, "state.json"),
+    sqliteFile: join(dir, "state.sqlite"),
+    persistenceBackend: "sqlite",
+    staleReaperEnabled: false,
+  });
+  try {
+    // Pre-seed a small realistic workload so COUNT / mirror status paths are exercised.
+    for (let i = 0; i < 20; i++) {
+      runtime.broker.registerWorker({
+        nodeId: `worker-p99-${i}`,
+        role: "analyst",
+        capabilities: {
+          canAnalyze: true,
+          canBackfill: false,
+          canPatchWorkspace: false,
+          canPromoteLive: false,
+          workspaceIds: [],
+          environments: [],
+        },
+      });
+      runtime.broker.createTask({
+        intent: "analyze",
+        requester: { id: `req-${i}`, kind: "node", role: "hub" },
+        target: { id: `worker-p99-${i}`, kind: "node", role: "analyst" },
+      });
+    }
+
+    runtime.server.listen(0, "127.0.0.1");
+    await once(runtime.server, "listening");
+    const address = runtime.server.address();
+    if (!address || typeof address === "string") {
+      throw new Error("failed to bind test server");
+    }
+    const baseUrl = `http://127.0.0.1:${address.port}`;
+
+    const latencies: number[] = [];
+    let cachedResponses = 0;
+    let uncachedResponses = 0;
+
+    for (let i = 0; i < 50; i++) {
+      const start = performance.now();
+      const res = await fetch(`${baseUrl}/health`);
+      const elapsed = performance.now() - start;
+      assert.equal(res.status, 200);
+      const body = await res.json();
+      latencies.push(elapsed);
+      assert.equal(body.ok, true);
+      assert.notEqual(body.service, undefined);
+      if (body.timing && body.timing.fromCache) {
+        cachedResponses++;
+      } else {
+        uncachedResponses++;
+      }
+    }
+
+    latencies.sort((a, b) => a - b);
+    const p50 = latencies[Math.floor(latencies.length * 0.5)];
+    const p95 = latencies[Math.floor(latencies.length * 0.95)];
+    const p99 = latencies[Math.floor(latencies.length * 0.99)];
+
+    // The first request is always uncached (cold); verify cache kicks in.
+    assert.ok(cachedResponses > 0, `expected some cached responses, got cached=${cachedResponses} uncached=${uncachedResponses}`);
+
+    // Diagnostics cache should keep p99 comfortably under 500ms.
+    assert.ok(
+      p99 < 500,
+      `p99 latency ${p99.toFixed(1)}ms exceeds 500ms threshold (p50=${p50.toFixed(1)}ms, p95=${p95.toFixed(1)}ms)`,
+    );
+  } finally {
+    runtime.stopStaleReaper();
+    await new Promise<void>((resolve) => runtime.server.close(() => resolve()));
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("server reads /audit from SQLite hot tables when SQLite store is active", async () => {
   const dir = mkdtempSync(join(tmpdir(), "a2a-broker-sqlite-audit-"));
   const store = new SqliteBrokerStateStore(join(dir, "state.sqlite"));
