@@ -117,9 +117,15 @@ function terminalReadiness(body, { reconcile }) {
   const unacked = events.filter((event) => !isReceiptConfirmed(event));
   const receiptConfirmed = events.filter(isReceiptConfirmed);
   const staleReceipt = events.filter((event) => event?.receipt?.status === 'stale');
-  const missingEvidence = events.filter((event) => !firstEvidenceUrl(event?.payload));
-  const missingWorker = events.filter((event) => typeof event?.payload?.worker !== 'string' || event.payload.worker.length === 0);
-  const missingTaskBrief = events.filter((event) => typeof event?.payload?.taskBrief !== 'string' || event.payload.taskBrief.length === 0);
+  // Receipt-confirmed rows are already terminal from the operator-facing
+  // delivery perspective. Keep them visible in readiness counts, but do not let
+  // legacy compact rows with older payload shapes block a fresh preflight/canary
+  // gate. Fresh/unacknowledged delivery candidates still fail closed below.
+  const deliveryCandidates = unacked;
+  const missingEvidence = deliveryCandidates.filter((event) => !firstEvidenceUrl(event?.payload));
+  const missingWorker = deliveryCandidates.filter((event) => typeof event?.payload?.worker !== 'string' || event.payload.worker.length === 0);
+  const missingTaskBrief = deliveryCandidates.filter((event) => typeof event?.payload?.taskBrief !== 'string' || event.payload.taskBrief.length === 0);
+  const receiptConfirmedMissingTaskBrief = receiptConfirmed.filter((event) => typeof event?.payload?.taskBrief !== 'string' || event.payload.taskBrief.length === 0);
   const unsafeEvidence = events.filter(containsUnsafeEvidenceUrl);
   const replayCandidates = Number.isInteger(body?.reconciledUnacked) ? body.reconciledUnacked : 0;
   const blockers = [];
@@ -135,6 +141,7 @@ function terminalReadiness(body, { reconcile }) {
     missingEvidenceCount: missingEvidence.length,
     missingWorkerCount: missingWorker.length,
     missingTaskBriefCount: missingTaskBrief.length,
+    receiptConfirmedMissingTaskBriefCount: receiptConfirmedMissingTaskBrief.length,
     unsafeEvidenceUrlCount: unsafeEvidence.length,
     blockers,
   };
