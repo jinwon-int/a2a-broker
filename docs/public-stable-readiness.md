@@ -39,6 +39,11 @@ DB, or ACK terminal outbox rows.
 - [ ] **Cross-repo alignment:** plugin and runner docs/issues agree on the
   broker/plugin/runner responsibility split above; do not present this repo as a
   monorepo or as owning runner/plugin releases.
+- [ ] **Independent source-public risk audit:** attach a current broker audit
+  record (for example, `docs/source-public-risk-audit-20260510.md`) that
+  cross-checks hidden coupling, private topology assumptions, scanner/history
+  requirements, public API docs, and approval boundaries against the parallel
+  lane evidence.
 - [ ] **CI:** default branch CI is green for the exact commit proposed for public
   or stable readiness.
 - [ ] **Local validation:** run `npm test` or, at minimum for docs-only changes,
@@ -110,6 +115,7 @@ docker compose -f examples/docker-compose.smoke.yml down --volumes
 
 Public/stable Done or PR evidence should include only compact, redacted output:
 
+- independent source-public risk audit link and parity/reconciliation status
 - `npm run scan:public-readiness` summary and any sanitized warnings
 - local smoke command names and pass/fail status
 - task lifecycle summary (`queued` to `succeeded`) if the Docker smoke was run
