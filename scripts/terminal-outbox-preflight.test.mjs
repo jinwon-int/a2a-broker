@@ -172,4 +172,34 @@ describe('terminal outbox preflight', () => {
     assert.match(poll?.detail ?? '', /missing task brief=1/);
   });
 
+  it('does not block fresh preflight on legacy receipt-confirmed rows missing task brief', async () => {
+    const fetchImpl = async (url) => {
+      const parsed = new URL(String(url));
+      if (parsed.pathname === '/health') return jsonResponse({ ok: true });
+      return jsonResponse({
+        kind: 'task.terminal.outbox',
+        count: 1,
+        cursor: 'terminal-legacy-receipt',
+        events: [{
+          id: 'terminal-legacy-receipt',
+          ack: { status: 'receipt_confirmed', evidence: 'operator_visible', acknowledgedAt: '2026-05-04T00:00:01.000Z' },
+          receipt: { status: 'operator_visible', updatedAt: '2026-05-04T00:00:01.000Z' },
+          payload: {
+            status: 'succeeded',
+            worker: 'bangtong',
+            prUrl: 'https://github.com/jinwon-int/a2a-broker/pull/323',
+          },
+        }],
+      });
+    };
+
+    const report = await runPreflight({ baseUrl: 'http://broker.local', fetchImpl });
+
+    assert.equal(report.ok, true);
+    const poll = report.checks.find((check) => check.check === 'terminal-outbox poll');
+    assert.equal(poll?.readiness.missingTaskBriefCount, 0);
+    assert.equal(poll?.readiness.receiptConfirmedMissingTaskBriefCount, 1);
+    assert.match(poll?.detail ?? '', /receiptConfirmed=1/);
+  });
+
 });
