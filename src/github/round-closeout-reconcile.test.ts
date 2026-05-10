@@ -223,3 +223,114 @@ describe("round closeout reconciliation", () => {
     assert.equal(report.workers.find((worker) => worker.workerId === "sogyo")?.state, "waiting");
   });
 });
+
+describe("broker exit condition classification (issue #471)", () => {
+  it("classifies succeeded with prUrl as pr_success", () => {
+    const report = reconcile([
+      obs({ workerId: "bangtong", status: "succeeded", evidence: { prUrl: "https://github.com/jinwon-int/a2a-broker/pull/100" } }),
+      obs({ workerId: "dungae", status: "succeeded", evidence: { prUrl: "https://github.com/jinwon-int/a2a-broker/pull/101" } }),
+      obs({ workerId: "sogyo", status: "succeeded", evidence: { prUrl: "https://github.com/jinwon-int/a2a-broker/pull/102" } }),
+      obs({ workerId: "nosuk", status: "succeeded", evidence: { prUrl: "https://github.com/jinwon-int/a2a-broker/pull/103" } }),
+    ]);
+
+    assert.equal(report.state, "ready");
+    for (const worker of report.workers.filter((w) => w.required)) {
+      assert.equal(worker.outcomeClass, "pr_success");
+    }
+  });
+
+  it("classifies succeeded with doneCommentUrl but no prUrl as no_change_done", () => {
+    const report = reconcile([
+      obs({ workerId: "bangtong", status: "succeeded", evidence: { doneCommentUrl: "https://github.com/jinwon-int/a2a-broker/issues/471#issuecomment-done" } }),
+      obs({ workerId: "dungae", status: "succeeded", evidence: { prUrl: "https://github.com/jinwon-int/a2a-broker/pull/200" } }),
+      obs({ workerId: "sogyo", status: "succeeded", evidence: { prUrl: "https://github.com/jinwon-int/a2a-broker/pull/201" } }),
+      obs({ workerId: "nosuk", status: "succeeded", evidence: { prUrl: "https://github.com/jinwon-int/a2a-broker/pull/202" } }),
+    ]);
+
+    assert.equal(report.state, "ready");
+    assert.equal(report.workers.find((w) => w.workerId === "bangtong")?.outcomeClass, "no_change_done");
+    assert.equal(report.workers.find((w) => w.workerId === "dungae")?.outcomeClass, "pr_success");
+  });
+
+  it("classifies failed with blockCommentUrl as no_change_block", () => {
+    const report = reconcile([
+      obs({ workerId: "bangtong", status: "failed", evidence: { blockCommentUrl: "https://github.com/jinwon-int/a2a-broker/issues/471#issuecomment-block" } }),
+      obs({ workerId: "dungae", status: "succeeded", evidence: { prUrl: "https://github.com/jinwon-int/a2a-broker/pull/300" } }),
+      obs({ workerId: "sogyo", status: "succeeded", evidence: { prUrl: "https://github.com/jinwon-int/a2a-broker/pull/301" } }),
+      obs({ workerId: "nosuk", status: "succeeded", evidence: { prUrl: "https://github.com/jinwon-int/a2a-broker/pull/302" } }),
+    ]);
+
+    assert.equal(report.state, "blocked");
+    assert.equal(report.workers.find((w) => w.workerId === "bangtong")?.outcomeClass, "no_change_block");
+    assert.equal(report.workers.find((w) => w.workerId === "bangtong")?.state, "blocked");
+  });
+
+  it("classifies failed with no evidence as infra_failure", () => {
+    const report = reconcile([
+      obs({ workerId: "bangtong", status: "failed" }),
+      obs({ workerId: "dungae", status: "succeeded", evidence: { prUrl: "https://github.com/jinwon-int/a2a-broker/pull/400" } }),
+      obs({ workerId: "sogyo", status: "succeeded", evidence: { prUrl: "https://github.com/jinwon-int/a2a-broker/pull/401" } }),
+      obs({ workerId: "nosuk", status: "succeeded", evidence: { prUrl: "https://github.com/jinwon-int/a2a-broker/pull/402" } }),
+    ]);
+
+    assert.equal(report.state, "needs-evidence");
+    assert.equal(report.workers.find((w) => w.workerId === "bangtong")?.outcomeClass, "infra_failure");
+    assert.equal(report.workers.find((w) => w.workerId === "bangtong")?.state, "missing-evidence");
+  });
+
+  it("classifies canceled with blockCommentUrl as no_change_block", () => {
+    const report = reconcile([
+      obs({ workerId: "bangtong", status: "canceled", evidence: { blockCommentUrl: "https://github.com/jinwon-int/a2a-broker/issues/471#issuecomment-block" } }),
+      obs({ workerId: "dungae", status: "succeeded", evidence: { prUrl: "https://github.com/jinwon-int/a2a-broker/pull/500" } }),
+      obs({ workerId: "sogyo", status: "succeeded", evidence: { prUrl: "https://github.com/jinwon-int/a2a-broker/pull/501" } }),
+      obs({ workerId: "nosuk", status: "succeeded", evidence: { prUrl: "https://github.com/jinwon-int/a2a-broker/pull/502" } }),
+    ]);
+
+    assert.equal(report.state, "blocked");
+    assert.equal(report.workers.find((w) => w.workerId === "bangtong")?.outcomeClass, "no_change_block");
+  });
+
+  it("leaves outcomeClass undefined for non-terminal workers", () => {
+    const report = reconcile([
+      obs({ workerId: "bangtong", status: "running", updatedAt: FRESH }),
+      obs({ workerId: "dungae", status: "running", updatedAt: FRESH }),
+      obs({ workerId: "sogyo", status: "succeeded", evidence: { prUrl: "https://github.com/jinwon-int/a2a-broker/pull/600" } }),
+      obs({ workerId: "nosuk", status: "succeeded", evidence: { prUrl: "https://github.com/jinwon-int/a2a-broker/pull/601" } }),
+    ]);
+
+    assert.equal(report.state, "waiting");
+    assert.equal(report.workers.find((w) => w.workerId === "bangtong")?.outcomeClass, undefined);
+    assert.equal(report.workers.find((w) => w.workerId === "sogyo")?.outcomeClass, "pr_success");
+  });
+
+  it("classifies terminal outbox events with correct exit conditions", () => {
+    const report = reconcileRoundCloseoutFromTerminalOutbox([
+      terminalEvent("bangtong", "succeeded", {
+        prUrl: "https://github.com/jinwon-int/a2a-broker/pull/700",
+        taskDescription: "PR success task",
+      }),
+      terminalEvent("dungae", "succeeded", {
+        doneUrl: "https://github.com/jinwon-int/a2a-broker/issues/471#issuecomment-done",
+        taskDescription: "No-change done task",
+      }),
+      terminalEvent("sogyo", "blocked", {
+        blockUrl: "https://github.com/jinwon-int/a2a-broker/issues/471#issuecomment-block",
+        taskDescription: "No-change block task",
+      }),
+      terminalEvent("nosuk", "failed", {
+        taskDescription: "Infra failure task",
+      }),
+    ], {
+      expectedWorkers: ["bangtong", "dungae", "sogyo", "nosuk"],
+      run: "a2a-terminal-push-20260504015650",
+      nowMs: NOW,
+      staleAfterMs: 30 * 60 * 1000,
+    });
+
+    assert.equal(report.state, "needs-evidence");
+    assert.equal(report.workers.find((w) => w.workerId === "bangtong")?.outcomeClass, "pr_success");
+    assert.equal(report.workers.find((w) => w.workerId === "dungae")?.outcomeClass, "no_change_done");
+    assert.equal(report.workers.find((w) => w.workerId === "sogyo")?.outcomeClass, "no_change_block");
+    assert.equal(report.workers.find((w) => w.workerId === "nosuk")?.outcomeClass, "infra_failure");
+  });
+});

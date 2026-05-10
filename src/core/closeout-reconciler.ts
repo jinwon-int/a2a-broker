@@ -7,7 +7,7 @@
  * Decision types: `ready` | `waiting` | `blocked` | `failed`
  */
 
-import type { TaskStatus } from "./types.js";
+import type { BrokerExitCondition, TaskStatus } from "./types.js";
 
 // ---------------------------------------------------------------------------
 // Closeout decision
@@ -36,6 +36,14 @@ export interface CloseoutVerdict {
   decidedAt: string;
   /** Sequence number (monotonically increasing). */
   seq: number;
+  /**
+   * Broker outcome classification (issue #471).
+   * Refines the closeout decision with the exit condition:
+   * pr_success, no_change_done, no_change_block, or infra_failure.
+   * Set when the reconciler can determine why a task ended based on
+   * child evidence.
+   */
+  outcomeClass?: BrokerExitCondition;
 }
 
 // ---------------------------------------------------------------------------
