@@ -97,6 +97,7 @@ import {
 } from "./trading-dialectic/read-model.js";
 import { projectAlerts, type Alert, type AlertScanResult } from "./core/alert-projection.js";
 import { buildOperatorTaskReport } from "./core/operator-task-report.js";
+import { buildReleaseEvidenceExport } from "./core/release-evidence.js";
 import {
   isTerminalTaskOutboxAckEvidence,
   isTerminalTaskReceiptStatus,
@@ -969,6 +970,25 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
             ? stateStore.readHotEntityDiagnostics()
             : undefined,
         }));
+      }
+
+      if (req.method === "GET" && path === "/release/evidence") {
+        if (enforceRequesterIdentity) {
+          assertRequesterHasRole(requesterIdentity, ["hub", "operator"], "release.evidence.read");
+        }
+        const filters = taskFiltersFromUrl(url);
+        const wantedTaskIds = new Set(taskIdsFromUrl(url));
+        const tasks = listTasksForReadPath(stateStore, broker, filters)
+          .filter((task) => wantedTaskIds.size === 0 || wantedTaskIds.has(task.id));
+        const report = buildReleaseEvidenceExport(tasks, {
+          repo: optionalString(url.searchParams.get("repo")),
+          issue: optionalString(url.searchParams.get("issue")),
+          parentIssue: optionalString(url.searchParams.get("parentIssue") ?? url.searchParams.get("parent_issue")),
+          runId: optionalString(url.searchParams.get("runId") ?? url.searchParams.get("run_id")),
+        });
+        return sendJson(res, 200, report, {
+          "cache-control": "no-store",
+        });
       }
 
       // GET /alerts — monitoring-friendly alert projection
