@@ -4889,3 +4889,75 @@ test("server persists task wake plan and decision through HTTP", async () => {
     await server.close();
   }
 });
+
+test("GET /release/evidence returns read-only dry-run release evidence without mutating tasks", async () => {
+  const server = await startTestServer({ edgeSecret: "test-edge-secret" });
+  try {
+    server.runtime.broker.registerWorker({
+      nodeId: "dungae",
+      role: "analyst",
+      capabilities: {
+        canAnalyze: true,
+        canBackfill: false,
+        canPatchWorkspace: true,
+        canPromoteLive: false,
+        workspaceIds: ["repo"],
+        environments: ["research"],
+      },
+    });
+    const created = server.runtime.broker.createTask({
+      id: "release-evidence-task-1",
+      intent: "propose_patch",
+      requester: { id: "operator-a", kind: "user", role: "operator" },
+      target: { id: "dungae", kind: "node", role: "analyst" },
+      payload: {
+        mode: "github-propose-patch",
+        issue: 479,
+        issueUrl: "https://github.com/jinwon-int/a2a-broker/issues/479",
+      },
+      taskOrigin: "github",
+    });
+    server.runtime.broker.claimTask(created.id, "dungae");
+    server.runtime.broker.startTask(created.id, "dungae");
+    server.runtime.broker.completeTask(created.id, "dungae", {
+      output: {
+        github: {
+          repo: "jinwon-int/a2a-broker",
+          issue: "#479",
+          doneCommentUrl: "https://github.com/jinwon-int/a2a-broker/issues/479#issuecomment-4415413329",
+        },
+        receipt: { status: "operator_visible", evidence: "operator_visible" },
+      },
+    });
+    const before = server.runtime.broker.getTask(created.id)?.updatedAt;
+
+    const res = await fetch(
+      `${server.baseUrl}/release/evidence?task_id=${created.id}&repo=jinwon-int/a2a-broker&issue=479&parentIssue=jinwon-int/a2a-plane%23197&runId=a2a-source-dryrun-orchestrator-20260510T133022Z`,
+      {
+        headers: {
+          "x-a2a-edge-secret": "test-edge-secret",
+          "x-a2a-requester-id": "operator-a",
+          "x-a2a-requester-role": "operator",
+        },
+      },
+    );
+
+    assert.equal(res.status, 200);
+    assert.equal(res.headers.get("cache-control"), "no-store");
+    const body = await res.json();
+    assert.equal(body.kind, "broker.release-evidence.export");
+    assert.equal(body.mode, "dry-run/read-only");
+    assert.equal(body.readOnly, true);
+    assert.equal(body.gates.liveActionAllowed, false);
+    assert.equal(body.gates.mutationAllowed, false);
+    assert.equal(body.gates.ok, true);
+    assert.equal(body.taskSummary.total, 1);
+    assert.equal(body.evidenceSummary.done, 1);
+    assert.deepEqual(body.links.doneComments, [
+      "https://github.com/jinwon-int/a2a-broker/issues/479#issuecomment-4415413329",
+    ]);
+    assert.equal(server.runtime.broker.getTask(created.id)?.updatedAt, before);
+  } finally {
+    await server.close();
+  }
+});
