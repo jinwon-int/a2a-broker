@@ -716,6 +716,8 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
           },
           retentionPolicy,
           maxSnapshotBytes,
+        }, {
+          "cache-control": "no-store",
         });
       }
 
