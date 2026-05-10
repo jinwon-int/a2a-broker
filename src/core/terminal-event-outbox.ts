@@ -22,7 +22,6 @@ const TERMINAL_TASK_RECEIPT_STATUSES = new Set<TerminalTaskReceiptStatus>([
   "failed",
 ]);
 const LEGACY_TERMINAL_TASK_RECEIPT_STATUSES = new Set(["sent", "provider_delivered_if_known"]);
-const URL_KEYS = ["prUrl", "doneUrl", "blockUrl"] as const;
 const TASK_BRIEF_KEYS = ["githubIssueTitle", "taskTitle", "title", "taskBrief"] as const;
 const MAX_SUMMARY_CHARS = 500;
 const MAX_TASK_BRIEF_CHARS = 160;
@@ -424,7 +423,8 @@ function isReceiptConfirmed(event: TerminalTaskOutboxEvent): boolean {
 }
 
 function buildTerminalTaskPayload(task: TaskRecord): TerminalTaskEventPayload {
-  const output = task.result?.output ?? {};
+  const output = isRecord(task.result?.output) ? task.result.output : {};
+  const githubOutput = isRecord(output["github"]) ? output["github"] : {};
   const payload: TerminalTaskEventPayload = {
     taskId: task.id,
     status: task.status as TerminalTaskStatus,
@@ -452,10 +452,33 @@ function buildTerminalTaskPayload(task: TaskRecord): TerminalTaskEventPayload {
   if (typeof issue === "number" && Number.isFinite(issue)) payload.issue = issue;
   const taskBrief = buildTaskBrief(task, output);
   if (taskBrief) payload.taskBrief = taskBrief;
-  for (const key of URL_KEYS) {
-    const value = firstSafeHttpUrl(output[key], task.payload[key]);
-    if (value) payload[key] = value;
-  }
+  const prUrl = firstSafeHttpUrl(
+    output["prUrl"],
+    output["pullRequestUrl"],
+    githubOutput["prUrl"],
+    githubOutput["pullRequestUrl"],
+    task.payload["prUrl"],
+    task.payload["pullRequestUrl"],
+  );
+  if (prUrl) payload.prUrl = prUrl;
+  const doneUrl = firstSafeHttpUrl(
+    output["doneUrl"],
+    output["doneCommentUrl"],
+    githubOutput["doneUrl"],
+    githubOutput["doneCommentUrl"],
+    task.payload["doneUrl"],
+    task.payload["doneCommentUrl"],
+  );
+  if (doneUrl) payload.doneUrl = doneUrl;
+  const blockUrl = firstSafeHttpUrl(
+    output["blockUrl"],
+    output["blockCommentUrl"],
+    githubOutput["blockUrl"],
+    githubOutput["blockCommentUrl"],
+    task.payload["blockUrl"],
+    task.payload["blockCommentUrl"],
+  );
+  if (blockUrl) payload.blockUrl = blockUrl;
   const summary = task.result?.summary ?? task.result?.note ?? task.error?.message;
   const safeSummary = sanitizeSummary(summary);
   if (safeSummary) payload.testSummary = safeSummary;
@@ -485,6 +508,10 @@ function sanitizeTaskBrief(value: unknown): string | undefined {
   const sanitized = sanitizeSummary(withoutIssuePrefix);
   if (!sanitized) return undefined;
   return sanitized.slice(0, MAX_TASK_BRIEF_CHARS);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function firstSafeHttpUrl(...values: unknown[]): string | undefined {
