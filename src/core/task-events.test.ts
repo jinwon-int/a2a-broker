@@ -256,6 +256,35 @@ describe("TaskEventStream", () => {
     assert.ok(!serialized.includes("privatePath"));
     assert.ok(!serialized.includes("/home/alice"));
   });
+
+  it("projects no-change comment evidence aliases into compact terminal event URLs", () => {
+    const broker = new InMemoryA2ABroker();
+    registerWorker(broker);
+    const task = createTask(broker, {
+      payload: {
+        githubRepo: "acme/example",
+        githubIssueNumber: 472,
+        githubIssueTitle: "no-change evidence-only closeout",
+      },
+    });
+    broker.claimTask(task.id, "worker-1");
+    broker.completeTask(task.id, "worker-1", {
+      summary: "Done/Block evidence posted without a patch",
+      output: {
+        doneCommentUrl: "https://github.com/acme/example/issues/472#issuecomment-done",
+        github: {
+          blockCommentUrl: "https://github.com/acme/example/issues/472#issuecomment-block",
+        },
+      },
+    });
+
+    const [event] = broker.getTaskEventStream().subscribeTerminal();
+    assert.ok(event);
+    assert.equal(event.doneUrl, "https://github.com/acme/example/issues/472#issuecomment-done");
+    assert.equal(event.blockUrl, "https://github.com/acme/example/issues/472#issuecomment-block");
+    assert.equal((event as unknown as Record<string, unknown>).doneCommentUrl, undefined);
+    assert.equal((event as unknown as Record<string, unknown>).blockCommentUrl, undefined);
+  });
 });
 
 describe("TerminalTaskEventOutbox", () => {
@@ -325,6 +354,40 @@ describe("TerminalTaskEventOutbox", () => {
     assert.ok(!serialized.includes("secret token"));
     assert.ok(!serialized.includes("/work/repo"));
     assert.ok(!serialized.includes("sessionPrompt"));
+  });
+
+  it("normalizes no-change comment evidence aliases into terminal outbox evidence URLs", () => {
+    const broker = new InMemoryA2ABroker();
+    registerWorker(broker, "dungae");
+    const task = createTask(broker, {
+      targetNodeId: "dungae",
+      payload: {
+        githubRepo: "jinwon-int/a2a-broker",
+        githubIssueNumber: 472,
+        githubIssueTitle: "Team2 broker parity for no-change evidence task outcomes",
+        run: "a2a-evidence-nochange-hardening-20260510T100150Z",
+      },
+    });
+
+    broker.claimTask(task.id, "dungae");
+    broker.completeTask(task.id, "dungae", {
+      summary: "no code change needed; evidence-only Done/Block URL returned",
+      output: {
+        github: {
+          doneCommentUrl: "https://github.com/jinwon-int/a2a-broker/issues/472#issuecomment-done",
+        },
+        blockCommentUrl: "https://github.com/jinwon-int/a2a-broker/issues/472#issuecomment-block",
+      },
+    });
+
+    const [event] = broker.getTerminalTaskEventOutbox().subscribe();
+    assert.ok(event);
+    assert.equal(event.payload.doneUrl, "https://github.com/jinwon-int/a2a-broker/issues/472#issuecomment-done");
+    assert.equal(event.payload.blockUrl, "https://github.com/jinwon-int/a2a-broker/issues/472#issuecomment-block");
+    assert.equal((event.payload as unknown as Record<string, unknown>).doneCommentUrl, undefined);
+    assert.equal((event.payload as unknown as Record<string, unknown>).blockCommentUrl, undefined);
+    assert.equal(event.ackAudit?.decision, "pending");
+    assert.match(event.ackAudit?.reason ?? "", /awaiting current-session-visible\/operator-visible\/provider-delivery evidence before ACK/);
   });
 
   it("includes worker task brief in fake operator terminal line", () => {
