@@ -41,7 +41,9 @@ import {
   SqliteTombstoneRuntimeRepository,
   SqliteValidationRuntimeRepository,
   SqliteWorkerRuntimeRepository,
+  type BrokerHotAuditDiagnostics,
   type BrokerHotEntityDiagnostics,
+  type BrokerPersistenceInfo,
   type BrokerStateStore,
   type SqliteBrokerLoadSource,
 } from "./core/store.js";
@@ -237,6 +239,41 @@ const DEFAULT_DASHBOARD_PENDING_ACTION_LIMIT = 5;
 const DEFAULT_ALERT_STALE_AFTER_MS = 120_000;
 const DEFAULT_ALERT_LONG_RUNNING_AFTER_MS = 3_600_000;
 const DEFAULT_OPERATOR_EVENT_BUFFER_LIMIT = 200;
+const DEFAULT_HEALTH_DIAGNOSTICS_TTL_MS = 5_000;
+
+type CachedHealthDiagnostics = {
+  persistence: BrokerPersistenceInfo;
+  auditDiagnostics: BrokerHotAuditDiagnostics | undefined;
+};
+
+class HealthDiagnosticsCache {
+  private cached: CachedHealthDiagnostics | null = null;
+  private cachedAt = 0;
+  private readonly ttlMs: number;
+
+  constructor(ttlMs: number = DEFAULT_HEALTH_DIAGNOSTICS_TTL_MS) {
+    this.ttlMs = ttlMs;
+  }
+
+  get(
+    stateStore: BrokerStateStore,
+  ): { persistence: BrokerPersistenceInfo; auditDiagnostics: BrokerHotAuditDiagnostics | undefined; fromCache: boolean } {
+    const now = Date.now();
+    if (this.cached !== null && now - this.cachedAt < this.ttlMs) {
+      return { ...this.cached, fromCache: true };
+    }
+    const persistence = stateStore.getPersistenceInfo?.() ?? {
+      kind: "custom",
+      stateVersion: CURRENT_BROKER_STATE_VERSION,
+    };
+    const auditDiagnostics = stateStore instanceof SqliteBrokerStateStore
+      ? stateStore.readHotAuditDiagnostics()
+      : undefined;
+    this.cached = { persistence, auditDiagnostics };
+    this.cachedAt = now;
+    return { persistence, auditDiagnostics, fromCache: false };
+  }
+}
 
 export interface BrokerServerOptions {
   host?: string;
@@ -477,6 +514,8 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
     ? new PeerStatusService(broker, { workerOfflineAfterMs: workerOfflineAfterSec * 1000 })
     : undefined;
 
+  const healthDiagnosticsCache = new HealthDiagnosticsCache();
+
   // In-broker periodic stale-task reaper. Without this, claimed/running tasks pointing at a
   // dead worker stay stuck until an operator manually hits POST /tasks/requeue_stale. The
   // broker snapshot already survives restart, but recovery still required a human. This loop
@@ -682,7 +721,19 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
       }
 
       if (req.method === "GET" && path === "/health") {
-        return sendJson(res, 200, {
+        const t0 = performance.now();
+        const { persistence, auditDiagnostics, fromCache } = healthDiagnosticsCache.get(stateStore);
+        const t1 = performance.now();
+        const persistenceDurationMs = Math.round((t1 - t0) * 100) / 100;
+
+        const requestPressure = {
+          general: rateLimiter.snapshot(),
+          worker: workerRateLimiter.snapshot(),
+        };
+        const t2 = performance.now();
+        const pressureDurationMs = Math.round((t2 - t1) * 100) / 100;
+
+        const body: Record<string, unknown> = {
           ok: true,
           service: serviceName,
           brokerId,
@@ -690,13 +741,8 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
           build: buildInfo.build,
           publicBaseUrl,
           uptimeSec: Math.round(process.uptime()),
-          persistence: stateStore.getPersistenceInfo?.() ?? {
-            kind: "custom",
-            stateVersion: CURRENT_BROKER_STATE_VERSION,
-          },
-          auditDiagnostics: stateStore instanceof SqliteBrokerStateStore
-            ? stateStore.readHotAuditDiagnostics()
-            : undefined,
+          persistence,
+          ...(auditDiagnostics !== undefined ? { auditDiagnostics } : {}),
           workers: {
             offlineAfterSec: workerOfflineAfterSec,
           },
@@ -710,13 +756,23 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
             workerRateLimitMaxRequests,
             trustedProxy,
           },
-          requestPressure: {
-            general: rateLimiter.snapshot(),
-            worker: workerRateLimiter.snapshot(),
-          },
+          requestPressure,
           retentionPolicy,
           maxSnapshotBytes,
-        });
+        };
+        const t3 = performance.now();
+        const jsonDurationMs = Math.round((t3 - t2) * 100) / 100;
+        const totalDurationMs = Math.round((t3 - t0) * 100) / 100;
+
+        body.timing = {
+          totalMs: totalDurationMs,
+          persistenceMs: persistenceDurationMs,
+          pressureMs: pressureDurationMs,
+          jsonMs: jsonDurationMs,
+          fromCache,
+        };
+
+        return sendJson(res, 200, body);
       }
 
       if (req.method === "GET" && path === "/.well-known/agent-card.json") {
