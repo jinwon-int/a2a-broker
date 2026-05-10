@@ -46,6 +46,27 @@ export type TaskStatus =
   | "canceled";
 
 /**
+ * Broker closeout outcome classification (issue #471).
+ *
+ * Refines a terminal task status into evidence-aware categories for
+ * operator summaries, read-model projections, and round-closeout
+ * reconciliation. This classification is independent of task status:
+ * a `succeeded` task may map to `pr_success` or `no_change_done`
+ * depending on whether code/doc changes were produced; a `failed`
+ * task may map to `no_change_block` or `infra_failure` depending on
+ * whether the failure originated in infrastructure or a genuine
+ * no-change analysis.
+ *
+ * Provider message-id/send success is accepted-send evidence only,
+ * never read/visibility/terminal ACK.
+ */
+export type BrokerExitCondition =
+  | "pr_success"       // Code/doc changes were made; PR created/merged.
+  | "no_change_done"   // Task completed without code/doc changes; evidence-only Done.
+  | "no_change_block"  // Task blocked without changes possible; evidence-only Block.
+  | "infra_failure";   // Infrastructure/system failure, distinct from logical block.
+
+/**
  * Broker-side objective lifecycle above individual A2A tasks. Goals are
  * bounded supervisory records: they summarize operator intent, child task
  * attachment, budget pressure, and terminal outcome without creating loops or

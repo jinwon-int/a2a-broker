@@ -1,3 +1,4 @@
+import type { BrokerExitCondition } from "../core/types.js";
 import type { TerminalTaskOutboxEvent, TerminalTaskEventPayload } from "../core/terminal-event-outbox.js";
 
 /**
@@ -60,6 +61,8 @@ export interface RoundWorkerReconciliation {
   evidenceUrl?: string;
   reason: string;
   action: string;
+  /** Broker exit condition classification (issue #471). */
+  outcomeClass?: BrokerExitCondition;
 }
 
 export type RoundWorkerSummaryStatus = "completed" | "blocked" | "failed" | "pending";
@@ -280,6 +283,7 @@ function classifyWorker(
 
   const completionEvidenceUrl = pickCompletionEvidenceUrl(observation.evidence);
   const branchEvidenceUrl = observation.evidence?.branchUrl;
+  const outcomeClass = classifyExitCondition(observation.status, observation.evidence);
 
   if (observation.status === "succeeded") {
     if (!completionEvidenceUrl) {
@@ -297,6 +301,7 @@ function classifyWorker(
       state: "completed",
       reason: "Succeeded with closeout evidence.",
       action: "No action required.",
+      outcomeClass,
     };
   }
 
@@ -307,6 +312,7 @@ function classifyWorker(
       state: "missing-evidence",
       reason: `${observation.status} task is terminal but has no PR, Done, Block, or recovered branch evidence URL.`,
       action: "Recover or post evidence before marking the round closed.",
+      outcomeClass,
     };
   }
 
@@ -320,6 +326,7 @@ function classifyWorker(
     action: branchEvidenceUrl && !completionEvidenceUrl
       ? "Inspect recovered branch evidence before retrying, replacing the worker, or closing the round."
       : "Inspect Block/PR evidence and decide whether to retry, split, or defer.",
+    outcomeClass,
   };
 }
 
@@ -380,6 +387,40 @@ function pickEvidenceUrl(evidence?: RoundEvidence): string | undefined {
 
 function pickCompletionEvidenceUrl(evidence?: RoundEvidence): string | undefined {
   return evidence?.prUrl ?? evidence?.doneCommentUrl ?? evidence?.blockCommentUrl;
+}
+
+/**
+ * Classify the broker exit condition for a worker based on terminal status
+ * and available evidence (issue #471).
+ *
+ * - pr_success:     succeeded + prUrl present (code/doc changes produced)
+ * - no_change_done: succeeded + doneCommentUrl present, no prUrl (evidence-only Done)
+ * - no_change_block: failed/canceled + blockCommentUrl present (evidence-only Block)
+ * - infra_failure:  failed/canceled with no prUrl, doneCommentUrl, or blockCommentUrl
+ *
+ * Returns undefined when the status is not terminal (caller must handle non-terminal).
+ */
+function classifyExitCondition(
+  status: RoundWorkerStatus,
+  evidence?: RoundEvidence,
+): BrokerExitCondition | undefined {
+  if (status !== "succeeded" && status !== "failed" && status !== "canceled" && status !== "blocked") {
+    return undefined;
+  }
+  const hasPr = Boolean(evidence?.prUrl);
+  const hasDone = Boolean(evidence?.doneCommentUrl);
+  const hasBlock = Boolean(evidence?.blockCommentUrl);
+
+  if (status === "succeeded") {
+    if (hasPr) return "pr_success";
+    if (hasDone) return "no_change_done";
+    return undefined; // missing evidence — caller surfaces missing-evidence state
+  }
+
+  // failed, canceled, or blocked
+  if (hasBlock) return "no_change_block";
+  if (hasPr || hasDone) return "no_change_block"; // evidence exists but no block-specific URL
+  return "infra_failure"; // no PR/Done/Block evidence at all
 }
 
 function classifyRoundState(counts: RoundCloseoutReconciliation["counts"]): RoundCloseoutState {
