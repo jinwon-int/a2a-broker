@@ -265,7 +265,7 @@ console.log(JSON.stringify({
         A2A_DOCKER_RUNNER_ARGS_JSON: JSON.stringify([fakeRunnerPath]),
         A2A_DOCKER_RUNNER_PATCH_COMMAND_JSON: JSON.stringify({ argv: ["claude", "--print", "hello"] }),
         A2A_DOCKER_RUNNER_EXTRA_MOUNTS_JSON: JSON.stringify([
-          { source: "/tmp/.claude", target: "/run/secrets/claude-dir", readOnly: true },
+          { source: "/tmp/.claude", target: "/opt/claude-dir", readOnly: true },
         ]),
         OPENCLAW_BIN: fakeOpenClawPath,
         A2A_NODE_ID: "worker-bridge-fallback",
