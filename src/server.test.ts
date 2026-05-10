@@ -182,6 +182,7 @@ test("server surfaces env-injected broker version/build revision on health and d
 
       const healthRes = await fetch(`${server.baseUrl}/health`);
       assert.equal(healthRes.status, 200);
+      assert.equal(healthRes.headers.get("cache-control"), "no-store");
       const health = await healthRes.json();
       assert.equal(health.version, "0.2.3");
       assert.deepEqual(health.build, {
@@ -3473,7 +3474,7 @@ async function readSseEventsUntil(
 }
 
 test("GET/POST /a2a/tasks/terminal-outbox replays and acknowledges compact records", async () => {
-  const server = await startTestServer({ edgeSecret: "test-edge-secret" });
+  const server = await startTestServer({ edgeSecret: "test-edge-secret", rateLimitMaxRequests: 20 });
   try {
     await registerTestWorker(server.baseUrl, "worker-a", "analyst", "test-edge-secret");
 
@@ -3564,7 +3565,7 @@ test("GET/POST /a2a/tasks/terminal-outbox replays and acknowledges compact recor
     });
     assert.equal(falseAckRes.status, 400);
 
-    for (const evidence of ["gateway_send_success", "provider_send_success"]) {
+    for (const evidence of ["gateway_send_success", "provider_send_success", "provider_accepted"]) {
       const sendSuccessAckRes = await fetch(`${server.baseUrl}/a2a/tasks/terminal-outbox/ack`, {
         method: "POST",
         headers: hubHeaders,

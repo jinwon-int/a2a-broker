@@ -772,7 +772,9 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
           fromCache,
         };
 
-        return sendJson(res, 200, body);
+        return sendJson(res, 200, body, {
+          "cache-control": "no-store",
+        });
       }
 
       if (req.method === "GET" && path === "/.well-known/agent-card.json") {
