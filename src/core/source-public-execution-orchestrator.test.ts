@@ -54,6 +54,19 @@ test("source-public execution plan is deterministic, dry-run only, and operator 
   assert.equal(first.finalApprovalPacket.mutationAllowed, false);
   assert.equal(first.ledgerEntry.persistence, "not-written");
   assert.equal(first.ledgerEntry.mutationAttempted, false);
+  assert.equal(first.goNoGoGateLedger.length, Object.keys(passingPreflights).length);
+  assert.deepEqual(first.goNoGoGateLedger.map((entry) => entry.effect), [
+    "allow-review",
+    "allow-review",
+    "allow-review",
+    "allow-review",
+    "allow-review",
+  ]);
+  assert.equal(first.approvalIntentRecord.approvalIntentId, first.finalApprovalPacket.executionIntentId);
+  assert.equal(first.approvalIntentRecord.approvalIdempotencyKey, first.finalApprovalPacket.executionIdempotencyKey);
+  assert.equal(first.approvalIntentRecord.explicitOperatorApprovalPresent, true);
+  assert.equal(first.approvalIntentRecord.persistence, "not-written");
+  assert.equal(first.approvalIntentRecord.mutationAttempted, false);
   assert.equal(first.scannerHistoryBinding.bound, true);
   assert.equal(first.preflight.ok, true);
   assert.equal(first.safety.liveActionAllowed, false);
@@ -77,6 +90,9 @@ test("source-public execution plan fails closed on preflight failures and missin
   assert.deepEqual(blocked.preflight.failures, ["bootstrapContextExcluded", "scannerHistoryBound"]);
   assert.equal(blocked.decision.value, "PREFLIGHT_BLOCKED");
   assert.match(blocked.preflight.semantics, /fail-closed/);
+  assert.equal(blocked.goNoGoGateLedger.find((entry) => entry.gate === "bootstrapContextExcluded")?.effect, "block-execution");
+  assert.equal(blocked.goNoGoGateLedger.find((entry) => entry.gate === "scannerHistoryBound")?.effect, "block-execution");
+  assert.equal(blocked.approvalIntentRecord.decision, "PREFLIGHT_BLOCKED");
   assert.equal(blocked.finalApprovalPacket.executionAllowed, false);
 });
 
@@ -119,5 +135,8 @@ test("source-public execution plan markdown is sanitized and names abort semanti
   assert.match(markdown, /mutationAllowed: false/);
   assert.match(markdown, /Abort immediately/);
   assert.match(markdown, /scannerDigest: sha256:/);
+  assert.match(markdown, /Final go\/no-go gate ledger/);
+  assert.match(markdown, /Approval intent record/);
+  assert.match(markdown, /explicitOperatorApprovalPresent: true/);
   assert.doesNotMatch(markdown, /rawPrompt|rawLogs|secret value|private path|AGENTS\.md|SOUL\.md|USER\.md|TOOLS\.md|HEARTBEAT\.md|IDENTITY\.md|\.openclaw/i);
 });

@@ -63,6 +63,26 @@ export interface SourcePublicExecutionLedgerEntry {
   mutationAttempted: false;
 }
 
+export interface SourcePublicGoNoGoGateLedgerEntry {
+  gate: keyof SourcePublicExecutionPreflights;
+  status: SourcePublicExecutionPreflightStatus;
+  requiredForGo: true;
+  effect: "allow-review" | "warn-review" | "block-execution" | "await-operator";
+}
+
+export interface SourcePublicApprovalIntentRecord {
+  recordId: string;
+  approvalIntentId: string;
+  approvalIdempotencyKey: string;
+  requestedAction: "source-public-execution-final-approval";
+  explicitOperatorApprovalRequired: true;
+  explicitOperatorApprovalPresent: boolean;
+  decision: SourcePublicExecutionDecision;
+  persistence: "not-written";
+  mutationAttempted: false;
+  replaySafe: true;
+}
+
 export interface SourcePublicExecutionPlanBundle {
   kind: "a2a-broker.source-public-final-approval-execution-plan";
   version: 1;
@@ -91,6 +111,8 @@ export interface SourcePublicExecutionPlanBundle {
     mutationAllowed: false;
   };
   ledgerEntry: SourcePublicExecutionLedgerEntry;
+  goNoGoGateLedger: SourcePublicGoNoGoGateLedgerEntry[];
+  approvalIntentRecord: SourcePublicApprovalIntentRecord;
   scannerHistoryBinding: Required<SourcePublicScannerHistoryBinding> & {
     bound: boolean;
   };
@@ -214,6 +236,23 @@ export function buildSourcePublicExecutionPlanBundle(
   });
 
   const decision = decide(preflightChecks, approvedPacket, replay);
+  const goNoGoGateLedger = buildGoNoGoGateLedger(preflightChecks);
+  const approvalIntentRecord: SourcePublicApprovalIntentRecord = {
+    recordId: sha256("source-public-approval-intent-record", {
+      executionIntentId,
+      executionIdempotencyKey,
+      decision: decision.value,
+    }),
+    approvalIntentId: executionIntentId,
+    approvalIdempotencyKey: executionIdempotencyKey,
+    requestedAction: "source-public-execution-final-approval",
+    explicitOperatorApprovalRequired: true,
+    explicitOperatorApprovalPresent: preflightChecks.explicitOperatorGatePresent === "pass",
+    decision: decision.value,
+    persistence: "not-written",
+    mutationAttempted: false,
+    replaySafe: true,
+  };
 
   return {
     kind: "a2a-broker.source-public-final-approval-execution-plan",
@@ -261,6 +300,8 @@ export function buildSourcePublicExecutionPlanBundle(
       persistence: "not-written",
       mutationAttempted: false,
     },
+    goNoGoGateLedger,
+    approvalIntentRecord,
     scannerHistoryBinding: {
       ...scannerHistory,
       bound: preflightChecks.scannerHistoryBound !== "fail" && preflightChecks.scannerHistoryBound !== "pending",
@@ -359,6 +400,23 @@ export function renderSourcePublicExecutionPlanMarkdown(bundle: SourcePublicExec
     `- persistence: ${bundle.ledgerEntry.persistence}`,
     `- mutationAttempted: ${bundle.ledgerEntry.mutationAttempted}`,
     "",
+    "## Final go/no-go gate ledger",
+    "",
+    "| Gate | Status | Effect |",
+    "| --- | --- | --- |",
+    ...bundle.goNoGoGateLedger.map((entry) => `| ${entry.gate} | ${entry.status} | ${entry.effect} |`),
+    "",
+    "## Approval intent record",
+    "",
+    `- recordId: ${bundle.approvalIntentRecord.recordId}`,
+    `- approvalIntentId: ${bundle.approvalIntentRecord.approvalIntentId}`,
+    `- approvalIdempotencyKey: ${bundle.approvalIntentRecord.approvalIdempotencyKey}`,
+    `- explicitOperatorApprovalRequired: ${bundle.approvalIntentRecord.explicitOperatorApprovalRequired}`,
+    `- explicitOperatorApprovalPresent: ${bundle.approvalIntentRecord.explicitOperatorApprovalPresent}`,
+    `- decision: ${bundle.approvalIntentRecord.decision}`,
+    `- persistence: ${bundle.approvalIntentRecord.persistence}`,
+    `- mutationAttempted: ${bundle.approvalIntentRecord.mutationAttempted}`,
+    "",
     "## Rollback / abort runbook",
     "",
     ...bundle.rollbackAbortRunbook.map((step) => `- ${step}`),
@@ -371,6 +429,25 @@ export function renderSourcePublicExecutionPlanMarkdown(bundle: SourcePublicExec
     "",
     "No approval execution, repository visibility change, release publication, provider send, deploy/restart, terminal ACK, DB mutation, community post, merge/approval, history rewrite, or force-push is performed by this plan.",
   ].join("\n");
+}
+
+function buildGoNoGoGateLedger(checks: SourcePublicExecutionPreflights): SourcePublicGoNoGoGateLedgerEntry[] {
+  return (Object.keys(checks) as Array<keyof SourcePublicExecutionPreflights>).sort().map((gate) => {
+    const status = checks[gate];
+    return {
+      gate,
+      status,
+      requiredForGo: true,
+      effect: gateEffect(status),
+    };
+  });
+}
+
+function gateEffect(status: SourcePublicExecutionPreflightStatus): SourcePublicGoNoGoGateLedgerEntry["effect"] {
+  if (status === "pass") return "allow-review";
+  if (status === "warn") return "warn-review";
+  if (status === "pending") return "await-operator";
+  return "block-execution";
 }
 
 function normalizeApprovedPacket(packet: SourcePublicApprovedEvidencePacket): SourcePublicApprovedEvidencePacket {
