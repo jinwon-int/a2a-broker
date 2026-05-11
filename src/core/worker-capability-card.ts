@@ -107,6 +107,16 @@ export interface WorkerCapabilityCardValidationResult {
   errors: string[];
 }
 
+export interface WorkerCapabilityCardQuery {
+  teamId?: WorkerRegistryTeamId;
+  lane?: WorkerRegistryTeamId;
+  assignmentRole?: WorkerAssignmentRole;
+  taskType?: A2AExchangeIntent;
+  environment?: A2AWorkerEnvironment;
+  skillId?: string;
+  safeForDiscovery?: boolean;
+}
+
 const DEFAULT_VISIBILITY: WorkerVisibilityFlags = {
   scope: "team",
   safeForDiscovery: false,
@@ -240,6 +250,23 @@ export function validateWorkerCapabilityCard(card: WorkerCapabilityCard): Worker
   }
 
   return { ok: errors.length === 0, errors };
+}
+
+export function queryWorkerCapabilityCards(
+  cards: readonly WorkerCapabilityCard[],
+  query: WorkerCapabilityCardQuery = {},
+): WorkerCapabilityCard[] {
+  return cards.filter((card) => {
+    if (!validateWorkerCapabilityCard(card).ok) return false;
+    if (query.teamId && card.team.teamId !== query.teamId) return false;
+    if (query.lane && card.team.lane !== query.lane) return false;
+    if (query.assignmentRole && !card.assignment.roles.includes(query.assignmentRole)) return false;
+    if (query.taskType && !card.assignment.supportedTaskTypes.includes(query.taskType)) return false;
+    if (query.environment && !card.assignment.environments.includes(query.environment)) return false;
+    if (query.skillId && !card.skills.some((skill) => skill.id === query.skillId)) return false;
+    if (query.safeForDiscovery !== undefined && card.visibility.safeForDiscovery !== query.safeForDiscovery) return false;
+    return true;
+  });
 }
 
 function projectCapabilities(capabilities: WorkerCapabilities, visibility: WorkerVisibilityFlags): WorkerCapabilities {

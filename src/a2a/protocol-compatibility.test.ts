@@ -90,6 +90,18 @@ test("task projection shape is pinned for A2A compatibility", () => {
   assert.deepEqual(projection, A2A_TASK_PROJECTION_GOLDEN);
 });
 
+test("task projection exposes A2A context and reference task lineage without expanding prior task internals", () => {
+  const projection = projectBrokerTask(makeTask("queued", {
+    id: "follow-up-task",
+    exchangeId: "context-123",
+    referenceTaskIds: ["prior-terminal-task"],
+  }));
+
+  assert.equal(projection.metadata.contextId, "context-123");
+  assert.deepEqual(projection.metadata.referenceTaskIds, ["prior-terminal-task"]);
+  assert.equal(JSON.stringify(projection).includes("prior task result"), false);
+});
+
 test("internal broker task statuses keep their documented A2A state mapping", () => {
   for (const [internalStatus, a2aState] of Object.entries(A2A_COMPATIBILITY_PROFILE.internalStatusToA2AState)) {
     const projection = projectBrokerTask(makeTask(internalStatus as TaskStatus));

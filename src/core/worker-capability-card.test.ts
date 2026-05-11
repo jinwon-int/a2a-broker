@@ -4,6 +4,7 @@ import { test } from "node:test";
 import {
   WORKER_CAPABILITY_CARD_SCHEMA_VERSION,
   createWorkerCapabilityCard,
+  queryWorkerCapabilityCards,
   validateWorkerCapabilityCard,
   type WorkerCapabilityCard,
 } from "./worker-capability-card.js";
@@ -159,6 +160,39 @@ test("worker capability card maps Team2 dungae discovery to public AgentCard-sty
   assert.equal(serialized.includes("private-terminal-id"), false);
 
   assert.deepEqual(validateWorkerCapabilityCard(card), { ok: true, errors: [] });
+});
+
+test("worker capability card query selects valid workers by team, role, task, environment, and skill", () => {
+  const team1Impl = createWorkerCapabilityCard({ ...BASE_WORKER, nodeId: "team1-impl" }, {
+    teamId: "team1",
+    brokerOfRecord: "seoseo",
+    assignmentRoles: ["implementation"],
+    supportedTaskTypes: ["propose_patch", "apply_local_change"],
+    skills: [{ id: "implementation", name: "Implementation", description: "Patch implementation worker." }],
+    visibility: { scope: "team", safeForDiscovery: false },
+  });
+  const team2Docs = createWorkerCapabilityCard({ ...BASE_WORKER, nodeId: "team2-docs", role: "researcher" }, {
+    teamId: "team2",
+    lane: "team2",
+    brokerOfRecord: "gwakga",
+    assignmentRoles: ["docs-compat"],
+    supportedTaskTypes: ["analyze", "validate_change"],
+    skills: [{ id: "docs-compat", name: "Docs compat", description: "Documentation and compatibility review." }],
+    visibility: { scope: "public", safeForDiscovery: true, exposeLiveness: false },
+  });
+  const unsafe = { ...team2Docs, visibility: { ...team2Docs.visibility, exposeBrokerUrl: true } };
+
+  assert.deepEqual(
+    queryWorkerCapabilityCards([team1Impl, team2Docs, unsafe], {
+      teamId: "team2",
+      assignmentRole: "docs-compat",
+      taskType: "validate_change",
+      environment: "research",
+      skillId: "docs-compat",
+      safeForDiscovery: true,
+    }).map((card) => card.worker.id),
+    ["team2-docs"],
+  );
 });
 
 test("worker capability card validation fails closed for unsafe public visibility", () => {

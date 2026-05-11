@@ -71,7 +71,8 @@ Equivalence rules a v1 envelope must satisfy:
 | `assignedWorkerId` | `A2ATaskRequest.assignedWorkerId` | Optional pin at create time. |
 | `workspace` | `A2ATaskRequest.workspace` | `WorkspaceRef` for proposal / apply intents. |
 | `payload` | `TaskRecord.payload` | Structured fields the worker reads. |
-| `parentTaskId` | `TaskRecord.parentTaskId` | Optional lineage link. Canceling a parent task fans out to non-terminal descendants. |
+| `parentTaskId` | `TaskRecord.parentTaskId` | Optional broker lineage link. Canceling a parent task fans out to non-terminal descendants. |
+| `referenceTaskIds` | `TaskRecord.referenceTaskIds` | Optional A2A follow-up/refinement lineage. Use this for new tasks in the same context that refer back to terminal prior work instead of restarting that work in-place. |
 | `message` | `A2ATaskRequest.message` | Free-text prompt. |
 | `proposalId`, `artifactIds` | `A2ATaskRequest.*` | Set when the task references a proposal lifecycle. |
 | `via` | `A2ATaskRequest.via` | Transport / channel / trace context. |
@@ -84,8 +85,9 @@ Equivalence rules a v1 envelope must satisfy:
 For the read-side projection a JSON-RPC client receives, see
 `projectBrokerTask` in `src/a2a/task-projection.ts` — it returns
 `A2ATaskProjection` with an `A2A`-style `state` ("submitted",
-"working", "completed", "failed", "canceled") plus an internal-status
-metadata field, so consumers do not have to handcraft the mapping.
+"working", "completed", "failed", "canceled") plus internal-status,
+`contextId`, and `referenceTaskIds` metadata fields, so consumers do not
+have to handcraft the mapping or lineage aliases.
 
 ### Live-impact task gate
 

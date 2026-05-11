@@ -11,6 +11,7 @@ The TypeScript shape and checker live in `src/core/worker-capability-card.ts`:
 - `WorkerCapabilityCard` is the registry record.
 - `createWorkerCapabilityCard(worker, options)` projects a safe card from a `WorkerView` without copying raw `metadata`, `brokerUrl`, private host hints, or secrets.
 - `validateWorkerCapabilityCard(card)` fails closed on unsafe public visibility, missing Team1/Team2/libero metadata, disabled live approval gating, or secret-like fields.
+- `queryWorkerCapabilityCards(cards, query)` filters only valid cards by team/lane, assignment role, task type, environment, skill id, and public discovery opt-in. Assignment logic can use the result as recommendation/preflight evidence, never as lease authority.
 
 Required registry dimensions:
 
