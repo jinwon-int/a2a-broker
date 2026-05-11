@@ -1140,6 +1140,9 @@ export class InMemoryA2ABroker {
       id: normalizedRequest.id ?? randomUUID(),
       exchangeId: normalizedRequest.exchangeId,
       parentTaskId: normalizedRequest.parentTaskId,
+      ...(normalizedRequest.referenceTaskIds?.length
+        ? { referenceTaskIds: uniqueIds(normalizedRequest.referenceTaskIds) }
+        : {}),
       intent: normalizedRequest.intent,
       requester: normalizedRequest.requester,
       target: normalizedRequest.target,

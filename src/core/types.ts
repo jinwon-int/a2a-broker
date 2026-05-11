@@ -265,6 +265,12 @@ export interface A2ATaskRequest {
   id: string;
   exchangeId?: string;
   parentTaskId?: string;
+  /**
+   * A2A-style lineage references for follow-up/refinement tasks in the same
+   * context. These are identifiers only; artifacts/results stay behind their
+   * normal broker access controls and projections.
+   */
+  referenceTaskIds?: string[];
   intent: A2AExchangeIntent;
   requester: A2APartyRef;
   target: A2APartyRef;
