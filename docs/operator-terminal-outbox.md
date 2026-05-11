@@ -35,6 +35,12 @@ A notifier can consume the broker-owned outbox without subscribing to raw task s
 
 Worker assignment SSE (`GET /a2a/workers/{workerId}/assignment-events`) remains a wake hint for queued work only. It is useful for reducing worker polling, but it is not operator-visible receipt evidence and must never be used to ACK terminal-outbox records.
 
+## GitHub evidence comments
+
+`src/github/terminal-brief-evidence.ts` is the first-class GitHub issue/PR comment projection for Terminal Brief evidence. It renders manifest-bound `Start` / `PR` / `Done` / `Block` comments with a stable idempotency key and SHA-256 manifest digest, then plans `create`, `update`, or `noop` writes against existing issue comments. Replaying the same Terminal Brief evidence should therefore converge on one comment instead of producing duplicate ledger entries.
+
+These comments are evidence ledger entries only. Creating or updating them must not call terminal-outbox ACK APIs, mark read/visibility state, imply operator approval, mutate production DB/provider state, or perform live sends. The projection redacts token-shaped content and fails closed if OpenClaw runtime/bootstrap context paths such as `AGENTS.md`, `SOUL.md`, `USER.md`, `TOOLS.md`, `HEARTBEAT.md`, `IDENTITY.md`, or `.openclaw/**` would enter the comment manifest/body.
+
 ## Broker main vs live container deploy-readiness note
 
 The broker code on `origin/main` can be considered deploy-ready for Terminal Brief only after the local candidate passes build/tests plus the no-live outbox preflight, and the live container image/revision is confirmed to include that same broker commit. If the live container is behind `origin/main`, plugin/operator consumers may see older surfaces even though `main` is ready; close the gap by scheduling a normal broker rollout with operator approval, not by restarting or deploying from this readiness check.
