@@ -40,7 +40,7 @@ Capture sanitized evidence in the issue/PR comment before the cutover is conside
 
 Do not paste raw `.env` files, edge secrets, OpenClaw runtime context files, raw session dumps, or terminal outbox payloads.
 
-## Safe preflight: duplicate and lease checks
+## Safe preflight: duplicate, lease, and terminal receipt parity checks
 
 Run these as read-only checks first. Replace placeholders in your local shell; keep secrets out of logs.
 
@@ -72,6 +72,18 @@ curl -fsS \
 ```
 
 Fail closed if any old-broker task is `claimed` or `running`, if the target broker already has a fresh same-ID worker without an approved replacement, or if the checks require an unapproved production secret/routing change.
+
+Before considering terminal receipt behavior equivalent across Seoseo and Gwakga, run the read-only parity helper. It polls each broker terminal outbox with `GET` only and combines that shape check with the deterministic no-live receipt-gate canary; it never sends providers, mutates the broker DB, or ACKs terminal rows.
+
+```bash
+npm run broker_terminal_receipt_parity -- \
+  --seoseo-url "${OLD_BROKER_URL}" \
+  --gwakga-url "${NEW_BROKER_URL}" \
+  --edge-secret "${BROKER_EDGE_SECRET}" \
+  --limit 20
+```
+
+If the report lists observed bucket discrepancies, attach the fix proposal from the output and rerun `terminal_outbox_preflight` on both brokers with the same cursor and limit before any operator-approved backfill or ACK.
 
 ## Onboarding a new Gwakga worker
 

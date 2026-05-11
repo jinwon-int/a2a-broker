@@ -36,6 +36,7 @@
     "source_public_execution_orchestrator": "npm run build && node scripts/source-public-execution-orchestrator.mjs",
     "scan:public-readiness": "node scripts/public-readiness-scan.mjs",
     "two_broker_worker_preflight": "node scripts/two-broker-worker-preflight.mjs",
+    "broker_terminal_receipt_parity": "npm run build && node scripts/broker-terminal-receipt-parity.mjs",
     "release_evidence_export": "npm run build && node dist/release-evidence-export.js"
   },
   "engines": {
