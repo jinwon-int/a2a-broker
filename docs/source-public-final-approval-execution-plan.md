@@ -47,6 +47,12 @@ The generated bundle contains:
   `executionIntentId`, and `executionIdempotencyKey`;
 - a ledger entry that is `persistence: not-written` and
   `mutationAttempted: false` in this round;
+- a final go/no-go gate ledger that records each required preflight status and
+  its safe effect (`allow-review`, `warn-review`, `await-operator`, or
+  `block-execution`);
+- an approval intent record that binds the execution intent/idempotency key to
+  the decision while keeping persistence `not-written` and mutation attempts
+  disabled;
 - scanner/history binding fields (`scannerRunId`, `scannerDigest`,
   `historyCursor`, and `historyDigest`);
 - explicit operator-gate fields with `operatorApprovalRequired: true`,
@@ -55,6 +61,15 @@ The generated bundle contains:
 - a rollback/abort runbook; and
 - redaction metadata proving raw prompts/logs/secrets/host-private paths and
   runtime/bootstrap context are not included.
+
+## Final go/no-go ledger and approval intent record
+
+Issue [#488](https://github.com/jinwon-int/a2a-broker/issues/488) / run
+`a2a-source-public-go-nogo-gate-20260511T052500Z` adds the explicit gate ledger
+and approval intent record to the generated bundle. These records are
+status-only: they contain stable ids, preflight names, statuses, and decisions,
+but no raw prompts, logs, secrets, host-private paths, runtime/bootstrap context,
+or live approval execution.
 
 ## Idempotency and replay protection
 
