@@ -33,6 +33,7 @@
     "closeout_release_report": "node scripts/closeout-release-report.mjs",
     "rehearsal_manifest": "node scripts/broker-rehearsal-manifest.mjs",
     "source_public_approval_rehearsal": "npm run build && node scripts/source-public-approval-rehearsal.mjs",
+    "source_public_execution_orchestrator": "npm run build && node scripts/source-public-execution-orchestrator.mjs",
     "scan:public-readiness": "node scripts/public-readiness-scan.mjs",
     "two_broker_worker_preflight": "node scripts/two-broker-worker-preflight.mjs",
     "release_evidence_export": "npm run build && node dist/release-evidence-export.js"
