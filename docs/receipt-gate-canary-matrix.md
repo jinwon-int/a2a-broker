@@ -6,16 +6,18 @@ Use this before any production deploy, Gateway restart, live Telegram send, or r
 
 ```sh
 npm ci
-npm run build
 npm run receipt_gate_canary
 npm run receipt_gate_canary -- --json
 ```
+
+The script is safe to run independently of a pre-existing `dist/` build: it uses the compiled module when present and otherwise falls back to a dependency-free runtime copy of the deterministic matrix. It still remains no-live and deterministic.
 
 For a full pre-deploy check, run the focused test plus the normal CI command:
 
 ```sh
 npm run build
 node --test dist/core/receipt-gate-canary.test.js
+node --test scripts/receipt-gate-canary.test.mjs
 npm test
 ```
 
