@@ -537,6 +537,19 @@ test("/health response shape is stable across repeated calls (no field drift)", 
     assert.ok(persistKeys.includes("hotEntityMirror"));
     assert.ok(persistKeys.includes("hotEntityDiagnostics"));
 
+    // Runtime memory shape must be stable and exposes heap headroom for OOM watchpoints.
+    const memory = (responses[0] as Record<string, unknown>).runtimeMemory as Record<string, unknown>;
+    assert.deepEqual(Object.keys(memory).sort(), [
+      "arrayBuffersBytes",
+      "externalBytes",
+      "heapLimitBytes",
+      "heapTotalBytes",
+      "heapUsedBytes",
+      "rssBytes",
+    ].sort());
+    assert.equal(typeof memory.heapUsedBytes, "number");
+    assert.equal(typeof memory.heapLimitBytes, "number");
+
     // Audit diagnostics shape must be stable.
     const auditKeys = Object.keys((responses[0] as Record<string, unknown>).auditDiagnostics as Record<string, unknown>).sort();
     const expectedAuditKeys = [

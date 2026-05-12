@@ -25,6 +25,7 @@ import {
   writeBrokerSnapshotFile,
   type BrokerSnapshot,
 } from "./store.js";
+import type { TerminalTaskOutboxEvent } from "./terminal-event-outbox.js";
 
 function withTempFile(name: string): {
   dir: string;
@@ -727,6 +728,56 @@ test("SqliteBrokerStateStore projects a runtime snapshot from hot tables without
     } finally {
       db.close();
     }
+  } finally {
+    temp.cleanup();
+  }
+});
+
+test("SqliteBrokerStateStore bounds hot runtime hydration without hiding table-native reads", () => {
+  const temp = withTempFile("state.sqlite");
+  try {
+    const activeTask = makeTask("task-running", "running", "worker-a");
+    const oldTerminalTask = {
+      ...makeTask("task-terminal-old", "succeeded", "worker-a"),
+      completedAt: "2026-04-27T00:01:00.000Z",
+      updatedAt: "2026-04-27T00:01:00.000Z",
+    };
+    const newestTerminalTask = {
+      ...makeTask("task-terminal-new", "failed", "worker-a"),
+      completedAt: "2026-04-27T00:03:00.000Z",
+      updatedAt: "2026-04-27T00:03:00.000Z",
+    };
+    const snapshot: BrokerSnapshot = {
+      ...emptySnapshot(),
+      tasks: [oldTerminalTask, newestTerminalTask, activeTask],
+      auditEvents: [
+        makeAuditEvent("audit-old", "task.created", "task-terminal-old", "2026-04-27T00:01:00.000Z"),
+        makeAuditEvent("audit-mid", "task.failed", "task-terminal-new", "2026-04-27T00:02:00.000Z"),
+        makeAuditEvent("audit-new", "task.started", "task-running", "2026-04-27T00:03:00.000Z"),
+      ],
+      terminalOutbox: [
+        makeTerminalOutboxEvent("outbox-old", "task-terminal-old", "2026-04-27T00:01:00.000Z"),
+        makeTerminalOutboxEvent("outbox-mid", "task-terminal-new", "2026-04-27T00:02:00.000Z"),
+        makeTerminalOutboxEvent("outbox-new", "task-running", "2026-04-27T00:03:00.000Z"),
+      ],
+    };
+
+    const store = new SqliteBrokerStateStore(temp.filePath, {
+      maxHotRuntimeTerminalTasks: 1,
+      maxHotRuntimeAuditEvents: 2,
+      maxHotRuntimeTerminalOutboxEvents: 2,
+    });
+    store.save(snapshot);
+
+    const hotRuntime = store.readHotRuntimeSnapshot();
+    assert.deepEqual(new Set(hotRuntime.tasks.map((task) => task.id)), new Set(["task-running", "task-terminal-new"]));
+    assert.deepEqual(hotRuntime.auditEvents.map((event) => event.id), ["audit-new", "audit-mid"]);
+    assert.deepEqual(hotRuntime.terminalOutbox?.map((event) => event.id), ["outbox-mid", "outbox-new"]);
+
+    assert.equal(store.readHotTasks().length, 3);
+    assert.equal(store.readHotAuditEvents().length, 3);
+    assert.equal(store.readHotTerminalOutbox().length, 3);
+    store.close();
   } finally {
     temp.cleanup();
   }
@@ -2058,5 +2109,27 @@ function makeAuditEvent(
     targetType: "task",
     targetId,
     createdAt,
+  };
+}
+
+function makeTerminalOutboxEvent(id: string, taskId: string, createdAt: string): TerminalTaskOutboxEvent {
+  return {
+    id,
+    kind: "task.terminal",
+    taskEventId: Number(createdAt.slice(17, 19)),
+    payload: {
+      taskId,
+      status: "succeeded",
+      worker: "worker-a",
+      createdAt,
+      updatedAt: createdAt,
+      completedAt: createdAt,
+    },
+    createdAt,
+    receipt: {
+      status: "accepted",
+      updatedAt: createdAt,
+    },
+    attempts: 0,
   };
 }
