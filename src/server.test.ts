@@ -917,6 +917,43 @@ test("server can hydrate broker runtime from SQLite hot-table load source", asyn
   }
 });
 
+test("server exposes broker cleanup dry-run plan for SQLite hot tables", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "a2a-broker-cleanup-plan-"));
+  const store = new SqliteBrokerStateStore(join(dir, "state.sqlite"));
+  const oldTask: BrokerSnapshot["tasks"][number] = {
+    id: "cleanup-api-old-task",
+    intent: "chat",
+    requester: { id: "requester", kind: "session", role: "hub" },
+    target: { id: "worker-cleanup", kind: "node", role: "analyst" },
+    targetNodeId: "worker-cleanup",
+    assignedWorkerId: "worker-cleanup",
+    payload: {},
+    status: "failed",
+    createdAt: "2026-04-27T00:00:00.000Z",
+    updatedAt: "2026-04-27T00:00:00.000Z",
+    completedAt: "2026-04-27T00:00:00.000Z",
+    taskOrigin: "api",
+  };
+  store.save({ ...emptySnapshot(), tasks: [oldTask] });
+  const server = await startTestServer({ stateStore: store });
+  try {
+    const res = await fetch(
+      `${server.baseUrl}/operator/cleanup/plan?now_ms=${Date.parse("2026-04-27T01:00:00.000Z")}&task_retention_ms=1800000&max_terminal_tasks=0`,
+      { headers: { "x-a2a-requester-id": "operator-a", "x-a2a-requester-role": "operator" } },
+    );
+    assert.equal(res.status, 200);
+    const plan = await res.json();
+    assert.equal(plan.kind, "broker.cleanup.plan");
+    assert.equal(plan.mode, "dry-run");
+    assert.deepEqual(plan.tables.find((table: { table: string }) => table.table === "broker_tasks").pruneIds, [oldTask.id]);
+    assert.equal(store.readHotTasks().length, 1, "dry-run API must not prune rows");
+  } finally {
+    await server.close();
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("server falls back to broker task reads for unsupported SQLite task filters", async () => {
   const dir = mkdtempSync(join(tmpdir(), "a2a-broker-sqlite-tasks-fallback-"));
   const store = new SqliteBrokerStateStore(join(dir, "state.sqlite"));

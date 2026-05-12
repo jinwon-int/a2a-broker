@@ -25,6 +25,12 @@ import {
   writeBrokerSnapshotFile,
   type BrokerSnapshot,
 } from "./store.js";
+import {
+  BROKER_CLEANUP_CONFIRMATION,
+  buildBrokerCleanupPlan,
+  executeBrokerCleanupPlan,
+  validateCleanupExecution,
+} from "./broker-cleanup.js";
 import type { TerminalTaskOutboxEvent } from "./terminal-event-outbox.js";
 
 function withTempFile(name: string): {
@@ -1667,6 +1673,122 @@ test("SqliteBrokerStateStore save hints prune missing task and audit rows throug
     assert.deepEqual(store.readHotTasks().map((task) => task.id), ["task-keep"]);
     assert.deepEqual(store.readHotAuditEvents().map((event) => event.id), ["audit-keep"]);
     assert.equal(store.readHotEntityMirrorStatus().ok, true);
+    store.close();
+  } finally {
+    temp.cleanup();
+  }
+});
+
+test("broker cleanup plan reports dry-run candidates with stable gates", () => {
+  const temp = withTempFile("state.sqlite");
+  try {
+    const oldTerminal = {
+      ...makeTask("cleanup-old-terminal", "failed", "worker-idle"),
+      completedAt: "2026-04-27T00:00:00.000Z",
+      updatedAt: "2026-04-27T00:00:00.000Z",
+    };
+    const active = {
+      ...makeTask("cleanup-active", "running", "worker-active"),
+      updatedAt: "2026-04-27T00:00:00.000Z",
+    };
+    const store = new SqliteBrokerStateStore(temp.filePath);
+    store.save({
+      ...emptySnapshot(),
+      tasks: [oldTerminal, active],
+      workers: [makeWorker("worker-idle"), makeWorker("worker-active")],
+      auditEvents: [
+        makeAuditEvent("cleanup-audit-old-terminal", "task.failed", oldTerminal.id, "2026-04-27T00:00:00.000Z"),
+        makeAuditEvent("cleanup-audit-active", "task.started", active.id, "2026-04-27T00:00:00.000Z"),
+      ],
+    });
+
+    const plan = buildBrokerCleanupPlan(store, {
+      nowMs: Date.parse("2026-04-27T01:00:00.000Z"),
+      taskRetentionMs: 30 * 60 * 1000,
+      maxTerminalTasks: 0,
+      auditRetentionMs: 30 * 60 * 1000,
+      maxAuditEvents: 0,
+      workerRetentionMs: 30 * 60 * 1000,
+      maxInactiveWorkers: 0,
+    });
+
+    assert.equal(plan.kind, "broker.cleanup.plan");
+    assert.equal(plan.mode, "dry-run");
+    assert.equal(plan.summary.totalPruneCandidates, 3);
+    assert.equal(plan.summary.highestRisk, "high");
+    assert.equal(plan.planId.length, 16);
+    assert.deepEqual(plan.tables.find((table) => table.table === "broker_tasks")?.pruneIds, [oldTerminal.id]);
+    assert.deepEqual(plan.tables.find((table) => table.table === "broker_audit_events")?.pruneIds, ["cleanup-audit-old-terminal"]);
+    assert.deepEqual(plan.tables.find((table) => table.table === "broker_workers")?.pruneIds, ["worker-idle"]);
+    assert.equal(plan.tables.find((table) => table.table === "broker_workers")?.executionBlockedByDefault, true);
+    assert.equal(store.readHotTasks().length, 2, "dry-run plan must not mutate task rows");
+    store.close();
+  } finally {
+    temp.cleanup();
+  }
+});
+
+test("broker cleanup execution requires approval, backup proof, and worker override", () => {
+  const temp = withTempFile("state.sqlite");
+  try {
+    const oldTerminal = {
+      ...makeTask("cleanup-exec-terminal", "failed", "worker-prune"),
+      completedAt: "2026-04-27T00:00:00.000Z",
+      updatedAt: "2026-04-27T00:00:00.000Z",
+    };
+    const store = new SqliteBrokerStateStore(temp.filePath);
+    store.save({
+      ...emptySnapshot(),
+      tasks: [oldTerminal],
+      workers: [makeWorker("worker-prune")],
+      auditEvents: [makeAuditEvent("cleanup-exec-audit", "task.failed", oldTerminal.id, "2026-04-27T00:00:00.000Z")],
+    });
+
+    const plan = buildBrokerCleanupPlan(store, {
+      nowMs: Date.parse("2026-04-27T01:00:00.000Z"),
+      taskRetentionMs: 30 * 60 * 1000,
+      maxTerminalTasks: 0,
+      auditRetentionMs: 30 * 60 * 1000,
+      maxAuditEvents: 0,
+      workerRetentionMs: 30 * 60 * 1000,
+      maxInactiveWorkers: 0,
+    });
+
+    assert.deepEqual(validateCleanupExecution(plan, {}), [
+      "approvalToken does not match planId",
+      `confirmation must equal ${BROKER_CLEANUP_CONFIRMATION}`,
+      "backupProof is required before cleanup execution",
+      "worker prune candidates require allowWorkerPrune=true because stale workers may still be valid home-broker records",
+    ]);
+
+    assert.throws(
+      () => executeBrokerCleanupPlan(store, plan, {
+        approvalToken: plan.planId,
+        confirmation: BROKER_CLEANUP_CONFIRMATION,
+        backupProof: "sqlite backup: /tmp/backup.sqlite sha256=abc123",
+      }),
+      /worker prune candidates require allowWorkerPrune=true/,
+    );
+
+    const result = executeBrokerCleanupPlan(store, plan, {
+      approvalToken: plan.planId,
+      confirmation: BROKER_CLEANUP_CONFIRMATION,
+      backupProof: "sqlite backup: /tmp/backup.sqlite sha256=abc123",
+      allowWorkerPrune: true,
+    });
+
+    assert.equal(result.kind, "broker.cleanup.execution");
+    assert.deepEqual(result.results.map((item) => [item.table, item.prunedCount]), [
+      ["broker_tasks", 1],
+      ["broker_audit_events", 1],
+      ["broker_workers", 1],
+    ]);
+    assert.equal(result.auditEvent.action, "broker.cleanup.applied");
+    assert.equal(result.auditEvent.targetType, "broker");
+    assert.equal(result.auditEvent.targetId, plan.planId);
+    assert.equal(store.readHotTasks().length, 0);
+    assert.deepEqual(store.readHotAuditEvents().map((event) => event.action), ["broker.cleanup.applied"]);
+    assert.equal(store.readHotWorkers().length, 0);
     store.close();
   } finally {
     temp.cleanup();

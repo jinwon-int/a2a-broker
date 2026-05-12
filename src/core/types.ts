@@ -164,7 +164,8 @@ export type AuditAction =
   | "task.wake.skipped"
   | "task.wake.failed"
   | "worker.registered"
-  | "worker.heartbeat";
+  | "worker.heartbeat"
+  | "broker.cleanup.applied";
 export type A2AWorkerEnvironment = "research" | "staging" | "live";
 export type WorkerStatus = "online" | "stale";
 
@@ -545,7 +546,7 @@ export interface AuditEvent {
   id: string;
   actorId: string;
   action: AuditAction;
-  targetType: "proposal" | "artifact" | "validation" | "worker" | "task" | "exchange" | "exchange-message";
+  targetType: "proposal" | "artifact" | "validation" | "worker" | "task" | "exchange" | "exchange-message" | "broker";
   targetId: string;
   proposalId?: string;
   note?: string;

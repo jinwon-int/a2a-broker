@@ -104,6 +104,12 @@ import { projectAlerts, type Alert, type AlertScanResult } from "./core/alert-pr
 import { buildOperatorTaskReport } from "./core/operator-task-report.js";
 import { buildReleaseEvidenceExport } from "./core/release-evidence.js";
 import {
+  buildBrokerCleanupPlan,
+  executeBrokerCleanupPlan,
+  validateCleanupExecution,
+  type BrokerCleanupPlanOptions,
+} from "./core/broker-cleanup.js";
+import {
   isTerminalTaskOutboxAckEvidence,
   isTerminalTaskReceiptStatus,
   type TerminalTaskOutboxAckInput,
@@ -1068,6 +1074,46 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
         return sendJson(res, 200, report, {
           "cache-control": "no-store",
         });
+      }
+
+      if (req.method === "GET" && path === "/operator/cleanup/plan") {
+        if (enforceRequesterIdentity) {
+          assertRequesterHasRole(requesterIdentity, ["hub", "operator"], "operator.cleanup.plan");
+        }
+        if (!(stateStore instanceof SqliteBrokerStateStore)) {
+          throw new BrokerError("bad_request", "broker cleanup planning requires sqlite persistence");
+        }
+        const plan = buildBrokerCleanupPlan(stateStore, cleanupPlanOptionsFromUrl(url));
+        return sendJson(res, 200, plan, { "cache-control": "no-store" });
+      }
+
+      if (req.method === "POST" && path === "/operator/cleanup/execute") {
+        if (enforceRequesterIdentity) {
+          assertRequesterHasRole(requesterIdentity, ["hub", "operator"], "operator.cleanup.execute");
+        }
+        if (!(stateStore instanceof SqliteBrokerStateStore)) {
+          throw new BrokerError("bad_request", "broker cleanup execution requires sqlite persistence");
+        }
+        const body = await readJson<Record<string, unknown>>(req);
+        const plan = buildBrokerCleanupPlan(stateStore, cleanupPlanOptionsFromBody(body));
+        const executionOptions = {
+          approvalToken: optionalString(body?.approvalToken),
+          confirmation: optionalString(body?.confirmation),
+          backupProof: optionalString(body?.backupProof),
+          allowWorkerPrune: body?.allowWorkerPrune === true,
+          actorId: requesterIdentity?.id,
+        };
+        const blockers = validateCleanupExecution(plan, executionOptions);
+        if (blockers.length > 0) {
+          return sendJson(res, 409, {
+            ok: false,
+            error: "cleanup_execution_blocked",
+            blockers,
+            plan,
+          }, { "cache-control": "no-store" });
+        }
+        const result = executeBrokerCleanupPlan(stateStore, plan, executionOptions);
+        return sendJson(res, 200, { ok: true, plan, result }, { "cache-control": "no-store" });
       }
 
       // GET /alerts — monitoring-friendly alert projection
@@ -2508,8 +2554,8 @@ function canUseSqliteTaskHotRead(filters: TaskListFilters): boolean {
   );
 }
 
-function optionalString(value: string | null): string | undefined {
-  return value && value.trim() ? value.trim() : undefined;
+function optionalString(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }
 
 function optionalEnum<T extends string>(value: string | null, allowed: readonly T[]): T | undefined {
@@ -2584,6 +2630,59 @@ function booleanQueryParam(url: URL, name: string): boolean | undefined {
     return false;
   }
   throw new BrokerError("bad_request", `${name} must be a boolean`);
+}
+
+function cleanupPlanOptionsFromUrl(url: URL): BrokerCleanupPlanOptions {
+  return {
+    nowMs: numberQueryParam(url, "now_ms"),
+    taskRetentionMs: numberQueryParam(url, "task_retention_ms"),
+    maxTerminalTasks: numberQueryParam(url, "max_terminal_tasks"),
+    auditRetentionMs: numberQueryParam(url, "audit_retention_ms"),
+    maxAuditEvents: numberQueryParam(url, "max_audit_events"),
+    workerRetentionMs: numberQueryParam(url, "worker_retention_ms"),
+    maxInactiveWorkers: numberQueryParam(url, "max_inactive_workers"),
+    protectedTaskIds: stringListQueryParam(url, "protected_task_id"),
+    protectedWorkerIds: stringListQueryParam(url, "protected_worker_id"),
+  };
+}
+
+function cleanupPlanOptionsFromBody(body: Record<string, unknown> | null | undefined): BrokerCleanupPlanOptions {
+  return {
+    nowMs: nonNegativeNumberBodyField(body, "nowMs"),
+    taskRetentionMs: nonNegativeNumberBodyField(body, "taskRetentionMs"),
+    maxTerminalTasks: nonNegativeNumberBodyField(body, "maxTerminalTasks"),
+    auditRetentionMs: nonNegativeNumberBodyField(body, "auditRetentionMs"),
+    maxAuditEvents: nonNegativeNumberBodyField(body, "maxAuditEvents"),
+    workerRetentionMs: nonNegativeNumberBodyField(body, "workerRetentionMs"),
+    maxInactiveWorkers: nonNegativeNumberBodyField(body, "maxInactiveWorkers"),
+    protectedTaskIds: stringListBodyField(body, "protectedTaskIds"),
+    protectedWorkerIds: stringListBodyField(body, "protectedWorkerIds"),
+  };
+}
+
+function stringListQueryParam(url: URL, name: string): string[] | undefined {
+  const values = url.searchParams.getAll(name).flatMap((value) => value.split(","));
+  const normalized = values.map((value) => value.trim()).filter(Boolean);
+  return normalized.length > 0 ? [...new Set(normalized)] : undefined;
+}
+
+function nonNegativeNumberBodyField(body: Record<string, unknown> | null | undefined, name: string): number | undefined {
+  const value = body?.[name];
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
+    throw new BrokerError("bad_request", `${name} must be a non-negative number`);
+  }
+  return value;
+}
+
+function stringListBodyField(body: Record<string, unknown> | null | undefined, name: string): string[] | undefined {
+  const value = body?.[name];
+  if (value === undefined || value === null) return undefined;
+  if (!Array.isArray(value) || !value.every((item) => typeof item === "string")) {
+    throw new BrokerError("bad_request", `${name} must be an array of strings`);
+  }
+  const normalized = value.map((item) => item.trim()).filter(Boolean);
+  return normalized.length > 0 ? [...new Set(normalized)] : undefined;
 }
 
 function buildMessageThreads(items: A2AExchangeMessageRecord[]): ThreadedExchangeMessage[] {

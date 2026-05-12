@@ -2601,6 +2601,8 @@ function isAuditEventProtected(
       return protectedIds.exchangeIds.has(event.targetId);
     case "exchange-message":
       return protectedIds.exchangeMessageIds.has(event.targetId);
+    case "broker":
+      return false;
   }
 }
 
