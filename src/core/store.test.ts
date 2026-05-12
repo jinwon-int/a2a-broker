@@ -2106,7 +2106,7 @@ function makeOutboxEvent(
       acknowledgedAt,
     };
   }
-  return event as NonNullable<BrokerSnapshot["terminalOutbox"]>[number];
+  return event as unknown as NonNullable<BrokerSnapshot["terminalOutbox"]>[number];
 }
 
 test("SqliteBrokerStateStore.readHotTableLoadMetrics returns per-table counts and max payload sizes", () => {
@@ -2218,7 +2218,7 @@ test("SqliteBrokerStateStore.readHotRuntimeSnapshot survives representative load
       makeExchangeMessage(`exmsg-r-${i}`, `ex-r-${i % exchangeCount}`, "root", undefined, t0),
     );
     const proposals = Array.from({ length: proposalCount }, (_, i) =>
-      makeProposal(`proposal-r-${i}`, "open", "worker-0", t0),
+      makeProposal(`proposal-r-${i}`, "submitted", "worker-0", t0),
     );
 
     const snapshot: BrokerSnapshot = {
@@ -2281,7 +2281,7 @@ test("SqliteBrokerStateStore planHotTaskRetention identifies prune candidates", 
       updatedAt: t0,
     }));
     const activeTasks: BrokerSnapshot["tasks"] = Array.from({ length: 160 }, (_, i) => ({
-      ...makeTask(`ra-${i}`, (["queued", "running", "retrying"] as const)[i % 3], "worker-0"),
+      ...makeTask(`ra-${i}`, (["queued", "running", "claimed"] as const)[i % 3], "worker-0"),
       createdAt: t0,
       updatedAt: t0,
     }));
