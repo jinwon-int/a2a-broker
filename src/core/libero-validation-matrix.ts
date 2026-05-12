@@ -19,14 +19,31 @@ export type LiberoForbiddenAction =
   | "release"
   | "forcePush";
 
+export type LiberoSourceIssue = "#497" | "#294" | "#497/#294";
+
 export interface LiberoRegressionGate {
   id: string;
   area: LiberoValidationArea;
-  sourceIssue: "#497" | "#294" | "#497/#294";
+  sourceIssue: LiberoSourceIssue;
   noLiveOnly: true;
   gate: string;
   requiredProof: string;
   noGoIf: string;
+}
+
+export interface LiberoClosureCriterion {
+  id: string;
+  sourceIssue: LiberoSourceIssue;
+  criterion: string;
+  requiredEvidence: string;
+  closesWhen: string;
+}
+
+export interface LiberoNoGoTrap {
+  id: string;
+  area: LiberoValidationArea;
+  trap: string;
+  failClosedResponse: string;
 }
 
 export interface LiberoEvidenceInput {
@@ -74,6 +91,77 @@ export const LIBERO_FORBIDDEN_ACTIONS: readonly LiberoForbiddenAction[] = [
   "secretChange",
   "release",
   "forcePush",
+] as const;
+
+export const LIBERO_CLOSURE_CRITERIA: readonly LiberoClosureCriterion[] = [
+  {
+    id: "C1",
+    sourceIssue: "#497",
+    criterion: "Hot-table persistence no longer depends on full-history heap residency for normal startup, health, or single-row updates.",
+    requiredEvidence: "Bounded no-live fixture or focused test covering representative task/audit/outbox history and heap/readiness diagnostics.",
+    closesWhen: "The evidence proves state growth is bounded by active/recent windows or documented caps, not by retained historical row count.",
+  },
+  {
+    id: "C2",
+    sourceIssue: "#497",
+    criterion: "Retention and cleanup policy is explicit for completed tasks, audit events, tombstones, workers, snapshots, WAL, and terminal outbox rows.",
+    requiredEvidence: "Tests or docs for caps/age windows/protected IDs plus read-only reporting; production cleanup remains separately approved.",
+    closesWhen: "Operators can distinguish safe retention, pending cleanup approval, and current unbounded-growth blockers without mutating the live DB.",
+  },
+  {
+    id: "C3",
+    sourceIssue: "#294",
+    criterion: "Receipt semantics keep provider accepted-send, operator-visible/current-session receipt, and terminal ACK as separate states.",
+    requiredEvidence: "receipt_gate_canary and terminal_receipt_gap_matrix outputs showing provider accepted/sent never implies ACK or human visibility.",
+    closesWhen: "Every terminal closeout path requires ACK-safe receipt evidence or stays pending/blocked with compact evidence.",
+  },
+  {
+    id: "C4",
+    sourceIssue: "#294",
+    criterion: "Replay/canary paths are duplicate-safe and default no-live, with live provider sends and terminal ACKs opt-in only after separate approval.",
+    requiredEvidence: "No-live canary/preflight output with providerCalled=false, terminalAckAttempted=false, and duplicate/replay suppression proof.",
+    closesWhen: "A stale backlog or rerun cannot produce duplicate provider sends, forged ACKs, or false Done evidence.",
+  },
+  {
+    id: "C5",
+    sourceIssue: "#497/#294",
+    criterion: "Closure evidence is compact, reproducible, and excludes OpenClaw runtime/bootstrap context files and secrets.",
+    requiredEvidence: "Start plus PR/Done/Block evidence, command results, blocker URLs, and candidate diff checks for runtime/bootstrap path leaks.",
+    closesWhen: "The branch/artifact set is free of AGENTS/SOUL/USER/TOOLS/HEARTBEAT/IDENTITY/.openclaw files and raw session/private-host dumps.",
+  },
+] as const;
+
+export const LIBERO_NO_GO_TRAPS: readonly LiberoNoGoTrap[] = [
+  {
+    id: "T1",
+    area: "receipt_semantics",
+    trap: "Treating provider accepted-send, Telegram message id, GitHub comment projection, or task success as operator-visible receipt.",
+    failClosedResponse: "Keep the row pending, report the receipt gap, and do not ACK or close #294 from provider-only evidence.",
+  },
+  {
+    id: "T2",
+    area: "hot_table_memory",
+    trap: "Masking hot-table OOM risk with a restart, NODE_OPTIONS heap increase, or one clean /health sample instead of bounded-state proof.",
+    failClosedResponse: "Mark #497 NO-GO until representative no-live history/churn evidence proves bounded heap/readiness behavior.",
+  },
+  {
+    id: "T3",
+    area: "terminal_outbox_hygiene",
+    trap: "Pruning, expiring, or ACKing unacked terminal-outbox rows as cleanup during validation.",
+    failClosedResponse: "Block and request separate DB cleanup/ACK approval; validation may only report compact read-only counts and IDs when safe.",
+  },
+  {
+    id: "T4",
+    area: "replay_canary",
+    trap: "Using a live provider send, real terminal ACK, or duplicate replay to compensate for missing no-live canary proof.",
+    failClosedResponse: "Stop the lane, keep notification/ACK disabled, and require no-live replay evidence before any new live approval request.",
+  },
+  {
+    id: "T5",
+    area: "evidence_hygiene",
+    trap: "Allowing OpenClaw runtime/bootstrap files, raw session dumps, private host paths, or secret-shaped values into branch diff or artifact evidence.",
+    failClosedResponse: "Fail closed before PR creation and report the exact repo-relative offending paths.",
+  },
 ] as const;
 
 export const LIBERO_REGRESSION_GATES: readonly LiberoRegressionGate[] = [
@@ -191,6 +279,34 @@ export function renderLiberoValidationMatrixMarkdown(
   return [
     "| ID | Area | Source | Gate | Required proof | NO-GO if |",
     "| --- | --- | --- | --- | --- | --- |",
+    ...rows,
+  ].join("\n");
+}
+
+export function renderLiberoClosureCriteriaMarkdown(
+  criteria: readonly LiberoClosureCriterion[] = LIBERO_CLOSURE_CRITERIA,
+): string {
+  const rows = criteria.map((item) => (
+    `| ${item.id} | ${item.sourceIssue} | ${item.criterion} | ${item.requiredEvidence} | ${item.closesWhen} |`
+  ));
+
+  return [
+    "| ID | Source | Closure criterion | Required evidence | Closes when |",
+    "| --- | --- | --- | --- | --- |",
+    ...rows,
+  ].join("\n");
+}
+
+export function renderLiberoNoGoTrapsMarkdown(
+  traps: readonly LiberoNoGoTrap[] = LIBERO_NO_GO_TRAPS,
+): string {
+  const rows = traps.map((item) => (
+    `| ${item.id} | ${item.area} | ${item.trap} | ${item.failClosedResponse} |`
+  ));
+
+  return [
+    "| ID | Area | NO-GO trap | Fail-closed response |",
+    "| --- | --- | --- | --- |",
     ...rows,
   ].join("\n");
 }

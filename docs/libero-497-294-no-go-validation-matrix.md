@@ -1,7 +1,8 @@
 # Libero #497/#294 no-go validation matrix
 
 Issue: [#507](https://github.com/jinwon-int/a2a-broker/issues/507)  
-Parent: [#504](https://github.com/jinwon-int/a2a-broker/issues/504)  
+Next-round lane: [#514](https://github.com/jinwon-int/a2a-broker/issues/514)  
+Parent: [#504](https://github.com/jinwon-int/a2a-broker/issues/504) / [#511](https://github.com/jinwon-int/a2a-broker/issues/511)  
 Source lanes: [#497](https://github.com/jinwon-int/a2a-broker/issues/497), [#294](https://github.com/jinwon-int/a2a-broker/issues/294)
 
 This is the Team2/soonwook Libero validation gate for broker hot-table/OOM risk and receipt/canary safety. It is a no-live validation artifact: it can support PR/Done/Block evidence, but it is not approval to deploy, restart, send providers, ACK terminal rows, mutate production SQLite, rotate secrets, release, or force-push.
@@ -20,6 +21,30 @@ Default decision is **NO-GO** until every required area has passing evidence and
 - force-push/history rewrite
 
 If a check needs live access that is unavailable in the runner, post `Block` with the exact missing read-only endpoint/evidence. Do not substitute a write, live send, DB mutation, or terminal ACK.
+
+## Closure criteria
+
+#497 and #294 should remain open until these criteria are all backed by no-live or explicitly read-only evidence. Passing one criterion does not override a blocker in another row.
+
+| ID | Source | Closure criterion | Required evidence | Closes when |
+| --- | --- | --- | --- | --- |
+| C1 | #497 | Hot-table persistence no longer depends on full-history heap residency for normal startup, health, or single-row updates. | Bounded no-live fixture or focused test covering representative task/audit/outbox history and heap/readiness diagnostics. | Evidence proves state growth is bounded by active/recent windows or documented caps, not retained historical row count. |
+| C2 | #497 | Retention and cleanup policy is explicit for completed tasks, audit events, tombstones, workers, snapshots, WAL, and terminal outbox rows. | Tests or docs for caps/age windows/protected IDs plus read-only reporting; production cleanup remains separately approved. | Operators can distinguish safe retention, pending cleanup approval, and current unbounded-growth blockers without mutating the live DB. |
+| C3 | #294 | Receipt semantics keep provider accepted-send, operator-visible/current-session receipt, and terminal ACK as separate states. | `receipt_gate_canary` and `terminal_receipt_gap_matrix` outputs showing provider accepted/sent never implies ACK or human visibility. | Every terminal closeout path requires ACK-safe receipt evidence or stays pending/blocked with compact evidence. |
+| C4 | #294 | Replay/canary paths are duplicate-safe and default no-live, with live provider sends and terminal ACKs opt-in only after separate approval. | No-live canary/preflight output with `providerCalled=false`, `terminalAckAttempted=false`, and duplicate/replay suppression proof. | A stale backlog or rerun cannot produce duplicate provider sends, forged ACKs, or false Done evidence. |
+| C5 | #497/#294 | Closure evidence is compact, reproducible, and excludes OpenClaw runtime/bootstrap context files and secrets. | Start plus PR/Done/Block evidence, command results, blocker URLs, and candidate diff checks for runtime/bootstrap path leaks. | The branch/artifact set is free of `AGENTS.md`, `SOUL.md`, `USER.md`, `TOOLS.md`, `HEARTBEAT.md`, `IDENTITY.md`, `.openclaw/**`, raw session dumps, and private-host dumps. |
+
+## No-go traps
+
+Treat any of these as fail-closed signals, even if some local tests pass:
+
+| ID | Area | NO-GO trap | Fail-closed response |
+| --- | --- | --- | --- |
+| T1 | Receipt semantics | Treating provider accepted-send, Telegram message id, GitHub comment projection, or task success as operator-visible receipt. | Keep the row pending, report the receipt gap, and do not ACK or close #294 from provider-only evidence. |
+| T2 | Hot-table memory | Masking hot-table OOM risk with a restart, `NODE_OPTIONS` heap increase, or one clean `/health` sample instead of bounded-state proof. | Mark #497 NO-GO until representative no-live history/churn evidence proves bounded heap/readiness behavior. |
+| T3 | Terminal-outbox hygiene | Pruning, expiring, or ACKing unacked terminal-outbox rows as cleanup during validation. | Block and request separate DB cleanup/ACK approval; validation may only report compact read-only counts and IDs when safe. |
+| T4 | Replay canary | Using a live provider send, real terminal ACK, or duplicate replay to compensate for missing no-live canary proof. | Stop the lane, keep notification/ACK disabled, and require no-live replay evidence before any new live approval request. |
+| T5 | Evidence hygiene | Allowing OpenClaw runtime/bootstrap files, raw session dumps, private host paths, or secret-shaped values into branch diff or artifact evidence. | Fail closed before PR creation and report the exact repo-relative offending paths. |
 
 ## Regression gates
 
@@ -56,7 +81,7 @@ Expected no-live signals include:
 ## Evidence templates
 
 ```md
-Start: validating #497/#294 no-go gates for #507.
+Start: validating #497/#294 no-go gates for #514.
 Planned checks: build; libero-validation-matrix.test; receipt_gate_canary; terminal_receipt_gap_matrix; live_readiness_canary --no-live; terminal_outbox_preflight --no-live.
 Safety: no deploy/restart/live provider send/terminal ACK/DB mutation/secret change/release/force-push.
 ```
