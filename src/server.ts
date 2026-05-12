@@ -31,6 +31,9 @@ import {
 import {
   CURRENT_BROKER_STATE_VERSION,
   DEFAULT_BROKER_STATE_MAX_BYTES,
+  DEFAULT_HOT_RUNTIME_MAX_AUDIT_EVENTS,
+  DEFAULT_HOT_RUNTIME_MAX_TERMINAL_OUTBOX_EVENTS,
+  DEFAULT_HOT_RUNTIME_MAX_TERMINAL_TASKS,
   JsonFileBrokerStateStore,
   SqliteArtifactRuntimeRepository,
   SqliteAuditRuntimeRepository,
@@ -311,6 +314,12 @@ export interface BrokerServerOptions {
   broker?: InMemoryA2ABroker;
   retentionPolicy?: Partial<BrokerRetentionPolicy>;
   maxSnapshotBytes?: number;
+  /** Max terminal task rows to hydrate from SQLite hot tables; active tasks always hydrate. Env: `BROKER_HOT_RUNTIME_MAX_TERMINAL_TASKS`. */
+  maxHotRuntimeTerminalTasks?: number;
+  /** Max audit rows to hydrate from SQLite hot tables. Env: `BROKER_HOT_RUNTIME_MAX_AUDIT_EVENTS`. */
+  maxHotRuntimeAuditEvents?: number;
+  /** Max terminal outbox rows to hydrate from SQLite hot tables. Env: `BROKER_HOT_RUNTIME_MAX_TERMINAL_OUTBOX_EVENTS`. */
+  maxHotRuntimeTerminalOutboxEvents?: number;
   trustedProxy?: boolean;
   staleReaperEnabled?: boolean;
   staleReaperIntervalSec?: number;
@@ -390,6 +399,9 @@ export interface BrokerServerRuntime {
     edgeSecret?: string;
     retentionPolicy: BrokerRetentionPolicy;
     maxSnapshotBytes: number;
+    maxHotRuntimeTerminalTasks: number;
+    maxHotRuntimeAuditEvents: number;
+    maxHotRuntimeTerminalOutboxEvents: number;
     trustedProxy: boolean;
     staleReaperEnabled: boolean;
     staleReaperIntervalSec: number;
@@ -428,6 +440,30 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
   const maxSnapshotBytes = Math.max(
     1,
     options.maxSnapshotBytes ?? Number(process.env.STATE_FILE_MAX_BYTES ?? DEFAULT_BROKER_STATE_MAX_BYTES),
+  );
+  const maxHotRuntimeTerminalTasks = Math.max(
+    0,
+    resolveIntegerOption(
+      options.maxHotRuntimeTerminalTasks,
+      process.env.BROKER_HOT_RUNTIME_MAX_TERMINAL_TASKS,
+      DEFAULT_HOT_RUNTIME_MAX_TERMINAL_TASKS,
+    ),
+  );
+  const maxHotRuntimeAuditEvents = Math.max(
+    0,
+    resolveIntegerOption(
+      options.maxHotRuntimeAuditEvents,
+      process.env.BROKER_HOT_RUNTIME_MAX_AUDIT_EVENTS,
+      DEFAULT_HOT_RUNTIME_MAX_AUDIT_EVENTS,
+    ),
+  );
+  const maxHotRuntimeTerminalOutboxEvents = Math.max(
+    0,
+    resolveIntegerOption(
+      options.maxHotRuntimeTerminalOutboxEvents,
+      process.env.BROKER_HOT_RUNTIME_MAX_TERMINAL_OUTBOX_EVENTS,
+      DEFAULT_HOT_RUNTIME_MAX_TERMINAL_OUTBOX_EVENTS,
+    ),
   );
   const staleReaperEnabled =
     options.staleReaperEnabled ?? resolveBooleanEnv(process.env.STALE_REAPER_ENABLED, true);
@@ -473,6 +509,9 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
       sqliteFile,
       sqliteLoadSource,
       maxSnapshotBytes,
+      maxHotRuntimeTerminalTasks,
+      maxHotRuntimeAuditEvents,
+      maxHotRuntimeTerminalOutboxEvents,
     });
   const broker =
     options.broker ??
@@ -1582,6 +1621,9 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
       edgeSecret,
       retentionPolicy,
       maxSnapshotBytes,
+      maxHotRuntimeTerminalTasks,
+      maxHotRuntimeAuditEvents,
+      maxHotRuntimeTerminalOutboxEvents,
       trustedProxy,
       staleReaperEnabled,
       staleReaperIntervalSec,
@@ -1835,12 +1877,18 @@ function createDefaultStateStore(params: {
   sqliteFile?: string;
   sqliteLoadSource: SqliteBrokerLoadSource;
   maxSnapshotBytes: number;
+  maxHotRuntimeTerminalTasks?: number;
+  maxHotRuntimeAuditEvents?: number;
+  maxHotRuntimeTerminalOutboxEvents?: number;
 }): BrokerStateStore {
   if (params.backend === "sqlite") {
     return new SqliteBrokerStateStore(params.sqliteFile ?? `${params.stateFile}.sqlite`, {
       importJsonFile: params.stateFile,
       loadSource: params.sqliteLoadSource,
       maxBytes: params.maxSnapshotBytes,
+      maxHotRuntimeTerminalTasks: params.maxHotRuntimeTerminalTasks,
+      maxHotRuntimeAuditEvents: params.maxHotRuntimeAuditEvents,
+      maxHotRuntimeTerminalOutboxEvents: params.maxHotRuntimeTerminalOutboxEvents,
     });
   }
   return new JsonFileBrokerStateStore(params.stateFile, { maxBytes: params.maxSnapshotBytes });

@@ -320,12 +320,30 @@ test("SqliteBrokerStateStore saves and reloads snapshots with WAL metadata", () 
           broker_proposals: { count: 1, maxPayloadBytes: 397 },
           broker_artifacts: { count: 1, maxPayloadBytes: 128 },
           broker_validations: { count: 1, maxPayloadBytes: 171 },
-          broker_tasks: { count: 1, maxPayloadBytes: 381 },
+          broker_tasks: {
+            count: 1,
+            maxPayloadBytes: 381,
+            runtimeLoad: { limit: 2000, loadedCount: 1, skippedCount: 0, activeCount: 1, terminalCount: 0 },
+          },
           broker_tombstones: { count: 1, maxPayloadBytes: 203 },
           broker_workers: { count: 1, maxPayloadBytes: 313 },
-          broker_audit_events: { count: 1, maxPayloadBytes: 142 },
-          broker_terminal_outbox: { count: 0, maxPayloadBytes: 0 },
+          broker_audit_events: {
+            count: 1,
+            maxPayloadBytes: 142,
+            runtimeLoad: { limit: 5000, loadedCount: 1, skippedCount: 0 },
+          },
+          broker_terminal_outbox: {
+            count: 0,
+            maxPayloadBytes: 0,
+            unackedCount: 0,
+            runtimeLoad: { limit: 1000, loadedCount: 0, skippedCount: 0 },
+          },
         },
+      },
+      hotTableRuntimeLoadLimits: {
+        terminalTasks: 2000,
+        auditEvents: 5000,
+        terminalOutboxEvents: 1000,
       },
       importedFromJsonFile: undefined,
       lastImportAt: undefined,
@@ -2222,13 +2240,30 @@ test("SqliteBrokerStateStore.readHotTableLoadMetrics returns per-table counts an
     assert.ok(metrics.tables["broker_tasks"], "broker_tasks should exist");
     assert.equal(metrics.tables["broker_tasks"].count, 5, "task count");
     assert.ok(metrics.tables["broker_tasks"].maxPayloadBytes > 0, "tasks should have nonzero max payload");
+    assert.deepEqual(metrics.tables["broker_tasks"].runtimeLoad, {
+      limit: 2000,
+      loadedCount: 5,
+      skippedCount: 0,
+      activeCount: 0,
+      terminalCount: 5,
+    });
 
     // Verify audit event counts
     assert.equal(metrics.tables["broker_audit_events"].count, 10, "audit event count");
+    assert.deepEqual(metrics.tables["broker_audit_events"].runtimeLoad, {
+      limit: 5000,
+      loadedCount: 10,
+      skippedCount: 0,
+    });
 
     // Verify terminal outbox with unacked count
     assert.equal(metrics.tables["broker_terminal_outbox"].count, 2, "terminal outbox count");
     assert.equal(metrics.tables["broker_terminal_outbox"].unackedCount, 1, "unacked count should be 1");
+    assert.deepEqual(metrics.tables["broker_terminal_outbox"].runtimeLoad, {
+      limit: 1000,
+      loadedCount: 2,
+      skippedCount: 0,
+    });
 
     // Verify tombstone counts
     assert.equal(metrics.tables["broker_tombstones"].count, 1, "tombstone count");
@@ -2239,6 +2274,74 @@ test("SqliteBrokerStateStore.readHotTableLoadMetrics returns per-table counts an
     // Verify empty tables report zero
     assert.equal(metrics.tables["broker_artifacts"].count, 0, "artifacts should be zero");
     assert.equal(metrics.tables["broker_validations"].count, 0, "validations should be zero");
+  } finally {
+    temp.cleanup();
+  }
+});
+
+test("SqliteBrokerStateStore hot-table runtime load caps hydrate bounded rows and expose skipped counts", () => {
+  const temp = withTempFile("hot-runtime-caps.db");
+  try {
+    const store = new SqliteBrokerStateStore(temp.filePath, {
+      loadSource: "hot-tables",
+      maxHotRuntimeTerminalTasks: 2,
+      maxHotRuntimeAuditEvents: 3,
+      maxHotRuntimeTerminalOutboxEvents: 1,
+    });
+    const t0 = "2026-04-27T00:00:00.000Z";
+    const activeTasks: BrokerSnapshot["tasks"] = Array.from({ length: 3 }, (_, i) => ({
+      ...makeTask(`active-${i}`, (["queued", "claimed", "running"] as const)[i], "worker-0"),
+      createdAt: t0,
+      updatedAt: t0,
+    }));
+    const terminalTasks: BrokerSnapshot["tasks"] = Array.from({ length: 5 }, (_, i) => ({
+      ...makeTask(`terminal-${i}`, i % 2 === 0 ? "succeeded" : "failed", "worker-0"),
+      createdAt: t0,
+      updatedAt: `2026-04-27T00:00:0${i}.000Z`,
+    }));
+    const auditEvents = Array.from({ length: 6 }, (_, i) =>
+      makeAuditEvent(`audit-cap-${i}`, "task.created", `terminal-${i % terminalTasks.length}`, t0),
+    );
+    const terminalOutbox = Array.from({ length: 4 }, (_, i) =>
+      makeOutboxEvent(`outbox-cap-${i}`, `terminal-${i}`, i, `2026-04-27T00:00:0${i}.000Z`, i === 0 ? null : t0),
+    );
+
+    store.save({
+      ...emptySnapshot(),
+      tasks: [...activeTasks, ...terminalTasks],
+      auditEvents,
+      terminalOutbox,
+    }, {});
+
+    const loaded = store.load();
+    assert.equal(loaded.tasks.length, 5, "active tasks plus the newest two terminal tasks hydrate");
+    assert.equal(loaded.auditEvents.length, 3, "audit runtime hydration respects configured cap");
+    assert.equal(loaded.terminalOutbox?.length ?? 0, 1, "terminal outbox runtime hydration respects configured cap");
+
+    const metrics = store.readHotTableLoadMetrics();
+    assert.deepEqual(metrics.tables["broker_tasks"].runtimeLoad, {
+      limit: 2,
+      loadedCount: 5,
+      skippedCount: 3,
+      activeCount: 3,
+      terminalCount: 5,
+    });
+    assert.deepEqual(metrics.tables["broker_audit_events"].runtimeLoad, {
+      limit: 3,
+      loadedCount: 3,
+      skippedCount: 3,
+    });
+    assert.equal(metrics.tables["broker_terminal_outbox"].unackedCount, 1);
+    assert.deepEqual(metrics.tables["broker_terminal_outbox"].runtimeLoad, {
+      limit: 1,
+      loadedCount: 1,
+      skippedCount: 3,
+    });
+    assert.deepEqual(store.readHotTableRuntimeLoadLimits(), {
+      terminalTasks: 2,
+      auditEvents: 3,
+      terminalOutboxEvents: 1,
+    });
   } finally {
     temp.cleanup();
   }

@@ -586,6 +586,18 @@ test("server reports SQLite persistence metadata when SQLite backend is enabled"
       supportedCount: 10,
       totalCount: 10,
     });
+    assert.deepEqual(health.persistence.hotTableRuntimeLoadLimits, {
+      terminalTasks: 2000,
+      auditEvents: 5000,
+      terminalOutboxEvents: 1000,
+    });
+    assert.deepEqual(health.persistence.hotTableLoadMetrics.tables["broker_tasks"].runtimeLoad, {
+      limit: 2000,
+      loadedCount: 0,
+      skippedCount: 0,
+      activeCount: 0,
+      terminalCount: 0,
+    });
     assert.deepEqual(health.auditDiagnostics, {
       total: 0,
       workerHeartbeat: 0,
