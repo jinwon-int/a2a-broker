@@ -102,6 +102,11 @@ import {
 } from "./trading-dialectic/read-model.js";
 import { projectAlerts, type Alert, type AlertScanResult } from "./core/alert-projection.js";
 import { buildOperatorTaskReport } from "./core/operator-task-report.js";
+import {
+  applyBrokerCleanupPlan,
+  buildBrokerCleanupPlan,
+  type BrokerCleanupPlanOptions,
+} from "./core/broker-cleanup.js";
 import { buildReleaseEvidenceExport } from "./core/release-evidence.js";
 import {
   isTerminalTaskOutboxAckEvidence,
@@ -1417,6 +1422,37 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
         return sendJson(res, 200, buildOperatorTaskReport(tasks, { taskIds, parentIssue, staleAfterMs, updatedAfter, terminalOutbox }));
       }
 
+      if (req.method === "GET" && path === "/operator/cleanup/plan") {
+        if (enforceRequesterIdentity) {
+          assertRequesterHasRole(requesterIdentity, ["hub", "operator"], "operator.cleanup.plan");
+        }
+        if (!(stateStore instanceof SqliteBrokerStateStore)) {
+          throw new BrokerError("bad_request", "broker cleanup planning requires SQLite persistence");
+        }
+        const plan = buildBrokerCleanupPlan(stateStore, cleanupPlanOptionsFromUrl(url), retentionPolicy);
+        return sendJson(res, 200, plan, { "cache-control": "no-store" });
+      }
+
+      if (req.method === "POST" && path === "/operator/cleanup/apply") {
+        if (enforceRequesterIdentity) {
+          assertRequesterHasRole(requesterIdentity, ["hub", "operator"], "operator.cleanup.apply");
+        }
+        if (!(stateStore instanceof SqliteBrokerStateStore)) {
+          throw new BrokerError("bad_request", "broker cleanup apply requires SQLite persistence");
+        }
+        const body = await readJson<{ options?: BrokerCleanupPlanOptions; approval?: string; backupProof?: { ref?: string; sha256?: string; createdAt?: string } }>(req);
+        const plan = buildBrokerCleanupPlan(stateStore, body?.options ?? {}, retentionPolicy);
+        try {
+          const result = applyBrokerCleanupPlan(stateStore, plan, {
+            approval: body?.approval,
+            backupProof: body?.backupProof,
+          });
+          return sendJson(res, 200, result, { "cache-control": "no-store" });
+        } catch (error) {
+          throw new BrokerError("bad_request", error instanceof Error ? error.message : String(error));
+        }
+      }
+
       if (req.method === "GET" && path === "/tasks/diagnostics") {
         const staleAfterMs = numberQueryParam(url, "stale_after_ms") ?? 120_000;
         const longRunningAfterMs = numberQueryParam(url, "long_running_after_ms") ?? 3_600_000;
@@ -2508,6 +2544,20 @@ function canUseSqliteTaskHotRead(filters: TaskListFilters): boolean {
   );
 }
 
+function cleanupPlanOptionsFromUrl(url: URL): BrokerCleanupPlanOptions {
+  return {
+    nowMs: numberQueryParam(url, "now_ms"),
+    taskRetentionMs: numberQueryParam(url, "task_retention_ms"),
+    maxTerminalTasks: integerQueryParam(url, "max_terminal_tasks"),
+    auditRetentionMs: numberQueryParam(url, "audit_retention_ms"),
+    maxAuditEvents: integerQueryParam(url, "max_audit_events"),
+    workerRetentionMs: numberQueryParam(url, "worker_retention_ms"),
+    maxInactiveWorkers: integerQueryParam(url, "max_inactive_workers"),
+    protectedTaskIds: csvQueryParam(url, "protected_task_ids"),
+    protectedWorkerIds: csvQueryParam(url, "protected_worker_ids"),
+  };
+}
+
 function optionalString(value: string | null): string | undefined {
   return value && value.trim() ? value.trim() : undefined;
 }
@@ -2570,6 +2620,25 @@ function numberQueryParam(url: URL, name: string): number | undefined {
     throw new BrokerError("bad_request", `${name} must be a non-negative number`);
   }
   return parsed;
+}
+
+function integerQueryParam(url: URL, name: string): number | undefined {
+  const parsed = numberQueryParam(url, name);
+  if (parsed === undefined) {
+    return undefined;
+  }
+  if (!Number.isInteger(parsed)) {
+    throw new BrokerError("bad_request", `${name} must be an integer`);
+  }
+  return parsed;
+}
+
+function csvQueryParam(url: URL, name: string): string[] | undefined {
+  const value = url.searchParams.get(name);
+  if (!value) {
+    return undefined;
+  }
+  return value.split(",").map((entry) => entry.trim()).filter(Boolean);
 }
 
 function booleanQueryParam(url: URL, name: string): boolean | undefined {

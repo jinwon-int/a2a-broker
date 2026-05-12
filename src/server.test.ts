@@ -4973,3 +4973,78 @@ test("GET /release/evidence returns read-only dry-run release evidence without m
     await server.close();
   }
 });
+
+test("server exposes operator cleanup dry-run plan and apply approval gate", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "a2a-broker-cleanup-server-"));
+  const sqliteFile = join(dir, "state.db");
+  const store = new SqliteBrokerStateStore(sqliteFile, { loadSource: "hot-tables" });
+  const oldTask: BrokerSnapshot["tasks"][number] = {
+    id: "cleanup-old-task",
+    intent: "chat",
+    requester: { id: "requester", kind: "session", role: "hub" },
+    target: { id: "worker-a", kind: "node", role: "analyst" },
+    message: "cleanup-old-task",
+    targetNodeId: "worker-a",
+    assignedWorkerId: "worker-a",
+    payload: {},
+    status: "succeeded",
+    createdAt: "2026-05-01T00:00:00.000Z",
+    updatedAt: "2026-05-01T00:00:00.000Z",
+    completedAt: "2026-05-01T00:00:00.000Z",
+    taskOrigin: "api",
+  };
+  const activeTask: BrokerSnapshot["tasks"][number] = {
+    ...oldTask,
+    id: "cleanup-active-task",
+    status: "running",
+    createdAt: "2026-05-12T00:00:00.000Z",
+    updatedAt: "2026-05-12T00:00:00.000Z",
+    completedAt: undefined,
+  };
+  try {
+    store.save({ ...emptySnapshot(), tasks: [oldTask, activeTask] });
+    const server = await startTestServer({ stateStore: store });
+    try {
+      const headers = { "x-a2a-requester-id": "operator-a", "x-a2a-requester-role": "operator" };
+      const planRes = await fetch(
+        `${server.baseUrl}/operator/cleanup/plan?now_ms=${Date.parse("2026-05-12T01:00:00.000Z")}&task_retention_ms=86400000&max_terminal_tasks=0`,
+        { headers },
+      );
+      assert.equal(planRes.status, 200);
+      const plan = await planRes.json() as { dryRun: boolean; summary: { candidates: number }; plans: Array<{ table: string; pruneIds: string[] }> };
+      assert.equal(plan.dryRun, true);
+      assert.equal(plan.summary.candidates, 1);
+      assert.deepEqual(plan.plans.find((entry) => entry.table === "broker_tasks")?.pruneIds, ["cleanup-old-task"]);
+
+      const deniedRes = await fetch(`${server.baseUrl}/operator/cleanup/apply`, {
+        method: "POST",
+        headers: jsonHeaders(headers),
+        body: JSON.stringify({ options: { nowMs: Date.parse("2026-05-12T01:00:00.000Z") } }),
+      });
+      assert.equal(deniedRes.status, 400);
+
+      const applyRes = await fetch(`${server.baseUrl}/operator/cleanup/apply`, {
+        method: "POST",
+        headers: jsonHeaders(headers),
+        body: JSON.stringify({
+          approval: "APPLY_BROKER_CLEANUP",
+          backupProof: { ref: "artifact://cleanup-backup" },
+          options: {
+            nowMs: Date.parse("2026-05-12T01:00:00.000Z"),
+            taskRetentionMs: 86400000,
+            maxTerminalTasks: 0,
+          },
+        }),
+      });
+      assert.equal(applyRes.status, 200);
+      const apply = await applyRes.json() as { summary: { prunedCount: number } };
+      assert.equal(apply.summary.prunedCount, 1);
+      assert.deepEqual(store.readHotRuntimeSnapshot().tasks.map((task) => task.id), ["cleanup-active-task"]);
+    } finally {
+      await server.close();
+    }
+  } finally {
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

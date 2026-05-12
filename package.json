@@ -39,6 +39,7 @@
     "gwakga_seoseo_receiver_preflight": "node scripts/two-broker-worker-preflight.mjs",
     "gwakga_seoseo_receiver_receipt_parity": "npm run build && node scripts/broker-terminal-receipt-parity.mjs",
     "broker_terminal_receipt_parity": "npm run build && node scripts/broker-terminal-receipt-parity.mjs",
+    "broker_cleanup": "npm run build && node dist/broker-cleanup.js",
     "release_evidence_export": "npm run build && node dist/release-evidence-export.js"
   },
   "engines": {
