@@ -12,11 +12,11 @@ The SQLite broker persistence layer supports two load modes via `SqliteBrokerSta
 
 - **`loadSource: "snapshot"`** — Reads a single canonical snapshot row from `broker_snapshots` (one JSON blob), then hydrates hot entity tables from it. The snapshot JSON is the single large in-memory object.
 
-- **`loadSource: "hot-tables"`** — Reads ALL rows from ALL 10 hot entity tables individually via `readHotRuntimeSnapshot()`, reconstructing the full `BrokerSnapshot` in memory. This is the default production mode (seoseo broker runs this).
+- **`loadSource: "hot-tables"`** — Reconstructs the runtime `BrokerSnapshot` from SQLite hot entity tables. Current code hydrates active tasks plus a capped window of terminal tasks, audit rows, and terminal outbox rows; the full rows remain queryable from SQLite hot-table read APIs.
 
 ### 1.2 Memory Pressure Vector
 
-The `readHotRuntimeSnapshot()` method (in `src/core/store.ts`) performs 10 unbounded `SELECT payload FROM ...` queries — one per hot entity table:
+Historically, the `readHotRuntimeSnapshot()` method (in `src/core/store.ts`) performed unbounded `SELECT payload FROM ...` queries across the hot tables. The current runtime load path keeps active state hydrated and caps the largest historical streams:
 
 | Table | Observed Count (seoseo) | Approx. per-row payload |
 |---|---|---|
@@ -31,7 +31,7 @@ The `readHotRuntimeSnapshot()` method (in `src/core/store.ts`) performs 10 unbou
 | `broker_artifacts` | 0 | — |
 | `broker_validations` | 0 | — |
 
-**Estimated in-memory snapshot:** 660 × 110 KB ≈ **72 MB** for tasks alone, plus audit events (~2 MB), outbox (~0.8 MB), etc. Total: ~75 MB for the hot-table loaded snapshot.
+**Estimated pre-cap in-memory snapshot:** 660 × 110 KB ≈ **72 MB** for tasks alone, plus audit events (~2 MB), outbox (~0.8 MB), etc. Total: ~75 MB for the hot-table loaded snapshot. Runtime caps now expose how many rows hydrate vs. remain SQLite-only so operators can see when historical rows are intentionally skipped from live heap.
 
 This is not inherently fatal, but:
 
@@ -75,13 +75,14 @@ The p95 health latency is already elevated by mirror-status comparison. At 10× 
 
 - **`HealthDiagnosticsCache`** (5s TTL) — prevents per-request DB churn for `/health`
 - **`SqliteAuditRuntimeRepository`** — limits audit events to `maxHotAuditEvents` (default 5,000) on each append via `pruneHotAuditEventsToMax()`
+- **SQLite hot runtime hydration caps** — active tasks always hydrate, while terminal tasks, audit events, and terminal outbox events use configurable runtime caps (defaults: 2,000 terminal tasks, 5,000 audit events, 1,000 terminal outbox events)
 - **`SqliteTaskHotRetentionPlanOptions`** — retention planning framework exists for tasks, audit events, and workers
 
 ### 2.2 Low-Risk Immediately Available
 
 1. **Enable audit retention** — Set `maxAuditEvents` in the broker retention policy. The default is 5,000 but the seoseo broker likely has this at default. Lower to 2,000 to reduce hot-table load.
 
-2. **Monitor hot-table counts** — Use the new `readHotTableLoadMetrics()` exposed on `/health` (added in this PR) to track per-table growth.
+2. **Monitor hot-table counts and runtime caps** — Use `persistence.hotTableLoadMetrics` and `persistence.hotTableRuntimeLoadLimits` on `/health` to track per-table growth, unacked terminal outbox rows, and rows skipped from live heap hydration.
 
 3. **Compact WAL** — SQLite auto-checkpoint triggers at 1,000 pages. Consider `PRAGMA wal_autocheckpoint=100` (non-breaking, affects only new transactions).
 
@@ -118,18 +119,43 @@ The p95 health latency is already elevated by mirror-status comparison. At 10× 
 
 ```json
 {
-  "hotTableMetrics": {
-    "broker_tasks": { "count": 660, "maxPayloadBytes": 118234 },
-    "broker_audit_events": { "count": 1986, "maxPayloadBytes": 2341 },
-    "broker_terminal_outbox": { 
-      "count": 389, 
-      "maxPayloadBytes": 3120, 
-      "unackedCount": 234 
+  "persistence": {
+    "hotTableRuntimeLoadLimits": {
+      "terminalTasks": 2000,
+      "auditEvents": 5000,
+      "terminalOutboxEvents": 1000
     },
-    ...
+    "hotTableLoadMetrics": {
+      "tables": {
+        "broker_tasks": {
+          "count": 660,
+          "maxPayloadBytes": 118234,
+          "runtimeLoad": {
+            "limit": 2000,
+            "loadedCount": 660,
+            "skippedCount": 0,
+            "activeCount": 5,
+            "terminalCount": 655
+          }
+        },
+        "broker_audit_events": { "count": 1986, "maxPayloadBytes": 2341, "runtimeLoad": { "limit": 5000, "loadedCount": 1986, "skippedCount": 0 } },
+        "broker_terminal_outbox": {
+          "count": 389,
+          "maxPayloadBytes": 3120,
+          "unackedCount": 234,
+          "runtimeLoad": { "limit": 1000, "loadedCount": 389, "skippedCount": 0 }
+        }
+      }
+    }
   }
 }
 ```
+
+Runtime cap environment variables:
+
+- `BROKER_HOT_RUNTIME_MAX_TERMINAL_TASKS` — completed/failed/canceled task rows hydrated at startup; active rows always hydrate.
+- `BROKER_HOT_RUNTIME_MAX_AUDIT_EVENTS` — audit rows hydrated at startup.
+- `BROKER_HOT_RUNTIME_MAX_TERMINAL_OUTBOX_EVENTS` — terminal outbox rows hydrated at startup.
 
 ### 3.2 Alert Thresholds
 
