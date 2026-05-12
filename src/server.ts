@@ -32,6 +32,7 @@ import {
   CURRENT_BROKER_STATE_VERSION,
   DEFAULT_BROKER_STATE_MAX_BYTES,
   DEFAULT_HOT_RUNTIME_MAX_AUDIT_EVENTS,
+  DEFAULT_HOT_RUNTIME_MAX_NON_TERMINAL_TASKS,
   DEFAULT_HOT_RUNTIME_MAX_TERMINAL_OUTBOX_EVENTS,
   DEFAULT_HOT_RUNTIME_MAX_TERMINAL_TASKS,
   JsonFileBrokerStateStore,
@@ -264,6 +265,25 @@ function readRuntimeMemoryUsage(): Record<string, number> {
   };
 }
 
+let _eventLoopDelayHistogram: ReturnType<typeof import("node:perf_hooks").monitorEventLoopDelay> | null = null;
+
+function readEventLoopDelayMs(): number | null {
+  try {
+    const { monitorEventLoopDelay } = require("node:perf_hooks") as typeof import("node:perf_hooks");
+    if (!_eventLoopDelayHistogram) {
+      _eventLoopDelayHistogram = monitorEventLoopDelay({ resolution: 20 });
+      _eventLoopDelayHistogram.enable();
+    }
+    const p99 = _eventLoopDelayHistogram.percentile(99) / 1e6;
+    const p50 = _eventLoopDelayHistogram.percentile(50) / 1e6;
+    // Return max(p50, p99) as a conservative estimate; reset to avoid stale accumulation.
+    _eventLoopDelayHistogram.reset();
+    return Math.round(Math.max(p50, p99) * 1000) / 1000;
+  } catch {
+    return null;
+  }
+}
+
 class HealthDiagnosticsCache {
   private cached: CachedHealthDiagnostics | null = null;
   private cachedAt = 0;
@@ -314,6 +334,8 @@ export interface BrokerServerOptions {
   broker?: InMemoryA2ABroker;
   retentionPolicy?: Partial<BrokerRetentionPolicy>;
   maxSnapshotBytes?: number;
+  /** Max non-terminal task rows to hydrate from SQLite hot tables. Env: `BROKER_HOT_RUNTIME_MAX_NON_TERMINAL_TASKS`. */
+  maxHotRuntimeNonTerminalTasks?: number;
   /** Max terminal task rows to hydrate from SQLite hot tables; active tasks always hydrate. Env: `BROKER_HOT_RUNTIME_MAX_TERMINAL_TASKS`. */
   maxHotRuntimeTerminalTasks?: number;
   /** Max audit rows to hydrate from SQLite hot tables. Env: `BROKER_HOT_RUNTIME_MAX_AUDIT_EVENTS`. */
@@ -399,6 +421,7 @@ export interface BrokerServerRuntime {
     edgeSecret?: string;
     retentionPolicy: BrokerRetentionPolicy;
     maxSnapshotBytes: number;
+    maxHotRuntimeNonTerminalTasks: number;
     maxHotRuntimeTerminalTasks: number;
     maxHotRuntimeAuditEvents: number;
     maxHotRuntimeTerminalOutboxEvents: number;
@@ -437,34 +460,15 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
   const edgeSecret = options.edgeSecret ?? process.env.EDGE_SECRET ?? process.env.A2A_EDGE_SECRET;
   const trustedProxy = options.trustedProxy ?? process.env.TRUSTED_PROXY === "1";
   const retentionPolicy = resolveBrokerRetentionPolicy(options.retentionPolicy);
+  const hotRuntimeLimits = resolveHotRuntimeLimits(options);
   const maxSnapshotBytes = Math.max(
     1,
     options.maxSnapshotBytes ?? Number(process.env.STATE_FILE_MAX_BYTES ?? DEFAULT_BROKER_STATE_MAX_BYTES),
   );
-  const maxHotRuntimeTerminalTasks = Math.max(
-    0,
-    resolveIntegerOption(
-      options.maxHotRuntimeTerminalTasks,
-      process.env.BROKER_HOT_RUNTIME_MAX_TERMINAL_TASKS,
-      DEFAULT_HOT_RUNTIME_MAX_TERMINAL_TASKS,
-    ),
-  );
-  const maxHotRuntimeAuditEvents = Math.max(
-    0,
-    resolveIntegerOption(
-      options.maxHotRuntimeAuditEvents,
-      process.env.BROKER_HOT_RUNTIME_MAX_AUDIT_EVENTS,
-      DEFAULT_HOT_RUNTIME_MAX_AUDIT_EVENTS,
-    ),
-  );
-  const maxHotRuntimeTerminalOutboxEvents = Math.max(
-    0,
-    resolveIntegerOption(
-      options.maxHotRuntimeTerminalOutboxEvents,
-      process.env.BROKER_HOT_RUNTIME_MAX_TERMINAL_OUTBOX_EVENTS,
-      DEFAULT_HOT_RUNTIME_MAX_TERMINAL_OUTBOX_EVENTS,
-    ),
-  );
+  const maxHotRuntimeNonTerminalTasks = hotRuntimeLimits.maxNonTerminalTasks;
+  const maxHotRuntimeTerminalTasks = hotRuntimeLimits.maxTerminalTasks;
+  const maxHotRuntimeAuditEvents = hotRuntimeLimits.maxAuditEvents;
+  const maxHotRuntimeTerminalOutboxEvents = hotRuntimeLimits.maxTerminalOutboxEvents;
   const staleReaperEnabled =
     options.staleReaperEnabled ?? resolveBooleanEnv(process.env.STALE_REAPER_ENABLED, true);
   // Default sweep cadence (60s) is well below the default worker offline threshold (90s),
@@ -509,9 +513,7 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
       sqliteFile,
       sqliteLoadSource,
       maxSnapshotBytes,
-      maxHotRuntimeTerminalTasks,
-      maxHotRuntimeAuditEvents,
-      maxHotRuntimeTerminalOutboxEvents,
+      hotRuntimeLimits,
     });
   const broker =
     options.broker ??
@@ -787,6 +789,13 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
         const t2 = performance.now();
         const pressureDurationMs = Math.round((t2 - t1) * 100) / 100;
 
+        const runtimeMemory = readRuntimeMemoryUsage();
+        const heapUsedRatio =
+          runtimeMemory.heapLimitBytes > 0
+            ? runtimeMemory.heapUsedBytes / runtimeMemory.heapLimitBytes
+            : 0;
+        const eventLoopDelayMs = readEventLoopDelayMs();
+
         const body: Record<string, unknown> = {
           ok: true,
           service: serviceName,
@@ -795,7 +804,11 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
           build: buildInfo.build,
           publicBaseUrl,
           uptimeSec: Math.round(process.uptime()),
-          runtimeMemory: readRuntimeMemoryUsage(),
+          runtimeMemory: {
+            ...runtimeMemory,
+            heapUsedRatio: Math.round(heapUsedRatio * 1000) / 1000,
+            eventLoopDelayMs: eventLoopDelayMs ?? null,
+          },
           persistence,
           ...(auditDiagnostics !== undefined ? { auditDiagnostics } : {}),
           workers: {
@@ -814,7 +827,19 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
           requestPressure,
           retentionPolicy,
           maxSnapshotBytes,
+          ...(stateStore instanceof SqliteBrokerStateStore
+            ? {
+                terminalOutboxDiagnostics: stateStore.readHotTerminalOutboxDiagnostics(),
+              }
+            : {}),
         };
+
+        if (heapUsedRatio > 0.85) {
+          body.ok = false;
+          body.error = `heap pressure critical: ${Math.round(heapUsedRatio * 100)}% used`;
+        } else if (heapUsedRatio > 0.70) {
+          body.warning = `heap pressure elevated: ${Math.round(heapUsedRatio * 100)}% used`;
+        }
         const t3 = performance.now();
         const jsonDurationMs = Math.round((t3 - t2) * 100) / 100;
         const totalDurationMs = Math.round((t3 - t0) * 100) / 100;
@@ -1621,6 +1646,7 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
       edgeSecret,
       retentionPolicy,
       maxSnapshotBytes,
+      maxHotRuntimeNonTerminalTasks,
       maxHotRuntimeTerminalTasks,
       maxHotRuntimeAuditEvents,
       maxHotRuntimeTerminalOutboxEvents,
@@ -1635,6 +1661,59 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
       version: buildInfo.version,
       build: buildInfo.build,
     },
+  };
+}
+
+export interface BrokerHotRuntimeLimits {
+  maxNonTerminalTasks: number;
+  maxTerminalTasks: number;
+  maxAuditEvents: number;
+  maxTerminalOutboxEvents: number;
+}
+
+const DEFAULT_BROKER_HOT_RUNTIME_LIMITS: BrokerHotRuntimeLimits = {
+  maxNonTerminalTasks: DEFAULT_HOT_RUNTIME_MAX_NON_TERMINAL_TASKS,
+  maxTerminalTasks: DEFAULT_HOT_RUNTIME_MAX_TERMINAL_TASKS,
+  maxAuditEvents: DEFAULT_HOT_RUNTIME_MAX_AUDIT_EVENTS,
+  maxTerminalOutboxEvents: DEFAULT_HOT_RUNTIME_MAX_TERMINAL_OUTBOX_EVENTS,
+};
+
+function resolveHotRuntimeLimits(
+  options: BrokerServerOptions,
+): BrokerHotRuntimeLimits {
+  return {
+    maxNonTerminalTasks: Math.max(
+      0,
+      resolveIntegerOption(
+        options.maxHotRuntimeNonTerminalTasks,
+        process.env.BROKER_HOT_RUNTIME_MAX_NON_TERMINAL_TASKS,
+        DEFAULT_BROKER_HOT_RUNTIME_LIMITS.maxNonTerminalTasks,
+      ),
+    ),
+    maxTerminalTasks: Math.max(
+      0,
+      resolveIntegerOption(
+        options.maxHotRuntimeTerminalTasks,
+        process.env.BROKER_HOT_RUNTIME_MAX_TERMINAL_TASKS,
+        DEFAULT_BROKER_HOT_RUNTIME_LIMITS.maxTerminalTasks,
+      ),
+    ),
+    maxAuditEvents: Math.max(
+      0,
+      resolveIntegerOption(
+        options.maxHotRuntimeAuditEvents,
+        process.env.BROKER_HOT_RUNTIME_MAX_AUDIT_EVENTS,
+        DEFAULT_BROKER_HOT_RUNTIME_LIMITS.maxAuditEvents,
+      ),
+    ),
+    maxTerminalOutboxEvents: Math.max(
+      0,
+      resolveIntegerOption(
+        options.maxHotRuntimeTerminalOutboxEvents,
+        process.env.BROKER_HOT_RUNTIME_MAX_TERMINAL_OUTBOX_EVENTS,
+        DEFAULT_BROKER_HOT_RUNTIME_LIMITS.maxTerminalOutboxEvents,
+      ),
+    ),
   };
 }
 
@@ -1877,18 +1956,17 @@ function createDefaultStateStore(params: {
   sqliteFile?: string;
   sqliteLoadSource: SqliteBrokerLoadSource;
   maxSnapshotBytes: number;
-  maxHotRuntimeTerminalTasks?: number;
-  maxHotRuntimeAuditEvents?: number;
-  maxHotRuntimeTerminalOutboxEvents?: number;
+  hotRuntimeLimits?: BrokerHotRuntimeLimits;
 }): BrokerStateStore {
   if (params.backend === "sqlite") {
     return new SqliteBrokerStateStore(params.sqliteFile ?? `${params.stateFile}.sqlite`, {
       importJsonFile: params.stateFile,
       loadSource: params.sqliteLoadSource,
       maxBytes: params.maxSnapshotBytes,
-      maxHotRuntimeTerminalTasks: params.maxHotRuntimeTerminalTasks,
-      maxHotRuntimeAuditEvents: params.maxHotRuntimeAuditEvents,
-      maxHotRuntimeTerminalOutboxEvents: params.maxHotRuntimeTerminalOutboxEvents,
+      maxHotRuntimeNonTerminalTasks: params.hotRuntimeLimits?.maxNonTerminalTasks,
+      maxHotRuntimeTerminalTasks: params.hotRuntimeLimits?.maxTerminalTasks,
+      maxHotRuntimeAuditEvents: params.hotRuntimeLimits?.maxAuditEvents,
+      maxHotRuntimeTerminalOutboxEvents: params.hotRuntimeLimits?.maxTerminalOutboxEvents,
     });
   }
   return new JsonFileBrokerStateStore(params.stateFile, { maxBytes: params.maxSnapshotBytes });

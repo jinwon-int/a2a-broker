@@ -541,14 +541,17 @@ test("/health response shape is stable across repeated calls (no field drift)", 
     const memory = (responses[0] as Record<string, unknown>).runtimeMemory as Record<string, unknown>;
     assert.deepEqual(Object.keys(memory).sort(), [
       "arrayBuffersBytes",
+      "eventLoopDelayMs",
       "externalBytes",
       "heapLimitBytes",
       "heapTotalBytes",
       "heapUsedBytes",
+      "heapUsedRatio",
       "rssBytes",
     ].sort());
     assert.equal(typeof memory.heapUsedBytes, "number");
     assert.equal(typeof memory.heapLimitBytes, "number");
+    assert.equal(typeof memory.heapUsedRatio, "number");
 
     // Audit diagnostics shape must be stable.
     const auditKeys = Object.keys((responses[0] as Record<string, unknown>).auditDiagnostics as Record<string, unknown>).sort();

@@ -86,6 +86,20 @@ The p95 health latency is already elevated by mirror-status comparison. At 10× 
 
 3. **Compact WAL** — SQLite auto-checkpoint triggers at 1,000 pages. Consider `PRAGMA wal_autocheckpoint=100` (non-breaking, affects only new transactions).
 
+4. **Cap non-terminal task hot-table loading** — Added `BROKER_HOT_RUNTIME_MAX_NON_TERMINAL_TASKS` (default 500) to bound non-terminal task rows loaded into heap. Previously, ALL non-terminal tasks were loaded without any limit, creating an unbounded memory growth vector. (#514)
+
+5. **Wire hot-table limits from env** — `SqliteBrokerStateStore` hot-runtime limits (`maxHotRuntimeNonTerminalTasks`, `maxHotRuntimeTerminalTasks`, `maxHotRuntimeAuditEvents`, `maxHotRuntimeTerminalOutboxEvents`) are now configurable through env vars and passed through `createDefaultStateStore()`. Previously, the broker always used hardcoded defaults regardless of environment configuration. (#514)
+
+6. **Heap pressure readiness degradation** — `/health` now exposes `runtimeMemory.heapUsedRatio` and `runtimeMemory.eventLoopDelayMs`. When `heapUsedRatio > 0.85`, health returns `ok: false` with an error; when `heapUsedRatio > 0.70`, it adds a warning. This gives operators early visibility before OOM. (#514)
+
+7. **Terminal outbox unacked diagnostics** — Added `terminalOutboxDiagnostics` to `/health` reporting total/acked/unacked counts, oldest unacked staleness, and staleness warnings (>7 days). This catches stalled provider delivery before outbox accumulation contributes to heap pressure. (#514)
+
+8. **Operational env vars** (new):
+   - `BROKER_HOT_RUNTIME_MAX_NON_TERMINAL_TASKS` (default: 500)
+   - `BROKER_HOT_RUNTIME_MAX_TERMINAL_TASKS` (default: 2000)
+   - `BROKER_HOT_RUNTIME_MAX_AUDIT_EVENTS` (default: 5000)
+   - `BROKER_HOT_RUNTIME_MAX_TERMINAL_OUTBOX` (default: 1000)
+
 ### 2.3 Medium-Term (Requires Design Review)
 
 1. **Lazy hot-table loading** — Instead of loading all 10 tables at once, load only tables referenced by current operations. The `readHotRuntimeSnapshot()` is only needed at startup and on save. Individual hot reads already filter by ID.

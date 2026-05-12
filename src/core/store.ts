@@ -140,6 +140,16 @@ export interface BrokerHotAuditDiagnostics {
   warnings: string[];
 }
 
+export interface BrokerHotTerminalOutboxDiagnostics {
+  total: number;
+  acked: number;
+  unacked: number;
+  unackedRatio: number;
+  oldestUnackedCreatedAt: string | null;
+  oldestUnackedAgeMs: number | null;
+  warnings: string[];
+}
+
 export interface BrokerHotTableRuntimeLoadLimits {
   /** Terminal task rows retained in live memory; active tasks always hydrate. */
   terminalTasks: number;
@@ -182,6 +192,12 @@ export interface SqliteBrokerStateStoreOptions {
   maxBytes?: number;
   importJsonFile?: string;
   loadSource?: SqliteBrokerLoadSource;
+  /**
+   * Maximum non-terminal (queued/claimed/running/blocked) task rows to hydrate into live
+   * memory when using loadSource=hot-tables. Non-terminal tasks are always loaded up to this
+   * limit (ordered by updated_at DESC, id ASC). Default: 500.
+   */
+  maxHotRuntimeNonTerminalTasks?: number;
   /**
    * Maximum terminal task rows to hydrate into live memory when using
    * loadSource=hot-tables. Active/non-terminal tasks are always loaded.
@@ -698,6 +714,7 @@ const terminalOutboxEventSchema = z
   })
   .passthrough();
 
+export const DEFAULT_HOT_RUNTIME_MAX_NON_TERMINAL_TASKS = 500;
 export const DEFAULT_HOT_RUNTIME_MAX_TERMINAL_TASKS = 2_000;
 export const DEFAULT_HOT_RUNTIME_MAX_AUDIT_EVENTS = 5_000;
 export const DEFAULT_HOT_RUNTIME_MAX_TERMINAL_OUTBOX_EVENTS = DEFAULT_TERMINAL_TASK_OUTBOX_RETENTION;
@@ -776,6 +793,7 @@ export class SqliteBrokerStateStore implements BrokerStateStore {
   private readonly maxBytes: number;
   private readonly importJsonFile?: string;
   private readonly loadSource: SqliteBrokerLoadSource;
+  private readonly maxHotRuntimeNonTerminalTasks: number;
   private readonly maxHotRuntimeTerminalTasks: number;
   private readonly maxHotRuntimeAuditEvents: number;
   private readonly maxHotRuntimeTerminalOutboxEvents: number;
@@ -789,6 +807,10 @@ export class SqliteBrokerStateStore implements BrokerStateStore {
     this.maxBytes = Math.max(1, options.maxBytes ?? DEFAULT_BROKER_STATE_MAX_BYTES);
     this.importJsonFile = options.importJsonFile;
     this.loadSource = options.loadSource ?? "snapshot";
+    this.maxHotRuntimeNonTerminalTasks = normalizeNonNegativeSqliteLimit(
+      options.maxHotRuntimeNonTerminalTasks,
+      DEFAULT_HOT_RUNTIME_MAX_NON_TERMINAL_TASKS,
+    );
     this.maxHotRuntimeTerminalTasks = normalizeNonNegativeSqliteLimit(
       options.maxHotRuntimeTerminalTasks,
       DEFAULT_HOT_RUNTIME_MAX_TERMINAL_TASKS,
@@ -1012,8 +1034,13 @@ export class SqliteBrokerStateStore implements BrokerStateStore {
   private readHotTasksForRuntime(): TaskRecord[] {
     return this.db
       .prepare(
-        `SELECT payload FROM broker_tasks
-         WHERE status NOT IN ('succeeded', 'failed', 'canceled')
+        `SELECT payload FROM (
+           SELECT payload, updated_at, id
+           FROM broker_tasks
+           WHERE status NOT IN ('succeeded', 'failed', 'canceled')
+           ORDER BY updated_at DESC, id ASC
+           LIMIT ?
+         )
          UNION ALL
          SELECT payload FROM (
            SELECT payload
@@ -1023,7 +1050,7 @@ export class SqliteBrokerStateStore implements BrokerStateStore {
            LIMIT ?
          )`,
       )
-      .all(this.maxHotRuntimeTerminalTasks)
+      .all(this.maxHotRuntimeNonTerminalTasks, this.maxHotRuntimeTerminalTasks)
       .map((row) => parseHotEntityPayload(row, taskSchema, "broker_tasks")) as TaskRecord[];
   }
 
@@ -1202,6 +1229,42 @@ export class SqliteBrokerStateStore implements BrokerStateStore {
       recentTotal,
       recentWorkerHeartbeat,
       recentWorkerHeartbeatRatio,
+      warnings,
+    };
+  }
+
+  readHotTerminalOutboxDiagnostics(): BrokerHotTerminalOutboxDiagnostics {
+    const nowMs = Date.now();
+    const total = this.readTableCount("broker_terminal_outbox");
+    const ackedRow = this.db.prepare(
+      "SELECT COUNT(*) AS count FROM broker_terminal_outbox WHERE acknowledged_at IS NOT NULL",
+    ).get() as { count?: number | bigint } | undefined;
+    const acked = coerceSqliteCount(ackedRow);
+    const unacked = total - acked;
+    const unackedRatio = total > 0 ? unacked / total : 0;
+    const oldestUnackedRow = this.db.prepare(
+      "SELECT created_at AS createdAt FROM broker_terminal_outbox WHERE acknowledged_at IS NULL ORDER BY created_at ASC LIMIT 1",
+    ).get() as { createdAt?: string } | undefined;
+    const oldestUnackedCreatedAt = typeof oldestUnackedRow?.createdAt === "string"
+      ? oldestUnackedRow.createdAt
+      : null;
+    const oldestUnackedAgeMs = oldestUnackedCreatedAt !== null
+      ? nowMs - Date.parse(oldestUnackedCreatedAt)
+      : null;
+    const warnings: string[] = [];
+    if (unacked > 500) {
+      warnings.push(`broker_terminal_outbox has ${unacked} unacked entries; may indicate stalled provider delivery`);
+    }
+    if (oldestUnackedAgeMs !== null && oldestUnackedAgeMs > 7 * 24 * 60 * 60 * 1000) {
+      warnings.push(`oldest unacked terminal outbox entry is ${Math.round(oldestUnackedAgeMs / (24 * 60 * 60 * 1000))} days old`);
+    }
+    return {
+      total,
+      acked,
+      unacked,
+      unackedRatio,
+      oldestUnackedCreatedAt,
+      oldestUnackedAgeMs,
       warnings,
     };
   }
