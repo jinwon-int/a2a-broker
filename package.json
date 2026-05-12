@@ -28,6 +28,7 @@
     "lifecycle_proof_evidence": "node scripts/broker-lifecycle-proof-evidence.mjs",
     "migration_health_gate": "node scripts/broker-migration-health-gate.mjs",
     "terminal_receipt_closeout_report": "node scripts/terminal-receipt-closeout-report.mjs",
+    "broker_cleanup_safe_prune": "npm run build && node scripts/broker-cleanup-safe-prune.mjs",
     "terminal_brief_activation_report": "node scripts/terminal-brief-activation-report.mjs",
     "test:terminal_brief_activation_report": "node --test scripts/terminal-brief-activation-report.test.mjs",
     "closeout_release_report": "node scripts/closeout-release-report.mjs",
