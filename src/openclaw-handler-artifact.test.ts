@@ -59,7 +59,7 @@ test("versioned OpenClaw handler exposes credential-free build metadata", () => 
   assert.equal(result.status, 0, result.stderr);
   const payload = JSON.parse(result.stdout);
   assert.equal(payload.result.handler.name, "openclaw-a2a-task-handler");
-  assert.equal(payload.result.handler.version, "0.2.9");
+  assert.equal(payload.result.handler.version, "0.2.10");
   assert.match(payload.result.handler.sourceSha256, /^[a-f0-9]{64}$/);
   assert.equal(payload.result.handler.credentialFree, true);
   assert.equal(payload.result.handler.hostNeutral, true);
@@ -698,6 +698,50 @@ console.log(JSON.stringify({
     rmSync(tempDir, { recursive: true, force: true });
   }
 });
+
+test("docker runner success fails closed when evidence includes OpenClaw bootstrap paths (#522)", () => {
+  const tempDir = mkdtempSync(join(tmpdir(), "handler-bootstrap-success-leak-522-"));
+  const fakeRunnerPath = join(tempDir, "fake-runner.mjs");
+  try {
+    writeFileSync(fakeRunnerPath, `
+console.log(JSON.stringify({
+  ok: true,
+  taskId: "task-fixture-1",
+  status: "completed",
+  workDir: "/tmp/work-fixture",
+  artifacts: ["evidence/summary.md", "AGENTS.md", ".openclaw/session.json"],
+  filesChanged: ["src/server.ts", "TOOLS.md"],
+  prUrl: "https://github.com/owner/repo/pull/522"
+}));
+`);
+
+    const result = spawnSync(process.execPath, [handlerPath], {
+      input: JSON.stringify(githubTask()),
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        A2A_DOCKER_RUNNER_ENABLED: "1",
+        A2A_DOCKER_RUNNER_ALL_GITHUB: "1",
+        A2A_DOCKER_RUNNER_SCOPE: "all-github",
+        A2A_DOCKER_RUNNER_BIN: process.execPath,
+        A2A_DOCKER_RUNNER_ARGS_JSON: JSON.stringify([fakeRunnerPath]),
+      },
+    });
+
+    assert.equal(result.status, 1);
+    const payload = JSON.parse(result.stdout);
+    assert.equal(payload.error.code, "docker_runner_openclaw_bootstrap_leak");
+    assert.deepEqual(payload.error.details.openclawBootstrapLeakPaths, [
+      ".openclaw/session.json",
+      "AGENTS.md",
+      "TOOLS.md",
+    ]);
+    assert.match(payload.error.message, /refusing GitHub completion evidence/);
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
 
 test("docker runner success without evidence surfaces as docker_runner_evidence_missing (contract #169)", () => {
   const tempDir = mkdtempSync(join(tmpdir(), "handler-no-evidence-test-"));

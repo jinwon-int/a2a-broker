@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
-const HANDLER_VERSION = "0.2.9";
+const HANDLER_VERSION = "0.2.10";
 const SOURCE_PATH = fileURLToPath(import.meta.url);
 const sourceSha256 = createHash("sha256").update(readFileSync(SOURCE_PATH)).digest("hex");
 
@@ -631,6 +631,26 @@ function runDockerRunner(task, env = process.env) {
     if (filesChanged.length) output.filesChanged = filesChanged;
     const risks = normalizeStringArray(parsed.risks);
     if (risks.length) output.risks = risks;
+
+    // --- fail-closed OpenClaw runtime/bootstrap leak guard (issue #522) ---
+    // Runner output is the handoff evidence the broker will surface. Refuse success if the
+    // changed-file list or artifact list contains OpenClaw workspace/bootstrap files.
+    const openclawBootstrapLeakPaths = extractOpenClawBootstrapLeakPaths(parsed.artifacts, parsed.filesChanged);
+    if (openclawBootstrapLeakPaths.length) {
+      return {
+        error: {
+          code: "docker_runner_openclaw_bootstrap_leak",
+          message:
+            "docker runner reported OpenClaw runtime/bootstrap files in branch or artifact evidence; " +
+            "refusing GitHub completion evidence until offending paths are removed",
+          details: {
+            runnerTask,
+            openclawBootstrapLeakPaths,
+            runnerResult: parsed,
+          },
+        },
+      };
+    }
 
     // --- fail-closed branch/no-diff guard (issue #447) ---
     // The docker runner owns branch creation and can report the runner branch it expected.
