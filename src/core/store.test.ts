@@ -327,6 +327,27 @@ test("SqliteBrokerStateStore saves and reloads snapshots with WAL metadata", () 
           broker_terminal_outbox: { count: 0, maxPayloadBytes: 0 },
         },
       },
+      hotRuntimeLoadMetrics: {
+        tables: {
+          broker_tasks: {
+            activeCount: 1,
+            terminalCount: 0,
+            loadedCount: 1,
+            skippedCount: 0,
+            limit: 2000,
+          },
+          broker_audit_events: {
+            loadedCount: 1,
+            skippedCount: 0,
+            limit: 5000,
+          },
+          broker_terminal_outbox: {
+            loadedCount: 0,
+            skippedCount: 0,
+            limit: 1000,
+          },
+        },
+      },
       importedFromJsonFile: undefined,
       lastImportAt: undefined,
     });
@@ -791,6 +812,27 @@ test("SqliteBrokerStateStore bounds hot runtime hydration without hiding table-n
     assert.equal(store.readHotTasks().length, 3);
     assert.equal(store.readHotAuditEvents().length, 3);
     assert.equal(store.readHotTerminalOutbox().length, 3);
+    assert.deepEqual(store.getPersistenceInfo().hotRuntimeLoadMetrics, {
+      tables: {
+        broker_tasks: {
+          activeCount: 1,
+          terminalCount: 2,
+          loadedCount: 2,
+          skippedCount: 1,
+          limit: 1,
+        },
+        broker_audit_events: {
+          loadedCount: 2,
+          skippedCount: 1,
+          limit: 2,
+        },
+        broker_terminal_outbox: {
+          loadedCount: 2,
+          skippedCount: 1,
+          limit: 2,
+        },
+      },
+    });
     store.close();
   } finally {
     temp.cleanup();

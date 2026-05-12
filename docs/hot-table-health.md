@@ -12,11 +12,11 @@ The SQLite broker persistence layer supports two load modes via `SqliteBrokerSta
 
 - **`loadSource: "snapshot"`** — Reads a single canonical snapshot row from `broker_snapshots` (one JSON blob), then hydrates hot entity tables from it. The snapshot JSON is the single large in-memory object.
 
-- **`loadSource: "hot-tables"`** — Reads ALL rows from ALL 10 hot entity tables individually via `readHotRuntimeSnapshot()`, reconstructing the full `BrokerSnapshot` in memory. This is the default production mode (seoseo broker runs this).
+- **`loadSource: "hot-tables"`** — Reads table-native rows via `readHotRuntimeSnapshot()`, reconstructing a `BrokerSnapshot`-shaped runtime view in memory. Active tasks are always hydrated; historical terminal tasks, audit events, and terminal outbox events are bounded by configurable runtime caps.
 
 ### 1.2 Memory Pressure Vector
 
-The `readHotRuntimeSnapshot()` method (in `src/core/store.ts`) performs 10 unbounded `SELECT payload FROM ...` queries — one per hot entity table:
+Earlier `readHotRuntimeSnapshot()` implementations (in `src/core/store.ts`) performed unbounded `SELECT payload FROM ...` queries across hot entity tables. The current implementation bounds terminal task, audit-event, and terminal-outbox hydration while leaving table-native reads available for HTTP list/detail endpoints:
 
 | Table | Observed Count (seoseo) | Approx. per-row payload |
 |---|---|---|
@@ -35,7 +35,7 @@ The `readHotRuntimeSnapshot()` method (in `src/core/store.ts`) performs 10 unbou
 
 This is not inherently fatal, but:
 
-1. **Every broker save** calls `writeHotEntityTables()` which writes ALL hot entities, then on the next load path, re-reads everything. This creates a sawtooth memory pattern.
+1. **Every broker save** calls `writeHotEntityTables()` which mirrors hot entities, then on the next load path re-reads the runtime hot slice. Caps reduce the historical terminal/audit/outbox portion of this sawtooth.
 
 2. **The canonical snapshot JSON** is also loaded by `readHotEntityMirrorStatus()` for diffing — duplicating the in-memory representation.
 
@@ -75,13 +75,14 @@ The p95 health latency is already elevated by mirror-status comparison. At 10× 
 
 - **`HealthDiagnosticsCache`** (5s TTL) — prevents per-request DB churn for `/health`
 - **`SqliteAuditRuntimeRepository`** — limits audit events to `maxHotAuditEvents` (default 5,000) on each append via `pruneHotAuditEventsToMax()`
+- **SQLite hot-runtime hydration caps** — `BROKER_HOT_RUNTIME_MAX_TERMINAL_TASKS`, `BROKER_HOT_RUNTIME_MAX_AUDIT_EVENTS`, and `BROKER_HOT_RUNTIME_MAX_TERMINAL_OUTBOX_EVENTS` bound cold-start heap use without mutating the database
 - **`SqliteTaskHotRetentionPlanOptions`** — retention planning framework exists for tasks, audit events, and workers
 
 ### 2.2 Low-Risk Immediately Available
 
 1. **Enable audit retention** — Set `maxAuditEvents` in the broker retention policy. The default is 5,000 but the seoseo broker likely has this at default. Lower to 2,000 to reduce hot-table load.
 
-2. **Monitor hot-table counts** — Use the new `readHotTableLoadMetrics()` exposed on `/health` (added in this PR) to track per-table growth.
+2. **Monitor hot-table counts and runtime skips** — Use `/health` `persistence.hotTableLoadMetrics` to track per-table growth and `persistence.hotRuntimeLoadMetrics` to see loaded/skipped rows for bounded runtime slices.
 
 3. **Compact WAL** — SQLite auto-checkpoint triggers at 1,000 pages. Consider `PRAGMA wal_autocheckpoint=100` (non-breaking, affects only new transactions).
 
@@ -104,15 +105,31 @@ The p95 health latency is already elevated by mirror-status comparison. At 10× 
 
 ```json
 {
-  "hotTableMetrics": {
-    "broker_tasks": { "count": 660, "maxPayloadBytes": 118234 },
-    "broker_audit_events": { "count": 1986, "maxPayloadBytes": 2341 },
-    "broker_terminal_outbox": { 
-      "count": 389, 
-      "maxPayloadBytes": 3120, 
-      "unackedCount": 234 
+  "persistence": {
+    "hotTableLoadMetrics": {
+      "tables": {
+        "broker_tasks": { "count": 660, "maxPayloadBytes": 118234 },
+        "broker_audit_events": { "count": 1986, "maxPayloadBytes": 2341 },
+        "broker_terminal_outbox": {
+          "count": 389,
+          "maxPayloadBytes": 3120,
+          "unackedCount": 234
+        }
+      }
     },
-    ...
+    "hotRuntimeLoadMetrics": {
+      "tables": {
+        "broker_tasks": {
+          "activeCount": 5,
+          "terminalCount": 655,
+          "loadedCount": 660,
+          "skippedCount": 0,
+          "limit": 2000
+        },
+        "broker_audit_events": { "loadedCount": 1986, "skippedCount": 0, "limit": 5000 },
+        "broker_terminal_outbox": { "loadedCount": 389, "skippedCount": 0, "limit": 1000 }
+      }
+    }
   }
 }
 ```

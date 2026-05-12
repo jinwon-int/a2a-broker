@@ -84,6 +84,7 @@ export interface BrokerPersistenceInfo {
   hotEntityMirror?: BrokerHotEntityMirrorStatus;
   hotEntityDiagnostics?: BrokerHotEntityDiagnostics;
   hotTableLoadMetrics?: BrokerHotTableLoadMetrics;
+  hotRuntimeLoadMetrics?: BrokerHotRuntimeLoadMetrics;
   importedFromJsonFile?: string;
   lastImportAt?: string;
 }
@@ -148,6 +149,25 @@ export interface BrokerHotTableLoadMetricEntry {
 
 export interface BrokerHotTableLoadMetrics {
   tables: Record<string, BrokerHotTableLoadMetricEntry>;
+}
+
+export interface BrokerHotRuntimeLoadMetricEntry {
+  loadedCount: number;
+  skippedCount: number;
+  limit: number;
+}
+
+export interface BrokerHotTaskRuntimeLoadMetricEntry extends BrokerHotRuntimeLoadMetricEntry {
+  activeCount: number;
+  terminalCount: number;
+}
+
+export interface BrokerHotRuntimeLoadMetrics {
+  tables: {
+    broker_tasks: BrokerHotTaskRuntimeLoadMetricEntry;
+    broker_audit_events: BrokerHotRuntimeLoadMetricEntry;
+    broker_terminal_outbox: BrokerHotRuntimeLoadMetricEntry;
+  };
 }
 
 export interface JsonFileBrokerStateStoreOptions {
@@ -1031,6 +1051,7 @@ export class SqliteBrokerStateStore implements BrokerStateStore {
       hotEntityMirror: this.readHotEntityMirrorStatus(),
       hotEntityDiagnostics: this.readHotEntityDiagnostics(),
       hotTableLoadMetrics: this.readHotTableLoadMetrics(),
+      hotRuntimeLoadMetrics: this.readHotRuntimeLoadMetrics(),
       importedFromJsonFile: this.readMetadata("imported_from_json_file"),
       lastImportAt: this.readMetadata("last_import_at"),
     };
@@ -1195,22 +1216,47 @@ export class SqliteBrokerStateStore implements BrokerStateStore {
             : 0;
       const entry: BrokerHotTableLoadMetricEntry = { count, maxPayloadBytes };
       if (table === "broker_terminal_outbox") {
-        const unackedRow = this.db
-          .prepare(
-            "SELECT COUNT(*) AS count FROM broker_terminal_outbox WHERE acknowledged_at IS NULL",
-          )
-          .get() as { count?: number | bigint } | undefined;
-        const unackedCount =
-          typeof unackedRow?.count === "bigint"
-            ? Number(unackedRow.count)
-            : typeof unackedRow?.count === "number"
-              ? unackedRow.count
-              : 0;
+        const unackedCount = this.readTerminalOutboxUnackedCount();
         entry.unackedCount = unackedCount;
       }
       tables[table] = entry;
     }
     return { tables };
+  }
+
+  readHotRuntimeLoadMetrics(): BrokerHotRuntimeLoadMetrics {
+    const activeTaskCount = this.readTaskCountByTerminalStatus(false);
+    const terminalTaskCount = this.readTaskCountByTerminalStatus(true);
+    const loadedTerminalTaskCount = Math.min(terminalTaskCount, this.maxHotRuntimeTerminalTasks);
+    const auditCount = this.readTableCount("broker_audit_events");
+    const loadedAuditCount = Math.min(auditCount, this.maxHotRuntimeAuditEvents);
+    const terminalOutboxCount = this.readTableCount("broker_terminal_outbox");
+    const loadedTerminalOutboxCount = Math.min(
+      terminalOutboxCount,
+      this.maxHotRuntimeTerminalOutboxEvents,
+    );
+
+    return {
+      tables: {
+        broker_tasks: {
+          activeCount: activeTaskCount,
+          terminalCount: terminalTaskCount,
+          loadedCount: activeTaskCount + loadedTerminalTaskCount,
+          skippedCount: terminalTaskCount - loadedTerminalTaskCount,
+          limit: this.maxHotRuntimeTerminalTasks,
+        },
+        broker_audit_events: {
+          loadedCount: loadedAuditCount,
+          skippedCount: auditCount - loadedAuditCount,
+          limit: this.maxHotRuntimeAuditEvents,
+        },
+        broker_terminal_outbox: {
+          loadedCount: loadedTerminalOutboxCount,
+          skippedCount: terminalOutboxCount - loadedTerminalOutboxCount,
+          limit: this.maxHotRuntimeTerminalOutboxEvents,
+        },
+      },
+    };
   }
 
   planHotTaskRetention(options: SqliteTaskHotRetentionPlanOptions): SqliteHotRetentionPlan {
@@ -1589,10 +1635,22 @@ export class SqliteBrokerStateStore implements BrokerStateStore {
 
   private readTableCount(tableName: SqliteHotEntityTable): number {
     const row = this.db.prepare(`SELECT COUNT(*) AS count FROM ${tableName}`).get() as { count?: number | bigint } | undefined;
-    if (typeof row?.count === "bigint") {
-      return Number(row.count);
-    }
-    return typeof row?.count === "number" ? row.count : 0;
+    return readSqliteCountValue(row);
+  }
+
+  private readTaskCountByTerminalStatus(terminal: boolean): number {
+    const operator = terminal ? "IN" : "NOT IN";
+    const row = this.db
+      .prepare(`SELECT COUNT(*) AS count FROM broker_tasks WHERE status ${operator} ('succeeded', 'failed', 'canceled')`)
+      .get() as { count?: number | bigint } | undefined;
+    return readSqliteCountValue(row);
+  }
+
+  private readTerminalOutboxUnackedCount(): number {
+    const row = this.db
+      .prepare("SELECT COUNT(*) AS count FROM broker_terminal_outbox WHERE acknowledged_at IS NULL")
+      .get() as { count?: number | bigint } | undefined;
+    return readSqliteCountValue(row);
   }
 
   private writeHotEntityTables(snapshot: BrokerSnapshot, hints?: BrokerStateSaveHints): void {
@@ -2553,4 +2611,11 @@ function readSqlitePayload(row: unknown, tableName: string): string {
     return row.payload;
   }
   throw new Error(`missing payload column from ${tableName}`);
+}
+
+function readSqliteCountValue(row: { count?: number | bigint } | undefined): number {
+  if (typeof row?.count === "bigint") {
+    return Number(row.count);
+  }
+  return typeof row?.count === "number" ? row.count : 0;
 }

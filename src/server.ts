@@ -100,6 +100,7 @@ import { projectAlerts, type Alert, type AlertScanResult } from "./core/alert-pr
 import { buildOperatorTaskReport } from "./core/operator-task-report.js";
 import { buildReleaseEvidenceExport } from "./core/release-evidence.js";
 import {
+  DEFAULT_TERMINAL_TASK_OUTBOX_RETENTION,
   isTerminalTaskOutboxAckEvidence,
   isTerminalTaskReceiptStatus,
   type TerminalTaskOutboxAckInput,
@@ -347,6 +348,12 @@ export interface BrokerServerOptions {
   version?: string;
   /** Optional generated build-info JSON path. Defaults to bundled `dist/build-info.json` when present. */
   buildInfoFile?: string;
+  /** Maximum terminal task rows hydrated into memory when SQLite hot-table loading is active. Env: `BROKER_HOT_RUNTIME_MAX_TERMINAL_TASKS`. */
+  maxHotRuntimeTerminalTasks?: number;
+  /** Maximum audit rows hydrated into memory when SQLite hot-table loading is active. Env: `BROKER_HOT_RUNTIME_MAX_AUDIT_EVENTS`. */
+  maxHotRuntimeAuditEvents?: number;
+  /** Maximum terminal outbox rows hydrated into memory when SQLite hot-table loading is active. Env: `BROKER_HOT_RUNTIME_MAX_TERMINAL_OUTBOX_EVENTS`. */
+  maxHotRuntimeTerminalOutboxEvents?: number;
 }
 
 export interface BrokerStaleReaperStatus {
@@ -398,6 +405,9 @@ export interface BrokerServerRuntime {
     taskSubscribeHeartbeatSec: number;
     peerStatusEnabled: boolean;
     brokerId: string;
+    maxHotRuntimeTerminalTasks: number;
+    maxHotRuntimeAuditEvents: number;
+    maxHotRuntimeTerminalOutboxEvents: number;
     version: string;
     build: BrokerBuildInfo;
   };
@@ -461,6 +471,30 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
   );
   const peerStatusEnabled =
     options.peerStatusEnabled ?? resolveBooleanEnv(process.env.A2A_PEER_STATUS_ENABLED, false);
+  const maxHotRuntimeTerminalTasks = Math.max(
+    0,
+    resolveIntegerOption(
+      options.maxHotRuntimeTerminalTasks,
+      process.env.BROKER_HOT_RUNTIME_MAX_TERMINAL_TASKS,
+      2_000,
+    ),
+  );
+  const maxHotRuntimeAuditEvents = Math.max(
+    0,
+    resolveIntegerOption(
+      options.maxHotRuntimeAuditEvents,
+      process.env.BROKER_HOT_RUNTIME_MAX_AUDIT_EVENTS,
+      retentionPolicy.maxAuditEvents,
+    ),
+  );
+  const maxHotRuntimeTerminalOutboxEvents = Math.max(
+    0,
+    resolveIntegerOption(
+      options.maxHotRuntimeTerminalOutboxEvents,
+      process.env.BROKER_HOT_RUNTIME_MAX_TERMINAL_OUTBOX_EVENTS,
+      DEFAULT_TERMINAL_TASK_OUTBOX_RETENTION,
+    ),
+  );
   const brokerId = resolveBrokerId(options.brokerId, serviceName);
   const teamId = resolveStringOption(options.teamId, process.env.A2A_TEAM_ID);
   const buildInfo = resolveBrokerBuildInfo(options, serviceName);
@@ -473,6 +507,9 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
       sqliteFile,
       sqliteLoadSource,
       maxSnapshotBytes,
+      maxHotRuntimeTerminalTasks,
+      maxHotRuntimeAuditEvents,
+      maxHotRuntimeTerminalOutboxEvents,
     });
   const broker =
     options.broker ??
@@ -1590,6 +1627,9 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
       taskSubscribeHeartbeatSec,
       peerStatusEnabled,
       brokerId,
+      maxHotRuntimeTerminalTasks,
+      maxHotRuntimeAuditEvents,
+      maxHotRuntimeTerminalOutboxEvents,
       version: buildInfo.version,
       build: buildInfo.build,
     },
@@ -1835,12 +1875,18 @@ function createDefaultStateStore(params: {
   sqliteFile?: string;
   sqliteLoadSource: SqliteBrokerLoadSource;
   maxSnapshotBytes: number;
+  maxHotRuntimeTerminalTasks: number;
+  maxHotRuntimeAuditEvents: number;
+  maxHotRuntimeTerminalOutboxEvents: number;
 }): BrokerStateStore {
   if (params.backend === "sqlite") {
     return new SqliteBrokerStateStore(params.sqliteFile ?? `${params.stateFile}.sqlite`, {
       importJsonFile: params.stateFile,
       loadSource: params.sqliteLoadSource,
       maxBytes: params.maxSnapshotBytes,
+      maxHotRuntimeTerminalTasks: params.maxHotRuntimeTerminalTasks,
+      maxHotRuntimeAuditEvents: params.maxHotRuntimeAuditEvents,
+      maxHotRuntimeTerminalOutboxEvents: params.maxHotRuntimeTerminalOutboxEvents,
     });
   }
   return new JsonFileBrokerStateStore(params.stateFile, { maxBytes: params.maxSnapshotBytes });

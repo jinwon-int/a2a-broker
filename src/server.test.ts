@@ -548,6 +548,9 @@ test("server reports SQLite persistence metadata when SQLite backend is enabled"
     stateFile: join(dir, "state.json"),
     sqliteFile: join(dir, "state.sqlite"),
     persistenceBackend: "sqlite",
+    maxHotRuntimeTerminalTasks: 12,
+    maxHotRuntimeAuditEvents: 34,
+    maxHotRuntimeTerminalOutboxEvents: 56,
     staleReaperEnabled: false,
   });
   try {
@@ -585,6 +588,27 @@ test("server reports SQLite persistence metadata when SQLite backend is enabled"
       missingTables: [],
       supportedCount: 10,
       totalCount: 10,
+    });
+    assert.deepEqual(health.persistence.hotRuntimeLoadMetrics, {
+      tables: {
+        broker_tasks: {
+          activeCount: 0,
+          terminalCount: 0,
+          loadedCount: 0,
+          skippedCount: 0,
+          limit: 12,
+        },
+        broker_audit_events: {
+          loadedCount: 0,
+          skippedCount: 0,
+          limit: 34,
+        },
+        broker_terminal_outbox: {
+          loadedCount: 0,
+          skippedCount: 0,
+          limit: 56,
+        },
+      },
     });
     assert.deepEqual(health.auditDiagnostics, {
       total: 0,

@@ -244,10 +244,23 @@ The SQLite store also exposes task/audit/worker hot-table retention planning hel
 ## Round 36 hot runtime load source
 
 SQLite now has a tested hot-table runtime snapshot projection primitive that can
-reconstruct a `BrokerSnapshot`-shaped view from the 9 mirrored hot tables. Round
+reconstruct a `BrokerSnapshot`-shaped view from the mirrored hot tables. Round
 36 also adds the opt-in `BROKER_SQLITE_LOAD_SOURCE=hot-tables` cold-start source
 so operators can hydrate runtime broker maps from table-native rows while the
 default remains canonical-snapshot compatible.
+
+Hot-table runtime hydration is bounded for the historical rows most likely to
+pressure heap on startup. Active tasks are always loaded, while terminal tasks,
+audit events, and terminal outbox events use these caps:
+
+- `BROKER_HOT_RUNTIME_MAX_TERMINAL_TASKS` (default `2000`)
+- `BROKER_HOT_RUNTIME_MAX_AUDIT_EVENTS` (defaults to `BROKER_MAX_AUDIT_EVENTS`, normally `5000`)
+- `BROKER_HOT_RUNTIME_MAX_TERMINAL_OUTBOX_EVENTS` (default `1000`)
+
+SQLite `/health` includes `persistence.hotRuntimeLoadMetrics` with loaded,
+skipped, and limit counts for those bounded runtime slices so operators can see
+when cold-start hydration is intentionally shedding historical rows without
+mutating the database.
 
 ## Current limitation
 
