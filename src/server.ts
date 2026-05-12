@@ -1086,6 +1086,22 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
         return sendJson(res, 200, result);
       }
 
+      // GET /cleanup/candidates — read-only cleanup candidate discovery (issue #520)
+      if (req.method === "GET" && path === "/cleanup/candidates") {
+        if (enforceRequesterIdentity) {
+          assertRequesterHasRole(requesterIdentity, ["hub", "operator"], "cleanup.candidates.read");
+        }
+        const plan = broker.discoverCleanupCandidates({
+          staleWorkerAfterMs: numberQueryParam(url, "stale_worker_after_ms") ?? undefined,
+          staleTaskAfterMs: numberQueryParam(url, "stale_task_after_ms") ?? undefined,
+          terminalOutboxBacklogAfterMs: numberQueryParam(url, "terminal_outbox_backlog_after_ms") ?? undefined,
+          historicalTerminalAfterMs: numberQueryParam(url, "historical_terminal_after_ms") ?? undefined,
+        });
+        return sendJson(res, 200, plan, {
+          "cache-control": "no-store",
+        });
+      }
+
       if (req.method === "GET" && path === "/workers") {
         const filters = workerFiltersFromUrl(url);
         const items = listWorkerViewsForReadPath(stateStore, broker, workerOfflineAfterSec * 1000, filters);
