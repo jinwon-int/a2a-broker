@@ -2378,3 +2378,91 @@ test("SqliteBrokerStateStore planHotTaskRetention identifies prune candidates", 
     temp.cleanup();
   }
 });
+
+test("SqliteBrokerStateStore readHotRuntimeSnapshot caps non-terminal tasks with maxHotRuntimeNonTerminalTasks", () => {
+  const temp = withTempFile("hot-nonterminal-cap.db");
+  try {
+    const store = new SqliteBrokerStateStore(temp.filePath, {
+      loadSource: "hot-tables",
+      maxHotRuntimeNonTerminalTasks: 3,
+      maxHotRuntimeTerminalTasks: 2,
+    });
+
+    // 10 non-terminal tasks (queued/claimed/running) + 5 terminal tasks (succeeded/failed)
+    const nonTerminal: BrokerSnapshot["tasks"] = Array.from({ length: 10 }, (_, i) => ({
+      ...makeTask(`nt-${i}`, (["queued", "claimed", "running"] as const)[i % 3], "worker-0"),
+      createdAt: `2026-04-27T00:0${i}:00.000Z`,
+      updatedAt: `2026-04-27T00:0${i}:00.000Z`,
+    }));
+    const terminal: BrokerSnapshot["tasks"] = Array.from({ length: 5 }, (_, i) => ({
+      ...makeTask(`t-${i}`, i % 2 === 0 ? "succeeded" : "failed", "worker-0"),
+      createdAt: `2026-04-27T01:0${i}:00.000Z`,
+      updatedAt: `2026-04-27T01:0${i}:00.000Z`,
+    }));
+
+    store.save({ ...emptySnapshot(), tasks: [...nonTerminal, ...terminal], workers: [makeWorker("worker-0")] });
+
+    const hotSnapshot = store.readHotRuntimeSnapshot();
+    const hotTasks = hotSnapshot.tasks;
+    // Should have at most 3 non-terminal (ordered by updated_at DESC, id ASC) + at most 2 terminal
+    assert.ok(hotTasks.length <= 5, `expected at most 5 hot tasks, got ${hotTasks.length}`);
+
+    const nonTerminalIds = hotTasks
+      .filter((t) => ["queued", "claimed", "running"].includes(t.status))
+      .map((t) => t.id);
+    assert.ok(nonTerminalIds.length <= 3, `expected at most 3 non-terminal tasks, got ${nonTerminalIds.length}`);
+    // The most recent non-terminal tasks should be included
+    assert.ok(nonTerminalIds.includes("nt-9"), "most recent non-terminal task should be included");
+    assert.ok(nonTerminalIds.includes("nt-8"), "second most recent non-terminal task should be included");
+
+    const terminalIds = hotTasks
+      .filter((t) => ["succeeded", "failed", "canceled"].includes(t.status))
+      .map((t) => t.id);
+    assert.ok(terminalIds.length <= 2, `expected at most 2 terminal tasks, got ${terminalIds.length}`);
+
+    store.close();
+  } finally {
+    temp.cleanup();
+  }
+});
+
+test("SqliteBrokerStateStore readHotTerminalOutboxDiagnostics reports unacked staleness", () => {
+  const temp = withTempFile("hot-outbox-diag.db");
+  try {
+    const store = new SqliteBrokerStateStore(temp.filePath);
+    const now = new Date();
+    const oldDate = new Date(now.getTime() - 14 * 24 * 60 * 60 * 1000).toISOString();
+
+    const snapshot: BrokerSnapshot = {
+      ...emptySnapshot(),
+      terminalOutbox: [
+        makeTerminalOutboxEvent("outbox-1", "task-1", oldDate),
+        {
+          ...makeTerminalOutboxEvent("outbox-2", "task-2", now.toISOString()),
+          ack: {
+            status: "receipt_confirmed" as const,
+            evidence: "operator_visible" as const,
+            acknowledgedAt: now.toISOString(),
+          },
+        },
+        makeTerminalOutboxEvent("outbox-3", "task-3", oldDate),
+      ],
+    };
+    store.save(snapshot);
+
+    const diag = store.readHotTerminalOutboxDiagnostics();
+    assert.equal(diag.total, 3);
+    assert.equal(diag.acked, 1);
+    assert.equal(diag.unacked, 2);
+    assert.ok(diag.unackedRatio > 0.5);
+    assert.ok(diag.oldestUnackedCreatedAt !== null);
+    assert.ok(diag.oldestUnackedAgeMs !== null);
+    assert.ok(diag.oldestUnackedAgeMs! > 12 * 24 * 60 * 60 * 1000, "oldest unacked should be >12 days old");
+    // The oldest unacked warning should fire (>7 days)
+    assert.ok(diag.warnings.some((w) => w.includes("days old")), "should warn about old unacked entry");
+
+    store.close();
+  } finally {
+    temp.cleanup();
+  }
+});
