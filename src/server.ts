@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type RequestListener, type Server, type ServerResponse } from "node:http";
+import { getHeapStatistics } from "node:v8";
 
 import { createBrokerAgentCard, type AgentCard } from "./a2a/agent-card.js";
 import { executeA2AJsonRpc } from "./a2a/json-rpc.js";
@@ -246,6 +247,19 @@ type CachedHealthDiagnostics = {
   persistence: BrokerPersistenceInfo;
   auditDiagnostics: BrokerHotAuditDiagnostics | undefined;
 };
+
+function readRuntimeMemoryUsage(): Record<string, number> {
+  const memory = process.memoryUsage();
+  const heap = getHeapStatistics();
+  return {
+    rssBytes: memory.rss,
+    heapTotalBytes: memory.heapTotal,
+    heapUsedBytes: memory.heapUsed,
+    heapLimitBytes: heap.heap_size_limit,
+    externalBytes: memory.external,
+    arrayBuffersBytes: memory.arrayBuffers,
+  };
+}
 
 class HealthDiagnosticsCache {
   private cached: CachedHealthDiagnostics | null = null;
@@ -742,6 +756,7 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
           build: buildInfo.build,
           publicBaseUrl,
           uptimeSec: Math.round(process.uptime()),
+          runtimeMemory: readRuntimeMemoryUsage(),
           persistence,
           ...(auditDiagnostics !== undefined ? { auditDiagnostics } : {}),
           workers: {
