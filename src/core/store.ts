@@ -83,6 +83,7 @@ export interface BrokerPersistenceInfo {
   hotEntityHintCoverage?: BrokerHotEntityHintCoverage;
   hotEntityMirror?: BrokerHotEntityMirrorStatus;
   hotEntityDiagnostics?: BrokerHotEntityDiagnostics;
+  hotTableLoadMetrics?: BrokerHotTableLoadMetrics;
   importedFromJsonFile?: string;
   lastImportAt?: string;
 }
@@ -136,6 +137,17 @@ export interface BrokerHotAuditDiagnostics {
   recentWorkerHeartbeat: number;
   recentWorkerHeartbeatRatio: number;
   warnings: string[];
+}
+
+export interface BrokerHotTableLoadMetricEntry {
+  count: number;
+  maxPayloadBytes: number;
+  /** Only set for broker_terminal_outbox. */
+  unackedCount?: number;
+}
+
+export interface BrokerHotTableLoadMetrics {
+  tables: Record<string, BrokerHotTableLoadMetricEntry>;
 }
 
 export interface JsonFileBrokerStateStoreOptions {
@@ -1018,6 +1030,7 @@ export class SqliteBrokerStateStore implements BrokerStateStore {
       hotEntityHintCoverage: this.readHotEntityHintCoverage(),
       hotEntityMirror: this.readHotEntityMirrorStatus(),
       hotEntityDiagnostics: this.readHotEntityDiagnostics(),
+      hotTableLoadMetrics: this.readHotTableLoadMetrics(),
       importedFromJsonFile: this.readMetadata("imported_from_json_file"),
       lastImportAt: this.readMetadata("last_import_at"),
     };
@@ -1161,6 +1174,43 @@ export class SqliteBrokerStateStore implements BrokerStateStore {
       recentWorkerHeartbeatRatio,
       warnings,
     };
+  }
+
+  readHotTableLoadMetrics(): BrokerHotTableLoadMetrics {
+    const tables: Record<string, BrokerHotTableLoadMetricEntry> = {};
+    for (const table of SQLITE_HOT_ENTITY_TABLES) {
+      const count = this.readTableCount(table);
+      if (count === 0) {
+        tables[table] = { count: 0, maxPayloadBytes: 0 };
+        continue;
+      }
+      const maxRow = this.db
+        .prepare(`SELECT COALESCE(MAX(LENGTH(payload)), 0) AS maxLen FROM ${table}`)
+        .get() as { maxLen?: number | bigint } | undefined;
+      const maxPayloadBytes =
+        typeof maxRow?.maxLen === "bigint"
+          ? Number(maxRow.maxLen)
+          : typeof maxRow?.maxLen === "number"
+            ? maxRow.maxLen
+            : 0;
+      const entry: BrokerHotTableLoadMetricEntry = { count, maxPayloadBytes };
+      if (table === "broker_terminal_outbox") {
+        const unackedRow = this.db
+          .prepare(
+            "SELECT COUNT(*) AS count FROM broker_terminal_outbox WHERE acknowledged_at IS NULL",
+          )
+          .get() as { count?: number | bigint } | undefined;
+        const unackedCount =
+          typeof unackedRow?.count === "bigint"
+            ? Number(unackedRow.count)
+            : typeof unackedRow?.count === "number"
+              ? unackedRow.count
+              : 0;
+        entry.unackedCount = unackedCount;
+      }
+      tables[table] = entry;
+    }
+    return { tables };
   }
 
   planHotTaskRetention(options: SqliteTaskHotRetentionPlanOptions): SqliteHotRetentionPlan {
