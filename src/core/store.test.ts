@@ -312,6 +312,20 @@ test("SqliteBrokerStateStore saves and reloads snapshots with WAL metadata", () 
       hotEntityDiagnostics: {
         invalidRows: [],
       },
+      hotTableLoadMetrics: {
+        tables: {
+          broker_exchanges: { count: 1, maxPayloadBytes: 506 },
+          broker_exchange_messages: { count: 1, maxPayloadBytes: 215 },
+          broker_proposals: { count: 1, maxPayloadBytes: 397 },
+          broker_artifacts: { count: 1, maxPayloadBytes: 128 },
+          broker_validations: { count: 1, maxPayloadBytes: 171 },
+          broker_tasks: { count: 1, maxPayloadBytes: 381 },
+          broker_tombstones: { count: 1, maxPayloadBytes: 203 },
+          broker_workers: { count: 1, maxPayloadBytes: 313 },
+          broker_audit_events: { count: 1, maxPayloadBytes: 142 },
+          broker_terminal_outbox: { count: 0, maxPayloadBytes: 0 },
+        },
+      },
       importedFromJsonFile: undefined,
       lastImportAt: undefined,
     });
@@ -2060,3 +2074,234 @@ function makeAuditEvent(
     createdAt,
   };
 }
+
+function makeOutboxEvent(
+  id: string,
+  taskId: string,
+  eventId: number,
+  createdAt: string,
+  acknowledgedAt: string | null,
+): BrokerSnapshot["terminalOutbox"] extends (infer T)[] | undefined ? T : never {
+  const event: Record<string, unknown> = {
+    id,
+    kind: "task.terminal" as const,
+    taskEventId: eventId,
+    payload: {
+      taskId,
+      status: "succeeded" as const,
+      createdAt,
+      updatedAt: createdAt,
+    },
+    createdAt,
+    receipt: {
+      status: "produced" as const,
+      updatedAt: createdAt,
+    },
+    attempts: 0,
+  };
+  if (acknowledgedAt) {
+    event.ack = {
+      status: "receipt_confirmed" as const,
+      evidence: "operator_visible" as const,
+      acknowledgedAt,
+    };
+  }
+  return event as NonNullable<BrokerSnapshot["terminalOutbox"]>[number];
+}
+
+test("SqliteBrokerStateStore.readHotTableLoadMetrics returns per-table counts and max payload sizes", () => {
+  const temp = withTempFile("hot-metrics.db");
+  try {
+    const store = new SqliteBrokerStateStore(temp.filePath);
+
+    // Seed with known counts using save (which writes to hot tables)
+    const t0 = "2026-04-27T00:00:00.000Z";
+    const tasks: BrokerSnapshot["tasks"] = Array.from({ length: 5 }, (_, i) => ({
+      ...makeTask(`task-${i}`, "succeeded", "worker-0"),
+      createdAt: t0,
+      updatedAt: t0,
+    }));
+    const auditEvents = Array.from({ length: 10 }, (_, i) =>
+      makeAuditEvent(`audit-${i}`, "task.created", "task-0", t0),
+    );
+    const workers = [makeWorker("worker-0")];
+    const terminalOutbox = [
+      makeOutboxEvent("outbox-acked", "task-0", 0, t0, t0),
+      makeOutboxEvent("outbox-unacked", "task-1", 1, t0, null),
+    ];
+    const tombstones = [makeTombstone("task-0", "failed", t0)];
+
+    store.save(
+      {
+        ...emptySnapshot(),
+        tasks,
+        auditEvents,
+        workers,
+        terminalOutbox,
+        tombstones,
+      },
+      {},
+    );
+
+    const metrics = store.readHotTableLoadMetrics();
+
+    // Verify task counts and payload size
+    assert.ok(metrics.tables["broker_tasks"], "broker_tasks should exist");
+    assert.equal(metrics.tables["broker_tasks"].count, 5, "task count");
+    assert.ok(metrics.tables["broker_tasks"].maxPayloadBytes > 0, "tasks should have nonzero max payload");
+
+    // Verify audit event counts
+    assert.equal(metrics.tables["broker_audit_events"].count, 10, "audit event count");
+
+    // Verify terminal outbox with unacked count
+    assert.equal(metrics.tables["broker_terminal_outbox"].count, 2, "terminal outbox count");
+    assert.equal(metrics.tables["broker_terminal_outbox"].unackedCount, 1, "unacked count should be 1");
+
+    // Verify tombstone counts
+    assert.equal(metrics.tables["broker_tombstones"].count, 1, "tombstone count");
+
+    // Verify worker counts
+    assert.equal(metrics.tables["broker_workers"].count, 1, "worker count");
+
+    // Verify empty tables report zero
+    assert.equal(metrics.tables["broker_artifacts"].count, 0, "artifacts should be zero");
+    assert.equal(metrics.tables["broker_validations"].count, 0, "validations should be zero");
+  } finally {
+    temp.cleanup();
+  }
+});
+
+test("SqliteBrokerStateStore.readHotRuntimeSnapshot survives representative load (hot-tables load source)", () => {
+  const temp = withTempFile("hot-regr.db");
+  try {
+    // Create with hot-tables load source to exercise the exact regression path from #497
+    const store = new SqliteBrokerStateStore(temp.filePath, { loadSource: "hot-tables" });
+
+    // Seed representative data matching observed seoseo broker shape
+    const t0 = "2026-04-27T00:00:00.000Z";
+    const taskCount = 660;
+    const auditCount = 1908;
+    const workerCount = 21;
+    const tombstoneCount = 177;
+    const outboxCount = 389;
+    const exchangeCount = 15;
+    const exchangeMessageCount = 31;
+    const proposalCount = 13;
+
+    const tasks: BrokerSnapshot["tasks"] = Array.from({ length: taskCount }, (_, i) => ({
+      ...makeTask(`task-r-${i}`, i % 4 === 0 ? "failed" : "succeeded", "worker-0"),
+      createdAt: t0,
+      updatedAt: t0,
+    }));
+    const auditEvents = Array.from({ length: auditCount }, (_, i) =>
+      makeAuditEvent(`audit-r-${i}`, i % 3 === 0 ? "worker.heartbeat" : "task.created", "task-0", t0),
+    );
+    const workers = Array.from({ length: workerCount }, (_, i) =>
+      makeWorker(`worker-r-${i}`),
+    );
+    const terminalOutbox = Array.from({ length: outboxCount }, (_, i) =>
+      makeOutboxEvent(
+        `outbox-r-${i}`,
+        `task-r-${i % taskCount}`,
+        i,
+        t0,
+        i < 200 ? null : t0,
+      ),
+    );
+    const tombstones = Array.from({ length: tombstoneCount }, (_, i) =>
+      makeTombstone(`task-r-${i}`, "failed", t0),
+    );
+    const exchanges = Array.from({ length: exchangeCount }, (_, i) =>
+      makeExchange(`ex-r-${i}`, "worker-0", t0),
+    );
+    const exchangeMessages = Array.from({ length: exchangeMessageCount }, (_, i) =>
+      makeExchangeMessage(`exmsg-r-${i}`, `ex-r-${i % exchangeCount}`, "root", undefined, t0),
+    );
+    const proposals = Array.from({ length: proposalCount }, (_, i) =>
+      makeProposal(`proposal-r-${i}`, "open", "worker-0", t0),
+    );
+
+    const snapshot: BrokerSnapshot = {
+      ...emptySnapshot(),
+      tasks,
+      auditEvents,
+      workers,
+      terminalOutbox,
+      tombstones,
+      exchanges,
+      exchangeMessages,
+      proposals,
+    };
+
+    store.save(snapshot, {});
+
+    // Read back the entire hot-table snapshot — this is the exact code path
+    // that caused OOM in issue #497
+    const loaded = store.load();
+
+    // Verify counts match (this asserts the read path is correct and doesn't crash)
+    assert.equal(loaded.tasks.length, taskCount, "loaded task count should match seeded");
+    assert.equal(loaded.auditEvents.length, auditCount, "loaded audit event count should match seeded");
+    assert.equal(loaded.workers.length, workerCount, "loaded worker count should match seeded");
+    assert.equal(loaded.terminalOutbox?.length ?? 0, outboxCount, "loaded terminal outbox count should match seeded");
+    assert.equal(loaded.tombstones?.length ?? 0, tombstoneCount, "loaded tombstone count should match seeded");
+    assert.equal(loaded.exchanges.length, exchangeCount, "loaded exchange count should match seeded");
+    assert.equal(loaded.exchangeMessages.length, exchangeMessageCount, "loaded exchange message count should match seeded");
+    assert.equal(loaded.proposals.length, proposalCount, "loaded proposal count should match seeded");
+
+    // Verify structural integrity: all tasks have id and status
+    assert.ok(loaded.tasks.every((t) => typeof t.id === "string" && typeof t.status === "string"), "all tasks have id and status");
+    assert.ok(loaded.auditEvents.every((e) => typeof e.id === "string" && typeof e.action === "string"), "all audit events have id and action");
+    assert.ok(loaded.workers.every((w) => typeof w.nodeId === "string"), "all workers have nodeId");
+
+    // Verify readHotEntityMirrorStatus reports OK after consistent save/load
+    const mirror = store.readHotEntityMirrorStatus();
+    assert.ok(mirror.ok, `mirror status should be ok: ${JSON.stringify(mirror.mismatches)}`);
+    assert.equal(mirror.mismatches.length, 0, "no mismatches after consistent load");
+
+    // Verify readHotTableLoadMetrics gives correct counts
+    const metrics = store.readHotTableLoadMetrics();
+    assert.equal(metrics.tables["broker_tasks"].count, taskCount, "hot table metrics: task count");
+    assert.equal(metrics.tables["broker_terminal_outbox"].unackedCount, 200, "hot table metrics: unacked count");
+  } finally {
+    temp.cleanup();
+  }
+});
+
+test("SqliteBrokerStateStore planHotTaskRetention identifies prune candidates", () => {
+  const temp = withTempFile("hot-retention.db");
+  try {
+    const store = new SqliteBrokerStateStore(temp.filePath);
+    const t0 = "2026-04-27T00:00:00.000Z";
+
+    // 500 terminal tasks + 160 active tasks
+    const terminalTasks: BrokerSnapshot["tasks"] = Array.from({ length: 500 }, (_, i) => ({
+      ...makeTask(`rt-${i}`, i % 3 === 0 ? "failed" : "succeeded", "worker-0"),
+      createdAt: t0,
+      updatedAt: t0,
+    }));
+    const activeTasks: BrokerSnapshot["tasks"] = Array.from({ length: 160 }, (_, i) => ({
+      ...makeTask(`ra-${i}`, (["queued", "running", "retrying"] as const)[i % 3], "worker-0"),
+      createdAt: t0,
+      updatedAt: t0,
+    }));
+
+    store.save(
+      { ...emptySnapshot(), tasks: [...terminalTasks, ...activeTasks], workers: [makeWorker("worker-0")] },
+      {},
+    );
+
+    // Plan retention with a short window — should identify many terminal tasks for pruning
+    const plan = store.planHotTaskRetention({
+      retentionMs: 60 * 60 * 1000, // 1 hour
+      maxTerminalRecords: 100,
+    });
+
+    // The plan should have retain and prune recommendations
+    assert.equal(plan.table, "broker_tasks", "plan should target broker_tasks");
+    assert.ok(plan.retainedIds.length >= 100, `should retain at least maxTerminalRecords (got ${plan.retainedIds.length})`);
+    assert.ok(plan.pruneIds.length > 0, "should identify prune candidates");
+  } finally {
+    temp.cleanup();
+  }
+});
