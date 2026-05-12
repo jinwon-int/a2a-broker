@@ -29,7 +29,10 @@ import type { TaskRuntimeRepository } from "./task-repository.js";
 import type { TombstoneRuntimeRepository } from "./tombstone-repository.js";
 import type { ValidationRuntimeRepository } from "./validation-repository.js";
 import type { WorkerRuntimeRepository } from "./worker-repository.js";
-import type { TerminalTaskOutboxEvent } from "./terminal-event-outbox.js";
+import {
+  DEFAULT_TERMINAL_TASK_OUTBOX_RETENTION,
+  type TerminalTaskOutboxEvent,
+} from "./terminal-event-outbox.js";
 
 export const CURRENT_BROKER_STATE_VERSION = 8;
 export const DEFAULT_BROKER_STATE_MAX_BYTES = 50 * 1024 * 1024;
@@ -145,6 +148,15 @@ export interface SqliteBrokerStateStoreOptions {
   maxBytes?: number;
   importJsonFile?: string;
   loadSource?: SqliteBrokerLoadSource;
+  /**
+   * Maximum terminal task rows to hydrate into live memory when using
+   * loadSource=hot-tables. Active/non-terminal tasks are always loaded.
+   */
+  maxHotRuntimeTerminalTasks?: number;
+  /** Maximum audit rows to hydrate into live memory when using loadSource=hot-tables. */
+  maxHotRuntimeAuditEvents?: number;
+  /** Maximum terminal outbox rows to hydrate into live memory when using loadSource=hot-tables. */
+  maxHotRuntimeTerminalOutboxEvents?: number;
 }
 
 export interface SqliteAuditRuntimeRepositoryOptions {
@@ -652,6 +664,9 @@ const terminalOutboxEventSchema = z
   })
   .passthrough();
 
+const DEFAULT_HOT_RUNTIME_MAX_TERMINAL_TASKS = 2_000;
+const DEFAULT_HOT_RUNTIME_MAX_AUDIT_EVENTS = 5_000;
+
 const brokerSnapshotSchema = z
   .object({
     version: z.number().int().nonnegative().optional().default(CURRENT_BROKER_STATE_VERSION),
@@ -720,6 +735,9 @@ export class SqliteBrokerStateStore implements BrokerStateStore {
   private readonly maxBytes: number;
   private readonly importJsonFile?: string;
   private readonly loadSource: SqliteBrokerLoadSource;
+  private readonly maxHotRuntimeTerminalTasks: number;
+  private readonly maxHotRuntimeAuditEvents: number;
+  private readonly maxHotRuntimeTerminalOutboxEvents: number;
   private readonly db: DatabaseSync;
   private readonly journalMode: string;
 
@@ -730,6 +748,18 @@ export class SqliteBrokerStateStore implements BrokerStateStore {
     this.maxBytes = Math.max(1, options.maxBytes ?? DEFAULT_BROKER_STATE_MAX_BYTES);
     this.importJsonFile = options.importJsonFile;
     this.loadSource = options.loadSource ?? "snapshot";
+    this.maxHotRuntimeTerminalTasks = normalizeNonNegativeSqliteLimit(
+      options.maxHotRuntimeTerminalTasks,
+      DEFAULT_HOT_RUNTIME_MAX_TERMINAL_TASKS,
+    );
+    this.maxHotRuntimeAuditEvents = normalizeNonNegativeSqliteLimit(
+      options.maxHotRuntimeAuditEvents,
+      DEFAULT_HOT_RUNTIME_MAX_AUDIT_EVENTS,
+    );
+    this.maxHotRuntimeTerminalOutboxEvents = normalizeNonNegativeSqliteLimit(
+      options.maxHotRuntimeTerminalOutboxEvents,
+      DEFAULT_TERMINAL_TASK_OUTBOX_RETENTION,
+    );
     if (dbFile !== ":memory:") {
       mkdirSync(dirname(dbFile), { recursive: true });
     }
@@ -756,11 +786,11 @@ export class SqliteBrokerStateStore implements BrokerStateStore {
       proposals: this.readHotProposals(),
       artifacts: this.readHotArtifacts(),
       validations: this.readHotValidations(),
-      auditEvents: this.readHotAuditEvents(),
+      auditEvents: this.readHotAuditEventsForRuntime(),
       workers: this.readHotWorkers(),
-      tasks: this.readHotTasks(),
+      tasks: this.readHotTasksForRuntime(),
       tombstones: this.readHotTombstones(),
-      terminalOutbox: this.readHotTerminalOutbox(),
+      terminalOutbox: this.readHotTerminalOutbox({ limit: this.maxHotRuntimeTerminalOutboxEvents }),
     };
   }
 
@@ -892,10 +922,24 @@ export class SqliteBrokerStateStore implements BrokerStateStore {
       : tombstones;
   }
 
-  readHotTerminalOutbox(): TerminalTaskOutboxEvent[] {
-    return this.db
-      .prepare("SELECT payload FROM broker_terminal_outbox ORDER BY created_at ASC, id ASC")
-      .all()
+  readHotTerminalOutbox(options: { limit?: number } = {}): TerminalTaskOutboxEvent[] {
+    const limit = normalizeOptionalSqliteLimit(options.limit);
+    const rows = limit === undefined
+      ? this.db
+        .prepare("SELECT payload FROM broker_terminal_outbox ORDER BY created_at ASC, id ASC")
+        .all()
+      : this.db
+        .prepare(
+          `SELECT payload FROM (
+             SELECT payload, created_at, id
+             FROM broker_terminal_outbox
+             ORDER BY created_at DESC, id DESC
+             LIMIT ?
+           )
+           ORDER BY created_at ASC, id ASC`,
+        )
+        .all(limit);
+    return rows
       .map((row) => parseHotEntityPayload(row, terminalOutboxEventSchema, "broker_terminal_outbox")) as TerminalTaskOutboxEvent[];
   }
 
@@ -922,6 +966,39 @@ export class SqliteBrokerStateStore implements BrokerStateStore {
       }
       return true;
     });
+  }
+
+  private readHotTasksForRuntime(): TaskRecord[] {
+    return this.db
+      .prepare(
+        `SELECT payload FROM broker_tasks
+         WHERE status NOT IN ('succeeded', 'failed', 'canceled')
+         UNION ALL
+         SELECT payload FROM (
+           SELECT payload
+           FROM broker_tasks
+           WHERE status IN ('succeeded', 'failed', 'canceled')
+           ORDER BY updated_at DESC, id ASC
+           LIMIT ?
+         )`,
+      )
+      .all(this.maxHotRuntimeTerminalTasks)
+      .map((row) => parseHotEntityPayload(row, taskSchema, "broker_tasks")) as TaskRecord[];
+  }
+
+  private readHotAuditEventsForRuntime(): AuditEvent[] {
+    return this.db
+      .prepare(
+        `SELECT payload FROM (
+           SELECT payload, created_at, id
+           FROM broker_audit_events
+           ORDER BY created_at DESC, id ASC
+           LIMIT ?
+         )
+         ORDER BY created_at DESC, id ASC`,
+      )
+      .all(this.maxHotRuntimeAuditEvents)
+      .map((row) => parseHotEntityPayload(row, auditEventSchema, "broker_audit_events")) as AuditEvent[];
   }
 
   close(): void {
@@ -2104,6 +2181,18 @@ function isMissingFileError(error: unknown): boolean {
     "code" in error &&
     error.code === "ENOENT"
   );
+}
+
+function normalizeNonNegativeSqliteLimit(value: number | undefined, fallback: number): number {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return Math.max(0, Math.trunc(value));
+  }
+  return Math.max(0, Math.trunc(fallback));
+}
+
+function normalizeOptionalSqliteLimit(value: number | undefined): number | undefined {
+  if (value === undefined) return undefined;
+  return normalizeNonNegativeSqliteLimit(value, 0);
 }
 
 export function serializeBrokerSnapshot(
