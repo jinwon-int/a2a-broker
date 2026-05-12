@@ -904,6 +904,66 @@ export interface WorkerCapacitySummary {
 }
 
 // ---------------------------------------------------------------------------
+// Cleanup candidate types (issue #520)
+// ---------------------------------------------------------------------------
+
+/** Cleanup candidate class for brokered DB hygiene discovery. */
+export type CleanupCandidateClass =
+  | "stale_worker"
+  | "malformed_task"
+  | "terminal_outbox_backlog"
+  | "historical_terminal_task";
+
+/** Risk classification for cleanup candidates. */
+export type CleanupRiskClass = "safe" | "caution" | "high_risk";
+
+/**
+ * Single cleanup candidate discovered from broker state.
+ *
+ * Each candidate has a stable id for idempotent tracking across dry-run
+ * iterations. The `reason` field explains why this record qualifies as a
+ * candidate, and `risk` reflects the safety classification.
+ */
+export interface CleanupCandidate {
+  /** Stable id for idempotent tracking across dry-run iterations. */
+  id: string;
+  /** Candidate class. */
+  class: CleanupCandidateClass;
+  /** Human-readable reason for qualification. */
+  reason: string;
+  /** Risk classification. */
+  risk: CleanupRiskClass;
+  /** Associated entity identifier (taskId, worker nodeId, etc.). */
+  entityId: string;
+  /** When the entity last changed state. */
+  updatedAt: string;
+  /** Age in milliseconds since last update. */
+  ageMs: number;
+  /** Additional metadata (task status, worker role, outbox ack status, etc.). */
+  metadata?: Record<string, unknown>;
+}
+
+/**
+ * Read-only cleanup dry-run plan.
+ *
+ * Aggregates discovered candidates with summary counts and explicit
+ * risk notes. This plan never mutates broker state; execution requires
+ * a separate operator approval gate.
+ */
+export interface CleanupDryRunPlan {
+  /** Generation timestamp. */
+  generatedAt: string;
+  /** Summary counts by candidate class. */
+  summary: Record<CleanupCandidateClass, number>;
+  /** Total candidates across all classes. */
+  totalCandidates: number;
+  /** Discovered candidates ordered by risk (high_risk first). */
+  candidates: CleanupCandidate[];
+  /** Risk notes for the operator (e.g. backup requirements). */
+  riskNotes: string[];
+}
+
+// ---------------------------------------------------------------------------
 // Delegated-run types (re-exported from ./delegated-runtime.ts)
 // ---------------------------------------------------------------------------
 

@@ -3074,3 +3074,291 @@ test("broker rejects repo plus issueUrl dispatch that is missing canonical GitHu
     /mode=github-propose-patch/,
   );
 });
+
+// --- Cleanup candidate discovery (issue #520) ---
+
+test("discoverCleanupCandidates returns empty plan for clean broker", () => {
+  const broker = new InMemoryA2ABroker();
+  const plan = broker.discoverCleanupCandidates();
+  assert.equal(plan.totalCandidates, 0);
+  assert.equal(plan.summary.stale_worker, 0);
+  assert.equal(plan.summary.malformed_task, 0);
+  assert.equal(plan.summary.terminal_outbox_backlog, 0);
+  assert.equal(plan.summary.historical_terminal_task, 0);
+  assert.ok(plan.generatedAt);
+  assert.ok(plan.riskNotes.length > 0);
+  assert.ok(plan.riskNotes.some((n) => n.includes("No cleanup candidates")));
+});
+
+test("discoverCleanupCandidates detects stale workers via nowMs aging", () => {
+  const broker = new InMemoryA2ABroker();
+  // Register worker — lastSeenAt is set to now
+  broker.registerWorker({
+    nodeId: "stale-w1",
+    role: "operator",
+    capabilities: { canAnalyze: true, canBackfill: false, canPatchWorkspace: false, canPromoteLive: false, workspaceIds: ["default"], environments: ["research"] },
+  });
+
+  // Use nowMs far in the future to make the worker appear stale
+  const farFutureMs = Date.now() + 600_000; // 10 min later
+  const plan = broker.discoverCleanupCandidates({
+    staleWorkerAfterMs: 300_000, // 5 min
+    nowMs: farFutureMs,
+  });
+
+  assert.equal(plan.summary.stale_worker, 1);
+  assert.equal(plan.totalCandidates, 1);
+  assert.equal(plan.candidates[0].class, "stale_worker");
+  assert.equal(plan.candidates[0].entityId, "stale-w1");
+  assert.equal(plan.candidates[0].risk, "caution");
+});
+
+test("discoverCleanupCandidates marks stale worker with active tasks as high_risk", () => {
+  const broker = new InMemoryA2ABroker();
+  broker.registerWorker({
+    nodeId: "stale-w2",
+    role: "operator",
+    capabilities: { canAnalyze: true, canBackfill: false, canPatchWorkspace: false, canPromoteLive: false, workspaceIds: ["default"], environments: ["research"] },
+  });
+
+  // Create an active task assigned to the stale worker
+  broker.createTask({
+    intent: "analyze",
+    requester: { id: "hub", kind: "node", role: "hub" },
+    target: { id: "stale-w2", kind: "node", role: "operator" },
+    payload: {},
+  });
+
+  const farFutureMs = Date.now() + 600_000;
+  const plan = broker.discoverCleanupCandidates({
+    staleWorkerAfterMs: 300_000,
+    nowMs: farFutureMs,
+  });
+
+  assert.equal(plan.summary.stale_worker, 1);
+  assert.equal(plan.candidates[0].risk, "high_risk");
+  assert.equal(plan.candidates[0].metadata?.hasActiveTasks, true);
+});
+
+test("discoverCleanupCandidates detects malformed queued tasks with missing target", () => {
+  const broker = new InMemoryA2ABroker();
+  registerWorker(broker, "w1");
+
+  // Create a task that will be queued
+  const task = broker.createTask({
+    intent: "analyze",
+    requester: { id: "hub", kind: "node", role: "hub" },
+    target: { id: "w1", kind: "node", role: "operator" },
+    payload: { data: "valid" },
+  });
+  assert.equal(task.status, "queued");
+
+  // With proper fields, should not be flagged as malformed
+  const nowMs = Date.now() + 300_000;
+  const plan = broker.discoverCleanupCandidates({
+    staleTaskAfterMs: 120_000,
+    nowMs,
+  });
+
+  assert.equal(plan.summary.malformed_task, 0);
+});
+
+test("discoverCleanupCandidates detects terminal outbox backlog", () => {
+  const broker = new InMemoryA2ABroker();
+  registerWorker(broker, "w1");
+
+  const task = broker.createTask({
+    intent: "analyze",
+    requester: { id: "hub", kind: "node", role: "hub" },
+    target: { id: "w1", kind: "node", role: "operator" },
+    payload: {},
+  });
+  broker.claimTask(task.id, "w1");
+  broker.completeTask(task.id, "w1", { summary: "done" });
+
+  const plan = broker.discoverCleanupCandidates({
+    terminalOutboxBacklogAfterMs: 0, // immediate
+  });
+
+  // The outbox should have an unacknowledged event for the terminal task
+  assert.ok(plan.summary.terminal_outbox_backlog >= 1);
+  const backlogItem = plan.candidates.find(
+    (c) => c.class === "terminal_outbox_backlog",
+  );
+  assert.ok(backlogItem);
+  assert.equal(backlogItem.metadata?.taskId, task.id);
+});
+
+test("discoverCleanupCandidates excludes acknowledged outbox events", () => {
+  const broker = new InMemoryA2ABroker();
+  registerWorker(broker, "w1");
+
+  const task = broker.createTask({
+    intent: "analyze",
+    requester: { id: "hub", kind: "node", role: "hub" },
+    target: { id: "w1", kind: "node", role: "operator" },
+    payload: {},
+  });
+  broker.claimTask(task.id, "w1");
+  broker.completeTask(task.id, "w1", { summary: "done" });
+
+  // Mark all outbox events as acknowledged
+  const outbox = broker.getTerminalTaskEventOutbox();
+  const events = outbox.snapshot();
+  for (const event of events) {
+    outbox.acknowledge(event.id, {
+      evidence: "operator_visible",
+      acknowledgedAt: new Date().toISOString(),
+    });
+  }
+
+  const plan = broker.discoverCleanupCandidates({
+    terminalOutboxBacklogAfterMs: 0,
+  });
+
+  assert.equal(plan.summary.terminal_outbox_backlog, 0);
+});
+
+test("discoverCleanupCandidates detects historical terminal tasks", () => {
+  const broker = new InMemoryA2ABroker();
+  registerWorker(broker, "w1");
+
+  const task = broker.createTask({
+    intent: "analyze",
+    requester: { id: "hub", kind: "node", role: "hub" },
+    target: { id: "w1", kind: "node", role: "operator" },
+    payload: {},
+  });
+  broker.claimTask(task.id, "w1");
+  broker.completeTask(task.id, "w1", { summary: "done" });
+
+  const farFutureMs = Date.now() + 86_400_000 + 1000; // ~24h + 1s later
+  const plan = broker.discoverCleanupCandidates({
+    historicalTerminalAfterMs: 86_400_000,
+    nowMs: farFutureMs,
+  });
+
+  assert.ok(plan.summary.historical_terminal_task >= 1);
+  const histItem = plan.candidates.find(
+    (c) => c.class === "historical_terminal_task",
+  );
+  assert.ok(histItem);
+  assert.equal(histItem.entityId, task.id);
+  assert.equal(histItem.metadata?.status, "succeeded");
+});
+
+test("discoverCleanupCandidates sorts by risk (high_risk first)", () => {
+  const broker = new InMemoryA2ABroker();
+
+  // Create a stale worker with active tasks (high_risk)
+  broker.registerWorker({
+    nodeId: "stale-hi",
+    role: "operator",
+    capabilities: { canAnalyze: true, canBackfill: false, canPatchWorkspace: false, canPromoteLive: false, workspaceIds: ["default"], environments: ["research"] },
+  });
+  broker.createTask({
+    intent: "analyze",
+    requester: { id: "hub", kind: "node", role: "hub" },
+    target: { id: "stale-hi", kind: "node", role: "operator" },
+    payload: {},
+  });
+
+  // Create another stale worker without tasks (caution)
+  broker.registerWorker({
+    nodeId: "stale-lo",
+    role: "analyst",
+    capabilities: { canAnalyze: true, canBackfill: false, canPatchWorkspace: false, canPromoteLive: false, workspaceIds: ["default"], environments: ["research"] },
+  });
+
+  const farFutureMs = Date.now() + 600_000;
+  const plan = broker.discoverCleanupCandidates({
+    staleWorkerAfterMs: 300_000,
+    nowMs: farFutureMs,
+  });
+
+  assert.ok(plan.candidates.length >= 2);
+  // high_risk should be first
+  assert.equal(plan.candidates[0].risk, "high_risk");
+  assert.equal(plan.candidates[0].entityId, "stale-hi");
+});
+
+test("discoverCleanupCandidates returns riskNotes matching summary", () => {
+  const broker = new InMemoryA2ABroker();
+
+  broker.registerWorker({
+    nodeId: "stale-notes",
+    role: "operator",
+    capabilities: { canAnalyze: true, canBackfill: false, canPatchWorkspace: false, canPromoteLive: false, workspaceIds: ["default"], environments: ["research"] },
+  });
+
+  const farFutureMs = Date.now() + 600_000;
+  const plan = broker.discoverCleanupCandidates({
+    staleWorkerAfterMs: 300_000,
+    nowMs: farFutureMs,
+  });
+
+  assert.ok(plan.riskNotes.some((note) => note.includes("Stale workers")));
+});
+
+test("discoverCleanupCandidates is read-only (no state mutation)", () => {
+  const broker = new InMemoryA2ABroker();
+  registerWorker(broker, "w1");
+
+  const task = broker.createTask({
+    intent: "analyze",
+    requester: { id: "hub", kind: "node", role: "hub" },
+    target: { id: "w1", kind: "node", role: "operator" },
+    payload: {},
+  });
+
+  const beforeSnapshot = broker.exportSnapshot();
+
+  broker.discoverCleanupCandidates();
+  broker.discoverCleanupCandidates({ staleWorkerAfterMs: 1000, nowMs: Date.now() + 99_999 });
+
+  const afterSnapshot = broker.exportSnapshot();
+  assert.equal(afterSnapshot.tasks.length, beforeSnapshot.tasks.length);
+  assert.equal(afterSnapshot.workers.length, beforeSnapshot.workers.length);
+  assert.equal(broker.getTask(task.id)!.status, task.status);
+});
+
+test("discoverCleanupCandidates respects custom thresholds", () => {
+  const broker = new InMemoryA2ABroker();
+
+  broker.registerWorker({
+    nodeId: "custom-w",
+    role: "operator",
+    capabilities: { canAnalyze: true, canBackfill: false, canPatchWorkspace: false, canPromoteLive: false, workspaceIds: ["default"], environments: ["research"] },
+  });
+
+  const farFutureMs = Date.now() + 120_000; // 2 min later
+
+  // Default threshold (5 min) should NOT find it stale
+  const planDefault = broker.discoverCleanupCandidates({ nowMs: farFutureMs });
+  assert.equal(planDefault.summary.stale_worker, 0);
+
+  // Custom threshold (1 min) should find it stale
+  const planCustom = broker.discoverCleanupCandidates({
+    staleWorkerAfterMs: 60_000,
+    nowMs: farFutureMs,
+  });
+  assert.equal(planCustom.summary.stale_worker, 1);
+});
+
+test("discoverCleanupCandidates stable ids are deterministic", () => {
+  const broker = new InMemoryA2ABroker();
+
+  broker.registerWorker({
+    nodeId: "stable-w",
+    role: "operator",
+    capabilities: { canAnalyze: true, canBackfill: false, canPatchWorkspace: false, canPromoteLive: false, workspaceIds: ["default"], environments: ["research"] },
+  });
+
+  const farFutureMs = Date.now() + 600_000;
+  const plan1 = broker.discoverCleanupCandidates({ staleWorkerAfterMs: 300_000, nowMs: farFutureMs });
+  const plan2 = broker.discoverCleanupCandidates({ staleWorkerAfterMs: 300_000, nowMs: farFutureMs });
+
+  assert.equal(plan1.candidates.length, plan2.candidates.length);
+  assert.equal(plan1.candidates[0].id, plan2.candidates[0].id);
+  assert.equal(plan1.candidates[0].id, "cleanup:stale-worker:stable-w");
+});

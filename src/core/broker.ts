@@ -41,6 +41,8 @@ import type {
   A2AExchangeState,
   BrokerDashboard,
   ChangeProposal,
+  CleanupCandidate,
+  CleanupDryRunPlan,
   CreateProposalRequest,
   CreateTaskRequest,
   ProposalActorRequest,
@@ -3050,6 +3052,225 @@ export class InMemoryA2ABroker {
     });
   }
 
+  // --- Cleanup Candidate Discovery (issue #520) ---
+
+  /**
+   * Read-only discovery of cleanup candidates across worker, task, outbox,
+   * and tombstone categories. Never mutates broker state; execution of any
+   * cleanup action requires a separate operator approval gate.
+   *
+   * Candidate classes:
+   * - `stale_worker`: workers with no recent heartbeat (online but last seen
+   *   beyond the stale threshold).
+   * - `malformed_task`: queued tasks missing required target/requester fields.
+   * - `terminal_outbox_backlog`: unacknowledged terminal outbox events older
+   *   than the backlog threshold.
+   * - `historical_terminal_task`: terminal (succeeded/failed/canceled) tasks
+   *   with tombstones older than the historical threshold.
+   */
+  discoverCleanupCandidates(options?: {
+    staleWorkerAfterMs?: number;
+    staleTaskAfterMs?: number;
+    terminalOutboxBacklogAfterMs?: number;
+    historicalTerminalAfterMs?: number;
+    nowMs?: number;
+  }): CleanupDryRunPlan {
+    const nowMs = options?.nowMs ?? Date.now();
+    const nowIso = new Date(nowMs).toISOString();
+
+    const staleWorkerAfterMs = options?.staleWorkerAfterMs ?? 300_000; // 5 min
+    const staleTaskAfterMs = options?.staleTaskAfterMs ?? 120_000; // 2 min
+    const terminalOutboxBacklogAfterMs = options?.terminalOutboxBacklogAfterMs ?? 900_000; // 15 min
+    const historicalTerminalAfterMs = options?.historicalTerminalAfterMs ?? 86_400_000; // 24 h
+
+    const candidates: CleanupCandidate[] = [];
+    const riskNotes: string[] = [];
+
+    // --- Stale workers ---
+    for (const [nodeId, worker] of this.workers) {
+      const lastSeenMs = worker.lastSeenAt ? Date.parse(worker.lastSeenAt) : 0;
+      const ageMs = nowMs - lastSeenMs;
+      if (ageMs > staleWorkerAfterMs) {
+        const hasActiveTasks = [...this.tasks.values()].some(
+          (task) =>
+            (task.assignedWorkerId === nodeId || task.claimedBy === nodeId) &&
+            task.status !== "succeeded" &&
+            task.status !== "failed" &&
+            task.status !== "canceled",
+        );
+        const risk: CleanupCandidate["risk"] = hasActiveTasks ? "high_risk" : "caution";
+        candidates.push({
+          id: `cleanup:stale-worker:${encodeURIComponent(nodeId)}`,
+          class: "stale_worker",
+          reason: hasActiveTasks
+            ? `stale worker ${nodeId} has active tasks assigned; do not prune without reassigning`
+            : `stale worker ${nodeId} has not been seen for ${formatAgeMs(ageMs)}`,
+          risk,
+          entityId: nodeId,
+          updatedAt: worker.lastSeenAt,
+          ageMs,
+          metadata: {
+            nodeId: worker.nodeId,
+            role: worker.role,
+            workerMode: worker.workerMode,
+            lastSeenAt: worker.lastSeenAt,
+            hasActiveTasks,
+          },
+        });
+      }
+    }
+
+    // --- Malformed queued tasks ---
+    for (const task of this.tasks.values()) {
+      if (task.status !== "queued") continue;
+      const ageMs = nowMs - Date.parse(task.updatedAt);
+      if (ageMs < staleTaskAfterMs) continue;
+
+      const issues: string[] = [];
+      if (!task.targetNodeId) issues.push("missing targetNodeId");
+      if (!task.requester?.id) issues.push("missing requester.id");
+      if (!task.payload || Object.keys(task.payload).length === 0) issues.push("empty payload");
+
+      if (issues.length > 0) {
+        candidates.push({
+          id: `cleanup:malformed-task:${encodeURIComponent(task.id)}`,
+          class: "malformed_task",
+          reason: `queued task ${task.id} is malformed: ${issues.join("; ")}`,
+          risk: "caution",
+          entityId: task.id,
+          updatedAt: task.updatedAt,
+          ageMs,
+          metadata: {
+            taskId: task.id,
+            intent: task.intent,
+            issues,
+          },
+        });
+      }
+    }
+
+    // --- Terminal outbox backlog ---
+    const outboxEvents = this.terminalTaskEventOutbox.snapshot();
+    for (const event of outboxEvents) {
+      const createdAtMs = Date.parse(event.createdAt);
+      const ageMs = nowMs - createdAtMs;
+      if (ageMs < terminalOutboxBacklogAfterMs) continue;
+      const isAcked =
+        event.ack?.status === "receipt_confirmed" || Boolean(event.deliveredAt);
+      if (isAcked) continue;
+
+      const risk: CleanupCandidate["risk"] =
+        ageMs > 3_600_000 ? "high_risk" : "caution";
+      candidates.push({
+        id: `cleanup:outbox-backlog:${encodeURIComponent(event.id)}`,
+        class: "terminal_outbox_backlog",
+        reason: `unacknowledged terminal outbox event ${event.id} (${event.payload?.status ?? "unknown"}) is ${formatAgeMs(ageMs)} old`,
+        risk,
+        entityId: event.payload?.taskId ?? event.id,
+        updatedAt: event.createdAt,
+        ageMs,
+        metadata: {
+          outboxId: event.id,
+          taskId: event.payload?.taskId,
+          terminalStatus: event.payload?.status,
+          receiptStatus: event.receipt?.status,
+          ackDecision: event.ackAudit?.decision,
+          worker: event.payload?.worker,
+        },
+      });
+    }
+
+    // --- Historical terminal tasks ---
+    for (const task of this.tasks.values()) {
+      if (
+        task.status !== "succeeded" &&
+        task.status !== "failed" &&
+        task.status !== "canceled"
+      )
+        continue;
+      const completedAtMs = task.completedAt
+        ? Date.parse(task.completedAt)
+        : Date.parse(task.updatedAt);
+      const ageMs = nowMs - completedAtMs;
+      if (ageMs < historicalTerminalAfterMs) continue;
+
+      const tombstone = this.tombstones.get(task.id);
+      const risk: CleanupCandidate["risk"] =
+        task.status === "failed" && !tombstone ? "high_risk" : "safe";
+      candidates.push({
+        id: `cleanup:historical-task:${encodeURIComponent(task.id)}`,
+        class: "historical_terminal_task",
+        reason: `terminal task ${task.id} (${task.status}) is ${formatAgeMs(ageMs)} old; safe to archive with tombstone${tombstone ? "" : " (missing tombstone — verify before pruning)"}`,
+        risk,
+        entityId: task.id,
+        updatedAt: task.completedAt ?? task.updatedAt,
+        ageMs,
+        metadata: {
+          taskId: task.id,
+          status: task.status,
+          intent: task.intent,
+          hasTombstone: Boolean(tombstone),
+          tombstoneReason: tombstone?.tombstoneReason,
+          completedAt: task.completedAt,
+        },
+      });
+    }
+
+    // --- Summary ---
+    const summary: CleanupDryRunPlan["summary"] = {
+      stale_worker: 0,
+      malformed_task: 0,
+      terminal_outbox_backlog: 0,
+      historical_terminal_task: 0,
+    };
+    for (const candidate of candidates) {
+      summary[candidate.class] += 1;
+    }
+
+    if (summary.stale_worker > 0) {
+      riskNotes.push(
+        `Stale workers detected (${summary.stale_worker}): verify worker health and task reassignment before any pruning. Use workerOfflineAfterMs to tune detection window.`,
+      );
+    }
+    if (summary.malformed_task > 0) {
+      riskNotes.push(
+        `Malformed queued tasks detected (${summary.malformed_task}): inspect payload before cancellation; may indicate upstream ingestion issues.`,
+      );
+    }
+    if (summary.terminal_outbox_backlog > 0) {
+      riskNotes.push(
+        `Terminal outbox backlog detected (${summary.terminal_outbox_backlog}): unacknowledged events may indicate notifier disconnect. Retry delivery or confirm operator visibility before pruning.`,
+      );
+    }
+    if (summary.historical_terminal_task > 0) {
+      riskNotes.push(
+        `Historical terminal tasks detected (${summary.historical_terminal_task}): archive with tombstone backup before pruning. High-risk items may need manual verification.`,
+      );
+    }
+
+    if (candidates.length === 0) {
+      riskNotes.push("No cleanup candidates found. Broker state is clean.");
+    }
+
+    // Sort by risk: high_risk first, then caution, then safe.
+    candidates.sort((a, b) => {
+      const riskOrder: Record<CleanupCandidate["risk"], number> = {
+        high_risk: 0,
+        caution: 1,
+        safe: 2,
+      };
+      return riskOrder[a.risk] - riskOrder[b.risk];
+    });
+
+    return {
+      generatedAt: nowIso,
+      summary,
+      totalCandidates: candidates.length,
+      candidates,
+      riskNotes,
+    };
+  }
+
   // --- Tombstones ---
 
   /** Get a tombstone by task ID. */
@@ -3361,6 +3582,18 @@ export class InMemoryA2ABroker {
 
 function isoNow(): string {
   return new Date().toISOString();
+}
+
+function formatAgeMs(ms: number): string {
+  if (ms < 1000) return `${ms}ms`;
+  const sec = Math.floor(ms / 1000);
+  if (sec < 60) return `${sec}s`;
+  const min = Math.floor(sec / 60);
+  if (min < 60) return `${min}m`;
+  const hours = Math.floor(min / 60);
+  if (hours < 24) return `${hours}h ${min % 60}m`;
+  const days = Math.floor(hours / 24);
+  return `${days}d ${hours % 24}h`;
 }
 
 function uniqueIds(values: string[]): string[] {
