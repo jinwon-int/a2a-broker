@@ -51,7 +51,13 @@ import {
   type BrokerPersistenceInfo,
   type BrokerStateStore,
   type SqliteBrokerLoadSource,
+  type BrokerHotTableLoadMetrics,
+  type BrokerHotTableRuntimeLoadLimits,
 } from "./core/store.js";
+import {
+  projectHotTableGrowth,
+  type HotTableGrowthProjection,
+} from "./core/hot-table-growth.js";
 import type {
   A2AExchangeMessageRecord,
   A2AExchangeMessageRequest,
@@ -259,6 +265,7 @@ const DEFAULT_HEALTH_DIAGNOSTICS_TTL_MS = 5_000;
 type CachedHealthDiagnostics = {
   persistence: BrokerPersistenceInfo;
   auditDiagnostics: BrokerHotAuditDiagnostics | undefined;
+  hotTableGrowth: HotTableGrowthProjection | undefined;
 };
 
 function readRuntimeMemoryUsage(): Record<string, number> {
@@ -297,6 +304,10 @@ class HealthDiagnosticsCache {
   private cached: CachedHealthDiagnostics | null = null;
   private cachedAt = 0;
   private readonly ttlMs: number;
+  /** Prior snapshot of hot-table load metrics, used to compute growth rate across cache refreshes. */
+  private priorMetrics: BrokerHotTableLoadMetrics | undefined;
+  /** Timestamp of the prior snapshot. */
+  private priorGeneratedAt: string | undefined;
 
   constructor(ttlMs: number = DEFAULT_HEALTH_DIAGNOSTICS_TTL_MS) {
     this.ttlMs = ttlMs;
@@ -304,7 +315,7 @@ class HealthDiagnosticsCache {
 
   get(
     stateStore: BrokerStateStore,
-  ): { persistence: BrokerPersistenceInfo; auditDiagnostics: BrokerHotAuditDiagnostics | undefined; fromCache: boolean } {
+  ): { persistence: BrokerPersistenceInfo; auditDiagnostics: BrokerHotAuditDiagnostics | undefined; hotTableGrowth: HotTableGrowthProjection | undefined; fromCache: boolean } {
     const now = Date.now();
     if (this.cached !== null && now - this.cachedAt < this.ttlMs) {
       return { ...this.cached, fromCache: true };
@@ -316,9 +327,27 @@ class HealthDiagnosticsCache {
     const auditDiagnostics = stateStore instanceof SqliteBrokerStateStore
       ? stateStore.readHotAuditDiagnostics()
       : undefined;
-    this.cached = { persistence, auditDiagnostics };
+
+    // Compute hot-table growth projection from current load metrics.
+    let hotTableGrowth: HotTableGrowthProjection | undefined;
+    if (persistence.hotTableLoadMetrics) {
+      hotTableGrowth = projectHotTableGrowth({
+        current: persistence.hotTableLoadMetrics,
+        prior: this.priorMetrics,
+        priorGeneratedAt: this.priorGeneratedAt,
+        runtimeLoadLimits: persistence.hotTableRuntimeLoadLimits,
+      });
+    }
+
+    // Rotate prior snapshot for the next cache refresh.
+    if (persistence.hotTableLoadMetrics) {
+      this.priorMetrics = persistence.hotTableLoadMetrics;
+      this.priorGeneratedAt = hotTableGrowth?.generatedAt;
+    }
+
+    this.cached = { persistence, auditDiagnostics, hotTableGrowth };
     this.cachedAt = now;
-    return { persistence, auditDiagnostics, fromCache: false };
+    return { persistence, auditDiagnostics, hotTableGrowth, fromCache: false };
   }
 }
 
@@ -787,7 +816,7 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
 
       if (req.method === "GET" && path === "/health") {
         const t0 = performance.now();
-        const { persistence, auditDiagnostics, fromCache } = healthDiagnosticsCache.get(stateStore);
+        const { persistence, auditDiagnostics, hotTableGrowth, fromCache } = healthDiagnosticsCache.get(stateStore);
         const t1 = performance.now();
         const persistenceDurationMs = Math.round((t1 - t0) * 100) / 100;
 
@@ -820,6 +849,7 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
           },
           persistence,
           ...(auditDiagnostics !== undefined ? { auditDiagnostics } : {}),
+          ...(hotTableGrowth !== undefined ? { hotTableGrowth } : {}),
           workers: {
             offlineAfterSec: workerOfflineAfterSec,
           },
@@ -852,6 +882,14 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
         const t3 = performance.now();
         const jsonDurationMs = Math.round((t3 - t2) * 100) / 100;
         const totalDurationMs = Math.round((t3 - t0) * 100) / 100;
+
+        if (hotTableGrowth && hotTableGrowth.overallSeverity === "critical") {
+          body.ok = false;
+          body.error = `hot-table growth critical: ${hotTableGrowth.warnings.filter((w) => w.startsWith("CRITICAL")).join("; ") || "one or more tables near stability limits"}`;
+        } else if (hotTableGrowth && hotTableGrowth.overallSeverity === "warning") {
+          const existing = body.warning ? `${body.warning}; ` : "";
+          body.warning = `${existing}hot-table growth warning: ${hotTableGrowth.warnings.filter((w) => w.startsWith("WARNING")).join("; ") || "growth approaching stability limits"}`;
+        }
 
         body.timing = {
           totalMs: totalDurationMs,
