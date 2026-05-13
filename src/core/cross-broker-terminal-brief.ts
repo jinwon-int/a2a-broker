@@ -33,6 +33,8 @@ export interface CrossBrokerTerminalBriefProjectionRequest {
   emittedAt?: string;
   /** Cross-broker projections are not Terminal Brief ACKs; this must be absent/false. */
   terminalAck?: boolean;
+  /** Total worker/task count expected for the parent round (denominator). */
+  parentRoundTotal?: number;
 }
 
 export interface CrossBrokerTerminalBriefProjection {
@@ -57,6 +59,8 @@ export interface CrossBrokerTerminalBriefProjection {
     reason: string;
     updatedAt: string;
   };
+  /** Total worker/task count expected for the parent round (denominator). */
+  parentRoundTotal?: number;
 }
 
 export interface CrossBrokerTerminalBriefProjectionFilters {

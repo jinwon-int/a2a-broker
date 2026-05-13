@@ -60,6 +60,19 @@ export interface TerminalTaskEventPayload {
     handoffBrokerId?: string;
     originTaskId?: string;
   };
+  /**
+   * Parent broker completion sequence for this round (1-based numerator).
+   * Only populated when the broker has a round progress counter; absent for
+   * child/handoff brokers and when round total is unknown.
+   */
+  parentRoundProgress?: number;
+  /**
+   * Total worker/task count expected for this parent round (denominator).
+   * Derived from task payload metadata set by the orchestrator/operator.
+   * Absent when unknown — downstream notifiers should fall back to a readable
+   * default title.
+   */
+  parentRoundTotal?: number;
 }
 
 export interface TerminalTaskOutboxEvent {
@@ -186,6 +199,14 @@ export class TerminalTaskEventOutbox {
   private readonly maxEvents: number;
   private readonly maxSeen: number;
 
+  /**
+   * Round completion sequence counters keyed by run/round key.
+   * Incremented only for newly enqueued (not-deduped) terminal events so
+   * that parentRoundProgress reflects the broker's operator-facing completion
+   * order for that round.
+   */
+  private readonly roundProgress = new Map<string, number>();
+
   constructor(options: TerminalTaskEventOutboxOptions = {}) {
     this.maxEvents = normalizePositiveInt(options.maxEvents, DEFAULT_TERMINAL_TASK_OUTBOX_RETENTION);
     this.maxSeen = this.maxEvents * 2;
@@ -204,6 +225,7 @@ export class TerminalTaskEventOutbox {
     if (this.seen.has(id)) return null;
 
     const payload = buildTerminalTaskPayload(task);
+    applyRoundProgressMetadata(payload, this.roundProgress);
     const event: TerminalTaskOutboxEvent = {
       id,
       kind: "task.terminal",
@@ -263,6 +285,7 @@ export class TerminalTaskEventOutbox {
         ...(projection.childTaskId ? { originTaskId: projection.childTaskId } : {}),
       },
     };
+    applyRoundProgressMetadata(payload, this.roundProgress);
     const event: TerminalTaskOutboxEvent = {
       id,
       kind: "task.terminal",
@@ -383,6 +406,7 @@ export class TerminalTaskEventOutbox {
       this.restore(event);
     }
     this.enforceRetention();
+    this.rebuildRoundProgressCounters();
   }
 
   private restore(event: TerminalTaskOutboxEvent): void {
@@ -420,6 +444,23 @@ export class TerminalTaskEventOutbox {
   private forwardEvents(options: TerminalTaskOutboxSubscribeOptions): TerminalTaskOutboxEvent[] {
     const start = this.indexAfter(options.afterId);
     return this.applyLimit(this.events.slice(start), options.limit);
+  }
+
+  /**
+   * Rebuild round progress counters from stored events so that fresh
+   * enqueues resume at the correct sequence number after a snapshot restore.
+   */
+  private rebuildRoundProgressCounters(): void {
+    this.roundProgress.clear();
+    for (const event of this.events) {
+      const runKey = event.payload.run;
+      if (!runKey) continue;
+      const current = event.payload.parentRoundProgress ?? 0;
+      const stored = this.roundProgress.get(runKey) ?? 0;
+      if (current > stored) {
+        this.roundProgress.set(runKey, current);
+      }
+    }
   }
 
   private indexAfter(afterId: string | undefined): number {
@@ -506,6 +547,16 @@ function buildTerminalTaskPayload(task: TaskRecord): TerminalTaskEventPayload {
     output["runId"],
   );
   if (run) payload.run = run;
+  const parentRoundTotal = firstSafePositiveInt(
+    task.payload["roundTotal"],
+    task.payload["parentRoundTotal"],
+    task.payload["expectedWorkers"],
+    task.payload["taskCount"],
+    output["roundTotal"],
+    output["parentRoundTotal"],
+    output["expectedWorkers"],
+  );
+  if (parentRoundTotal) payload.parentRoundTotal = parentRoundTotal;
   const traceId = firstSafeText(task.via?.traceId, task.payload["traceId"], output["traceId"]);
   if (traceId) payload.traceId = traceId;
   const taskDescription = buildTaskDescription(task, output);
@@ -795,4 +846,35 @@ function sanitizeAckText(value: unknown, maxChars: number): string | undefined {
 
 function normalizePositiveInt(value: number | undefined, fallback: number): number {
   return typeof value === "number" && Number.isInteger(value) && value > 0 ? value : fallback;
+}
+
+/**
+ * Set {@link TerminalTaskEventPayload.parentRoundProgress} on the payload by
+ * incrementing a broker-local sequence counter keyed by the payload's run key.
+ *
+ * When the payload has no run key or the run key is empty, this is a no-op
+ * (downstream notifiers fall back to a generic title without progress).
+ */
+function applyRoundProgressMetadata(
+  payload: TerminalTaskEventPayload,
+  roundProgress: Map<string, number>,
+): void {
+  const runKey = payload.run;
+  if (!runKey) return;
+  const next = (roundProgress.get(runKey) ?? 0) + 1;
+  roundProgress.set(runKey, next);
+  payload.parentRoundProgress = next;
+}
+
+/**
+ * Return the first argument that resolves to a positive finite integer.
+ * Returns undefined when none match.
+ */
+function firstSafePositiveInt(...values: unknown[]): number | undefined {
+  for (const value of values) {
+    if (typeof value === "number" && Number.isInteger(value) && value > 0 && Number.isFinite(value)) {
+      return value;
+    }
+  }
+  return undefined;
 }
