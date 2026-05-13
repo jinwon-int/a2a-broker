@@ -426,6 +426,62 @@ describe("TerminalTaskEventOutbox", () => {
     assert.equal(renderFakeOperatorLine(envelope.body), "sogyo completed jinwon-int/a2a-broker#310 — broker receipt/evidence gate");
   });
 
+  it("counts direct parent round progress only when a total denominator is known", () => {
+    const broker = new InMemoryA2ABroker();
+    registerWorker(broker, "worker-1");
+    registerWorker(broker, "worker-2");
+
+    const first = createTask(broker, {
+      id: "direct-parent-round-first",
+      targetNodeId: "worker-1",
+      payload: {
+        parentRoundId: "parent-round-direct",
+        parentRoundTotal: 2,
+      },
+    });
+    const second = createTask(broker, {
+      id: "direct-parent-round-second",
+      targetNodeId: "worker-2",
+      payload: {
+        roundId: "parent-round-direct",
+        roundTotal: "2",
+      },
+    });
+    const unknownTotal = createTask(broker, {
+      id: "direct-parent-round-unknown-total",
+      targetNodeId: "worker-1",
+      payload: {
+        parentRoundId: "parent-round-unknown-total",
+      },
+    });
+
+    broker.claimTask(first.id, "worker-1");
+    broker.completeTask(first.id, "worker-1", { summary: "first child done" });
+    broker.claimTask(second.id, "worker-2");
+    broker.completeTask(second.id, "worker-2", { summary: "second child done" });
+    broker.claimTask(unknownTotal.id, "worker-1");
+    broker.completeTask(unknownTotal.id, "worker-1", { summary: "unknown total child done" });
+
+    const events = broker.getTerminalTaskEventOutbox().subscribe();
+    assert.equal(events.length, 3);
+    assert.deepEqual(
+      events.slice(0, 2).map((event) => ({
+        taskId: event.payload.taskId,
+        run: event.payload.run,
+        parentRoundProgress: event.payload.parentRoundProgress,
+        parentRoundTotal: event.payload.parentRoundTotal,
+      })),
+      [
+        { taskId: "direct-parent-round-first", run: "parent-round-direct", parentRoundProgress: 1, parentRoundTotal: 2 },
+        { taskId: "direct-parent-round-second", run: "parent-round-direct", parentRoundProgress: 2, parentRoundTotal: 2 },
+      ],
+    );
+    assert.equal(events[2]?.payload.taskId, "direct-parent-round-unknown-total");
+    assert.equal(events[2]?.payload.run, "parent-round-unknown-total");
+    assert.equal(events[2]?.payload.parentRoundTotal, undefined);
+    assert.equal(events[2]?.payload.parentRoundProgress, undefined);
+  });
+
   it("replays terminal outbox events after a stable event id", () => {
     const broker = new InMemoryA2ABroker();
     registerWorker(broker);

@@ -34,7 +34,7 @@ export interface CrossBrokerTerminalBriefProjectionRequest {
   /** Cross-broker projections are not Terminal Brief ACKs; this must be absent/false. */
   terminalAck?: boolean;
   /** Total worker/task count expected for the parent round (denominator). */
-  parentRoundTotal?: number;
+  parentRoundTotal?: number | string;
 }
 
 export interface CrossBrokerTerminalBriefProjection {
@@ -222,6 +222,7 @@ function normalizeRequest(request: CrossBrokerTerminalBriefProjectionRequest): O
   const evidenceUrl = normalizeHttpUrl(request.evidenceUrl);
   const summary = sanitizeText(request.summary, MAX_SUMMARY_CHARS);
   const taskBrief = sanitizeText(request.taskBrief, MAX_BRIEF_CHARS);
+  const parentRoundTotal = normalizePositiveInt(request.parentRoundTotal);
   return {
     parentRoundId,
     originBrokerId,
@@ -234,12 +235,16 @@ function normalizeRequest(request: CrossBrokerTerminalBriefProjectionRequest): O
     ...(evidenceUrl ? { evidenceUrl } : {}),
     completedAt,
     ...(emittedAt ? { emittedAt } : {}),
+    ...(parentRoundTotal ? { parentRoundTotal } : {}),
   };
 }
 
 function normalizeRecord(record: CrossBrokerTerminalBriefProjection): CrossBrokerTerminalBriefProjection {
+  const parentRoundTotal = normalizePositiveInt(record.parentRoundTotal);
+  const { parentRoundTotal: _parentRoundTotal, ...rest } = record;
   return {
-    ...record,
+    ...rest,
+    ...(parentRoundTotal ? { parentRoundTotal } : {}),
     ack: {
       decision: record.ack?.decision === "duplicate_replay" ? "duplicate_replay" : "accepted",
       terminalAck: false,
@@ -282,6 +287,17 @@ function normalizeIso(value: unknown): string | undefined {
   const ms = Date.parse(value);
   if (!Number.isFinite(ms)) return undefined;
   return new Date(ms).toISOString();
+}
+
+function normalizePositiveInt(value: unknown): number | undefined {
+  if (typeof value === "number" && Number.isInteger(value) && value > 0 && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value === "string" && /^\d+$/.test(value.trim())) {
+    const parsed = Number(value.trim());
+    if (Number.isSafeInteger(parsed) && parsed > 0) return parsed;
+  }
+  return undefined;
 }
 
 function normalizeHttpUrl(value: unknown): string | undefined {

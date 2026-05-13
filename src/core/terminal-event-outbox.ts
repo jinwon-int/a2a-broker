@@ -278,6 +278,7 @@ export class TerminalTaskEventOutbox {
       createdAt: projection.emittedAt,
       updatedAt: projection.completedAt,
       completedAt: projection.completedAt,
+      ...(projection.parentRoundTotal ? { parentRoundTotal: projection.parentRoundTotal } : {}),
       crossBrokerHandoff: {
         parentRoundId: projection.parentRoundId,
         originBrokerId: projection.brokerOfRecordId ?? "unknown-parent-broker",
@@ -455,11 +456,9 @@ export class TerminalTaskEventOutbox {
     for (const event of this.events) {
       const runKey = event.payload.run;
       if (!runKey) continue;
+      const counted = (this.roundProgress.get(runKey) ?? 0) + 1;
       const current = event.payload.parentRoundProgress ?? 0;
-      const stored = this.roundProgress.get(runKey) ?? 0;
-      if (current > stored) {
-        this.roundProgress.set(runKey, current);
-      }
+      this.roundProgress.set(runKey, Math.max(counted, current));
     }
   }
 
@@ -539,12 +538,16 @@ function buildTerminalTaskPayload(task: TaskRecord): TerminalTaskEventPayload {
     updatedAt: task.updatedAt,
   };
   const run = firstSafeText(
+    task.payload["parentRoundId"],
     task.payload["run"],
     task.payload["runId"],
     task.payload["round"],
     task.payload["roundId"],
+    output["parentRoundId"],
     output["run"],
     output["runId"],
+    output["round"],
+    output["roundId"],
   );
   if (run) payload.run = run;
   const parentRoundTotal = firstSafePositiveInt(
@@ -852,8 +855,10 @@ function normalizePositiveInt(value: number | undefined, fallback: number): numb
  * Set {@link TerminalTaskEventPayload.parentRoundProgress} on the payload by
  * incrementing a broker-local sequence counter keyed by the payload's run key.
  *
- * When the payload has no run key or the run key is empty, this is a no-op
- * (downstream notifiers fall back to a generic title without progress).
+ * When the payload has no run key this is a no-op. When parentRoundTotal is
+ * unknown, the sequence counter still advances but the payload field is omitted
+ * so downstream notifiers fall back instead of rendering misleading `n/?`
+ * progress.
  */
 function applyRoundProgressMetadata(
   payload: TerminalTaskEventPayload,
@@ -863,6 +868,7 @@ function applyRoundProgressMetadata(
   if (!runKey) return;
   const next = (roundProgress.get(runKey) ?? 0) + 1;
   roundProgress.set(runKey, next);
+  if (!payload.parentRoundTotal) return;
   payload.parentRoundProgress = next;
 }
 
@@ -874,6 +880,10 @@ function firstSafePositiveInt(...values: unknown[]): number | undefined {
   for (const value of values) {
     if (typeof value === "number" && Number.isInteger(value) && value > 0 && Number.isFinite(value)) {
       return value;
+    }
+    if (typeof value === "string" && /^\d+$/.test(value.trim())) {
+      const parsed = Number(value.trim());
+      if (Number.isSafeInteger(parsed) && parsed > 0) return parsed;
     }
   }
   return undefined;
