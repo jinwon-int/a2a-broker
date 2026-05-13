@@ -26,6 +26,7 @@ describe('terminal brief activation report', () => {
     assert.equal(report.gates.find((gate) => gate.id === 'operatorVisibleReceiptProven')?.status, 'pending');
     assert.equal(report.gates.find((gate) => gate.id === 'manualAckRecorded')?.status, 'pending');
     assert.equal(report.gates.find((gate) => gate.id === 'finalNoLiveRestored')?.status, 'pending');
+    assert.equal(report.gates.find((gate) => gate.id === 'bangtongActivationGuard')?.status, 'pending');
     assert.match(report.warnings.join('\n'), /one-shot task\/provider send evidence is not operator-visible receipt evidence/);
     assert.equal(report.safety.operatorBridgeEnabledByThisReport, false);
     assert.equal(report.safety.providerSendAttempted, false);
@@ -61,7 +62,7 @@ describe('terminal brief activation report', () => {
     assert.match(report.warnings.join('\n'), /manual ACK evidence is not final no-live restoration evidence/);
   });
 
-  it('requires all seven R3 gates before activation is ready', () => {
+  it('requires all R3 gates plus bangtong activation guard before activation is ready', () => {
     const report = runTerminalBriefActivationReport({
       codeMerged: 'https://github.com/jinwon-int/a2a-broker/issues/392#code-merged',
       canaryDeployed: 'https://github.com/jinwon-int/a2a-broker/issues/392#canary-deployed',
@@ -70,6 +71,7 @@ describe('terminal brief activation report', () => {
       operatorVisibleReceiptProven: 'https://github.com/jinwon-int/a2a-broker/issues/392#operator-visible-receipt',
       manualAckRecorded: 'https://github.com/jinwon-int/a2a-broker/issues/392#manual-ack',
       finalNoLiveRestored: 'https://github.com/jinwon-int/a2a-broker/issues/392#final-no-live-restored',
+      bangtongActivationGuard: 'https://github.com/jinwon-int/a2a-broker/issues/568#activation-guard',
     });
 
     assert.equal(report.activationReady, true);

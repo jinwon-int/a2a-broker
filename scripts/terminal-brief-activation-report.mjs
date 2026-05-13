@@ -60,6 +60,20 @@ const GATES = [
     passDetail: 'post-proof no-live restoration evidence is present',
     pendingDetail: 'missing final no-live restoration evidence',
   },
+  // Team1 bangtong lane activation GO/NO-GO guard (issue #568).
+  // References the bangtong-activation-guard module at
+  // src/trading-dialectic/bangtong-activation-guard.ts which provides the
+  // actual guard implementation with 8 gates checking:
+  // parentRoundId presence, knownTotal validity, brokerOfRecord alignment,
+  // bounded ops dashboard health, receipt/ACK boundary, parent metadata safety,
+  // terminal brief title safety, and no-live safety declaration.
+  {
+    id: 'bangtongActivationGuard',
+    title: 'Bangtong activation guard',
+    evidenceFlags: ['--bangtong-activation-evidence'],
+    passDetail: 'bangtong lane activation GO/NO-GO guard evidence is present; all 8 gates pass, broker-of-record aligned to seoseo, parent metadata safe, receipt boundary proven',
+    pendingDetail: 'missing bangtong lane activation guard evidence; Team1 activation readiness not proven',
+  },
 ];
 
 function readOption(argv, name) {
@@ -117,6 +131,9 @@ export function runTerminalBriefActivationReport(options = {}) {
   }
   if (byId.manualAckRecorded.proven && !byId.finalNoLiveRestored.proven) {
     warnings.push('manual ACK evidence is not final no-live restoration evidence');
+  }
+  if (byId.codeMerged.proven && !byId.bangtongActivationGuard?.proven) {
+    warnings.push('code merged but bangtong activation guard is not proven; Team1 activation readiness must be separately verified');
   }
 
   const activationReady = gates.every((gate) => gate.proven) && warnings.length === 0;
