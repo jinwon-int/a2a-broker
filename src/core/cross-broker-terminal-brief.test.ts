@@ -81,6 +81,7 @@ test("cross-broker Terminal Brief ingest is idempotent by parentRoundId/originBr
     originTaskId: "child-task-1",
   });
   assert.equal(terminalEvents[0]?.ackAudit?.decision, "pending");
+  assert.match(terminalEvents[0]?.ackAudit?.reason ?? "", /current-session-visible/);
 
   broker.ingestCrossBrokerTerminalBriefProjection(projection());
   assert.equal(broker.getTerminalTaskEventOutbox().subscribe().length, 1, "duplicate projection must not duplicate parent Terminal Brief output");

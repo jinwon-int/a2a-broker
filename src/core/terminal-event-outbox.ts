@@ -275,7 +275,7 @@ export class TerminalTaskEventOutbox {
       },
       ackAudit: buildAckAudit(payload, {
         decision: "pending",
-        reason: "cross-broker terminal projection accepted; awaiting parent-broker operator-visible/provider-delivery evidence before ACK",
+        reason: "cross-broker terminal projection accepted; awaiting parent-broker current-session-visible/operator-visible/provider-delivery evidence before ACK",
         updatedAt: projection.receivedAt,
         receiptStatus: "accepted",
       }),
