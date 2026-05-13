@@ -281,8 +281,8 @@ export class TerminalTaskEventOutbox {
       ...(projection.parentRoundTotal ? { parentRoundTotal: projection.parentRoundTotal } : {}),
       crossBrokerHandoff: {
         parentRoundId: projection.parentRoundId,
-        originBrokerId: projection.brokerOfRecordId ?? "unknown-parent-broker",
-        handoffBrokerId: projection.originBrokerId,
+        originBrokerId: projection.originBrokerId,
+        handoffBrokerId: projection.brokerOfRecordId,
         ...(projection.childTaskId ? { originTaskId: projection.childTaskId } : {}),
       },
     };

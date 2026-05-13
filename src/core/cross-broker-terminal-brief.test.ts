@@ -76,8 +76,8 @@ test("cross-broker Terminal Brief ingest is idempotent by parentRoundId/originBr
   assert.equal(terminalEvents[0]?.payload.doneUrl, "https://github.com/acme/example/issues/1#issuecomment-done");
   assert.deepEqual(terminalEvents[0]?.payload.crossBrokerHandoff, {
     parentRoundId: "round-parent",
-    originBrokerId: "parent-broker",
-    handoffBrokerId: "child-broker-a",
+    originBrokerId: "child-broker-a",
+    handoffBrokerId: "parent-broker",
     originTaskId: "child-task-1",
   });
   assert.equal(terminalEvents[0]?.ackAudit?.decision, "pending");
