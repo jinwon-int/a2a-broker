@@ -178,12 +178,31 @@ function buildRunnerTask(task, env = process.env) {
   return runnerTask;
 }
 
-function isGithubEvidenceTask(task) {
+const GITHUB_PATCH_TASK_MODES = new Set(["github-propose-patch", "github-issue-instruction"]);
+const GITHUB_READ_ONLY_VALIDATION_MODES = new Set([
+  "github-verify",
+  "github-read-only-validation",
+  "read-only-validation",
+  "github-libero-validation",
+  "libero-validation",
+]);
+
+function isGithubPatchEvidenceTask(task) {
   const mode = taskMode(task);
   const intent = safeText(task.intent, "");
-  if (intent === "propose_patch" && (mode === "github-propose-patch" || mode === "github-issue-instruction")) return true;
+  return intent === "propose_patch" && GITHUB_PATCH_TASK_MODES.has(mode);
+}
+
+function isGithubReadOnlyEvidenceTask(task) {
+  const mode = taskMode(task);
+  const intent = safeText(task.intent, "");
   if (intent === "verify" && mode === "github-verify") return true;
+  if ((intent === "analyze" || intent === "validate_change") && GITHUB_READ_ONLY_VALIDATION_MODES.has(mode)) return true;
   return false;
+}
+
+function isGithubEvidenceTask(task) {
+  return isGithubPatchEvidenceTask(task) || isGithubReadOnlyEvidenceTask(task);
 }
 
 const READ_ONLY_ANALYSIS_MODES = new Set(["analysis-only", "read-only-analysis", "analyze-only"]);
@@ -678,7 +697,7 @@ function runDockerRunner(task, env = process.env) {
     // Preserve the older missing-evidence contract for generic fake-runner outputs.
     // Treat no-diff as a hard failure only when the runner explicitly detected it.
     const runnerReportedNoDiff = parsed.noDiff === true || safeText(parsed.diffStatus, "") === "empty";
-    if (isGithubEvidenceTask(task) && runnerReportedNoDiff) {
+    if (isGithubPatchEvidenceTask(task) && runnerReportedNoDiff) {
       return {
         error: {
           code: "docker_runner_no_diff",

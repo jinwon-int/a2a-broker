@@ -2,6 +2,13 @@ import type { TaskError, TaskRecord, TaskResult } from "./types.js";
 
 const GITHUB_TASK_MODES = new Set(["github-propose-patch", "github-issue-instruction"]);
 const READ_ONLY_ANALYSIS_MODES = new Set(["analysis-only", "read-only-analysis", "analyze-only"]);
+const GITHUB_READ_ONLY_VALIDATION_MODES = new Set([
+  "github-verify",
+  "github-read-only-validation",
+  "read-only-validation",
+  "github-libero-validation",
+  "libero-validation",
+]);
 const RECEIPT_STATUSES = new Set([
   "accepted",
   "started",
@@ -57,9 +64,13 @@ export function validateGithubTaskCompletionEvidence(task: TaskRecord, result?: 
 }
 
 export function requiresGithubCompletionEvidence(task: TaskRecord): boolean {
-  // Analysis-only / read-only tasks with intent "analyze" are exempt from PR evidence
-  // requirements. They carry Done/Block evidence (findings, summary, risks) without
-  // producing a patch or pull request.
+  if (isGithubReadOnlyValidationTask(task)) {
+    return true;
+  }
+
+  // Analysis-only / read-only tasks that are not GitHub validation lanes are
+  // exempt from PR evidence requirements. They carry findings/summary/risks
+  // without producing a patch or pull request.
   if (task.intent === "analyze" && isReadOnlyAnalysisMode(task.payload?.mode)) {
     return false;
   }
@@ -70,6 +81,27 @@ export function requiresGithubCompletionEvidence(task: TaskRecord): boolean {
 
 function isGithubTaskMode(mode: string | undefined): boolean {
   return mode !== undefined && GITHUB_TASK_MODES.has(mode);
+}
+
+function isGithubReadOnlyValidationTask(task: TaskRecord): boolean {
+  if (task.taskOrigin !== "github") {
+    return false;
+  }
+
+  const mode = typeof task.payload?.mode === "string" ? task.payload.mode : undefined;
+  if (!mode) {
+    return false;
+  }
+
+  if (task.intent === "verify" && mode === "github-verify") {
+    return true;
+  }
+
+  if (task.intent === "analyze") {
+    return GITHUB_READ_ONLY_VALIDATION_MODES.has(mode);
+  }
+
+  return task.intent === "validate_change" && GITHUB_READ_ONLY_VALIDATION_MODES.has(mode);
 }
 
 function isReadOnlyAnalysisMode(mode: unknown): boolean {

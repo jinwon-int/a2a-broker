@@ -131,6 +131,35 @@ test("cross-broker Terminal Brief ingest rejects stale replay over a newer aggre
   assert.equal(stored?.summary, "newer child terminal state");
 });
 
+test("cross-broker Terminal Brief projection carries parent round denominator into outbox progress", () => {
+  const broker = new InMemoryA2ABroker(undefined, undefined, { brokerId: "parent-broker" });
+  createParentRound(broker);
+
+  const knownTotal = broker.ingestCrossBrokerTerminalBriefProjection(projection({
+    parentRoundTotal: "3",
+  }));
+  assert.equal(knownTotal.accepted, true);
+  assert.equal(knownTotal.record.parentRoundTotal, 3);
+
+  const unknownTotal = broker.ingestCrossBrokerTerminalBriefProjection(projection({
+    originBrokerId: "child-broker-b",
+    childTaskId: "child-task-2",
+    completedAt: "2026-05-13T01:05:00.000Z",
+    emittedAt: "2026-05-13T01:05:01.000Z",
+  }));
+  assert.equal(unknownTotal.accepted, true);
+  assert.equal(unknownTotal.record.parentRoundTotal, undefined);
+
+  const terminalEvents = broker.getTerminalTaskEventOutbox().subscribe();
+  assert.equal(terminalEvents.length, 2);
+  assert.equal(terminalEvents[0]?.payload.run, "round-parent");
+  assert.equal(terminalEvents[0]?.payload.parentRoundTotal, 3);
+  assert.equal(terminalEvents[0]?.payload.parentRoundProgress, 1);
+  assert.equal(terminalEvents[1]?.payload.run, "round-parent");
+  assert.equal(terminalEvents[1]?.payload.parentRoundTotal, undefined);
+  assert.equal(terminalEvents[1]?.payload.parentRoundProgress, undefined);
+});
+
 test("cross-broker Terminal Brief projection redacts unsafe content and fails closed for ACKs", () => {
   const broker = new InMemoryA2ABroker(undefined, undefined, { brokerId: "parent-broker" });
   createParentRound(broker);
