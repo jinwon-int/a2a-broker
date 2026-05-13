@@ -59,6 +59,7 @@ export interface TerminalTaskEventPayload {
     originBrokerId: string;
     handoffBrokerId?: string;
     originTaskId?: string;
+    childWorkerId?: string;
   };
   /**
    * Parent broker completion sequence for this round (1-based numerator).
@@ -73,6 +74,8 @@ export interface TerminalTaskEventPayload {
    * default title.
    */
   parentRoundTotal?: number;
+  /** Compact operator title for parent-round Terminal Brief notifications. */
+  terminalBriefTitle?: string;
 }
 
 export interface TerminalTaskOutboxEvent {
@@ -226,6 +229,7 @@ export class TerminalTaskEventOutbox {
 
     const payload = buildTerminalTaskPayload(task);
     applyRoundProgressMetadata(payload, this.roundProgress);
+    applyTerminalBriefTitle(payload);
     const event: TerminalTaskOutboxEvent = {
       id,
       kind: "task.terminal",
@@ -271,7 +275,7 @@ export class TerminalTaskEventOutbox {
       status: projection.status,
       run: projection.parentRoundId,
       taskDescription: `Cross-broker Terminal Brief from ${projection.originBrokerId}`,
-      worker: projection.originBrokerId,
+      worker: projection.childWorkerId ?? projection.originBrokerId,
       ...(taskBrief ? { taskBrief } : {}),
       ...(evidenceUrl ? { doneUrl: evidenceUrl } : {}),
       ...(testSummary ? { testSummary } : {}),
@@ -284,9 +288,11 @@ export class TerminalTaskEventOutbox {
         originBrokerId: projection.brokerOfRecordId ?? "unknown-parent-broker",
         handoffBrokerId: projection.originBrokerId,
         ...(projection.childTaskId ? { originTaskId: projection.childTaskId } : {}),
+        ...(projection.childWorkerId ? { childWorkerId: projection.childWorkerId } : {}),
       },
     };
     applyRoundProgressMetadata(payload, this.roundProgress);
+    applyTerminalBriefTitle(payload);
     const event: TerminalTaskOutboxEvent = {
       id,
       kind: "task.terminal",
@@ -617,11 +623,13 @@ function buildCrossBrokerHandoff(...values: unknown[]): TerminalTaskEventPayload
     if (!parentRoundId || !originBrokerId) continue;
     const handoffBrokerId = sanitizeCrossBrokerToken(value["handoffBrokerId"] ?? value["localBrokerId"] ?? value["brokerId"]);
     const originTaskId = sanitizeCrossBrokerToken(value["originTaskId"] ?? value["parentTaskId"]);
+    const childWorkerId = sanitizeCrossBrokerToken(value["childWorkerId"] ?? value["workerId"]);
     return {
       parentRoundId,
       originBrokerId,
       ...(handoffBrokerId ? { handoffBrokerId } : {}),
       ...(originTaskId ? { originTaskId } : {}),
+      ...(childWorkerId ? { childWorkerId } : {}),
     };
   }
   return undefined;
@@ -870,6 +878,16 @@ function applyRoundProgressMetadata(
   roundProgress.set(runKey, next);
   if (!payload.parentRoundTotal) return;
   payload.parentRoundProgress = next;
+}
+
+function applyTerminalBriefTitle(payload: TerminalTaskEventPayload): void {
+  const title = buildTerminalBriefTitle(payload);
+  if (title) payload.terminalBriefTitle = title;
+}
+
+function buildTerminalBriefTitle(payload: TerminalTaskEventPayload): string | undefined {
+  if (!payload.worker || !payload.parentRoundProgress || !payload.parentRoundTotal) return undefined;
+  return `A2A Terminal Brief 완료: ${payload.worker}(${payload.parentRoundProgress}/${payload.parentRoundTotal})`;
 }
 
 /**
