@@ -4,7 +4,7 @@
 // worker row quarantine visibility, and terminal-outbox ACK invariants.
 
 import process from 'node:process';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
 import { z } from 'zod';
 
@@ -140,6 +140,7 @@ function parseArgs(argv) {
     json: argv.includes('--json'),
     maxUnackedAgeMs: Number.isFinite(maxUnackedAgeMs) && maxUnackedAgeMs >= 0 ? maxUnackedAgeMs : DEFAULT_MAX_UNACKED_AGE_MS,
     nowMs: nowRaw === undefined ? Date.now() : Number(nowRaw),
+    priorMetricsPath: readOption('--prior-metrics') ?? process.env.BROKER_MIGRATION_GATE_PRIOR_METRICS ?? null,
     legacyResidueCutoff: Number.isFinite(legacyResidueCutoffMs) ? new Date(legacyResidueCutoffMs).toISOString() : null,
     legacyResidueCutoffMs: Number.isFinite(legacyResidueCutoffMs) ? legacyResidueCutoffMs : null,
     legacyResidueExpires: Number.isFinite(legacyResidueExpiresMs)
@@ -207,6 +208,7 @@ function normalizeOptions(options = {}) {
     : null;
   return {
     ...options,
+    priorMetricsPath: options.priorMetricsPath ?? null,
     legacyResidueCutoffMs: Number.isFinite(legacyResidueCutoffMs) ? legacyResidueCutoffMs : null,
     legacyResidueCutoff: Number.isFinite(legacyResidueCutoffMs) ? new Date(legacyResidueCutoffMs).toISOString() : null,
     legacyResidueExpiresMs: Number.isFinite(legacyResidueExpiresMs)
@@ -277,6 +279,59 @@ function checkHotTables(db) {
   return missingTables.length === 0
     ? pass('hot-table load diagnostics', `${HOT_TABLES.length} hot tables available`, { tableCounts: counts })
     : fail('hot-table load diagnostics', `missing hot tables: ${missingTables.join(', ')}`, { missingTables, tableCounts: counts });
+}
+
+function checkHotTableGrowth(db, { priorMetricsPath, nowMs } = {}) {
+  if (HOT_TABLES.some((table) => !tableExists(db, table))) {
+    return fail('hot-table growth', 'one or more hot tables missing; cannot compute growth', { tables: [] });
+  }
+
+  const tables = [];
+  for (const table of HOT_TABLES) {
+    const count = db.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get().count;
+    tables.push({ table, count });
+  }
+
+  const totalRows = tables.reduce((sum, t) => sum + t.count, 0);
+
+  // Growth vs prior snapshot
+  let priorTotal = null;
+  let growthRate = null;
+  let priorGeneratedAt = null;
+  if (priorMetricsPath && existsSync(priorMetricsPath)) {
+    try {
+      const priorRaw = JSON.parse(readFileSync(priorMetricsPath, 'utf-8'));
+      if (priorRaw?.kind === 'broker.migration-health-gate') {
+        const priorGrowthCheck = priorRaw.checks?.find((c) => c.check === 'hot-table growth');
+        if (priorGrowthCheck?.tableCounts) {
+          priorTotal = Object.values(priorGrowthCheck.tableCounts).reduce((sum, c) => sum + c, 0);
+        } else if (priorGrowthCheck?.totalRows) {
+          priorTotal = priorGrowthCheck.totalRows;
+        }
+        priorGeneratedAt = priorRaw.generatedAt ?? null;
+      }
+    } catch { /* ignore unparseable prior */ }
+  }
+
+  if (priorTotal !== null && priorTotal > 0) {
+    growthRate = (totalRows - priorTotal) / priorTotal;
+  }
+
+  const warnings = [];
+  if (totalRows >= 10000) {
+    warnings.push(`CRITICAL: total hot-table rows (${totalRows}) exceed 10,000`);
+  } else if (totalRows >= 2000) {
+    warnings.push(`WARNING: total hot-table rows (${totalRows}) exceed 2,000`);
+  }
+  if (growthRate !== null && growthRate > 0.5) {
+    warnings.push(`WARNING: growth rate ${(growthRate * 100).toFixed(1)}% exceeds 50%`);
+  }
+
+  const severity = warnings.some((w) => w.startsWith('CRITICAL')) ? 'critical' : warnings.length > 0 ? 'warning' : 'ok';
+
+  return warnings.length === 0
+    ? pass('hot-table growth', `${totalRows} total rows across ${HOT_TABLES.length} tables${growthRate !== null ? ` (${(growthRate * 100).toFixed(1)}% growth)` : ''}`, { totalRows, tableCounts: Object.fromEntries(tables.map((t) => [t.table, t.count])), growthRate, priorTotal, priorGeneratedAt, severity, warnings })
+    : (severity === 'critical' ? fail : pass)('hot-table growth', `${totalRows} total rows; ${warnings.join('; ')}`, { totalRows, tableCounts: Object.fromEntries(tables.map((t) => [t.table, t.count])), growthRate, priorTotal, priorGeneratedAt, severity, warnings });
 }
 
 function checkWorkers(db) {
@@ -535,6 +590,122 @@ function checkTerminalOutbox(db, { nowMs, maxUnackedAgeMs, legacyResidueCutoffMs
   return pass('terminal-outbox ACK invariant', `${rows.length} outbox row(s) have receipt-safe ACK state or are within replay window${suffix}`, { rowCount: rows.length, legacyResidue, receiptGapClassifications, currentGapBuckets });
 }
 
+function checkQueueHygiene(db, { nowMs } = {}) {
+  if (!tableExists(db, 'broker_tasks')) {
+    return fail('queue hygiene', 'broker_tasks table missing', { violations: [] });
+  }
+
+  const taskAgeSchema = z.object({
+    id: z.string().min(1),
+    status: z.string().min(1),
+    createdAt: z.string(),
+    updatedAt: z.string(),
+    requeueCount: z.number().int().nonnegative().optional(),
+  }).passthrough();
+
+  const allTasks = [];
+  const parseErrors = [];
+  const rows = db.prepare('SELECT id, payload FROM broker_tasks ORDER BY id ASC').all();
+  for (const row of rows) {
+    const parsed = parseJsonPayload(row.payload, taskAgeSchema);
+    if (!parsed.success) {
+      parseErrors.push({ id: sanitizeDiagnosticValue(row.id), detail: parsed.error });
+      continue;
+    }
+    allTasks.push(parsed.data);
+  }
+
+  const activeTasks = allTasks.filter((t) => !TERMINAL_TASK_STATUSES.has(t.status));
+  const terminalTasks = allTasks.filter((t) => TERMINAL_TASK_STATUSES.has(t.status));
+
+  // Age buckets for active tasks
+  const ageBuckets = { 'lt_15m': 0, '15m_1h': 0, '1h_4h': 0, '4h_24h': 0, 'gt_24h': 0 };
+  let oldestActiveAgeMs = 0;
+  for (const task of activeTasks) {
+    const createdMs = Date.parse(task.createdAt ?? '');
+    if (!Number.isFinite(createdMs)) continue;
+    const ageMs = nowMs - createdMs;
+    oldestActiveAgeMs = Math.max(oldestActiveAgeMs, ageMs);
+    if (ageMs < 15 * 60 * 1000) ageBuckets.lt_15m++;
+    else if (ageMs < 60 * 60 * 1000) ageBuckets['15m_1h']++;
+    else if (ageMs < 4 * 60 * 60 * 1000) ageBuckets['1h_4h']++;
+    else if (ageMs < 24 * 60 * 60 * 1000) ageBuckets['4h_24h']++;
+    else ageBuckets.gt_24h++;
+  }
+
+  // Requeue analysis
+  const requeuedTasks = allTasks.filter((t) => (t.requeueCount ?? 0) > 0);
+  const multiRequeued = requeuedTasks.filter((t) => (t.requeueCount ?? 0) > 1);
+  const maxRequeueDepth = requeuedTasks.reduce((max, t) => Math.max(max, t.requeueCount ?? 0), 0);
+
+  // Status breakdown
+  const byStatus = {};
+  for (const task of allTasks) {
+    byStatus[task.status] = (byStatus[task.status] ?? 0) + 1;
+  }
+
+  // Queue pressure ratio
+  const queuedCount = byStatus.queued ?? 0;
+  const claimedRunning = (byStatus.claimed ?? 0) + (byStatus.running ?? 0);
+  const queuePressure = claimedRunning > 0 ? queuedCount / claimedRunning : (queuedCount > 0 ? Infinity : 0);
+
+  const warnings = [];
+  if (activeTasks.length >= 200) {
+    warnings.push(`CRITICAL: ${activeTasks.length} active tasks exceed 200`);
+  } else if (activeTasks.length >= 50) {
+    warnings.push(`WARNING: ${activeTasks.length} active tasks exceed 50`);
+  }
+  if (maxRequeueDepth >= 5) {
+    warnings.push(`CRITICAL: max requeue depth ${maxRequeueDepth} exceeds 5`);
+  } else if (maxRequeueDepth >= 3) {
+    warnings.push(`WARNING: max requeue depth ${maxRequeueDepth} exceeds 3`);
+  }
+  if (oldestActiveAgeMs >= 4 * 60 * 60 * 1000) {
+    warnings.push(`CRITICAL: oldest active task age ${Math.round(oldestActiveAgeMs / 60000)}min exceeds 4h`);
+  } else if (oldestActiveAgeMs >= 30 * 60 * 1000) {
+    warnings.push(`WARNING: oldest active task age ${Math.round(oldestActiveAgeMs / 60000)}min exceeds 30min`);
+  }
+  if (queuePressure > 3) {
+    warnings.push(`WARNING: queue pressure ratio ${queuePressure.toFixed(1)} exceeds 3.0`);
+  }
+
+  const severity = warnings.some((w) => w.startsWith('CRITICAL')) ? 'critical' : warnings.length > 0 ? 'warning' : 'ok';
+
+  if (warnings.length > 0) {
+    return (severity === 'critical' ? fail : pass)('queue hygiene', `${allTasks.length} tasks, ${activeTasks.length} active; ${warnings.join('; ')}`, {
+      totalTasks: allTasks.length,
+      activeTasks: activeTasks.length,
+      terminalTasks: terminalTasks.length,
+      byStatus,
+      ageBuckets,
+      oldestActiveAgeMs,
+      requeuedCount: requeuedTasks.length,
+      multiRequeued: multiRequeued.length,
+      maxRequeueDepth,
+      queuePressure,
+      severity,
+      warnings,
+      parseErrors: parseErrors.length > 0 ? parseErrors.slice(0, 5) : [],
+    });
+  }
+
+  return pass('queue hygiene', `${allTasks.length} tasks, ${activeTasks.length} active, ${terminalTasks.length} terminal`, {
+    totalTasks: allTasks.length,
+    activeTasks: activeTasks.length,
+    terminalTasks: terminalTasks.length,
+    byStatus,
+    ageBuckets,
+    oldestActiveAgeMs,
+    requeuedCount: requeuedTasks.length,
+    multiRequeued: multiRequeued.length,
+    maxRequeueDepth,
+    queuePressure,
+    severity,
+    warnings,
+    parseErrors: parseErrors.length > 0 ? parseErrors.slice(0, 5) : [],
+  });
+}
+
 export function runMigrationHealthGate(rawOptions) {
   const options = normalizeOptions(rawOptions);
   if (!options?.dbFile) {
@@ -560,6 +731,10 @@ export function runMigrationHealthGate(rawOptions) {
     const checks = [
       checkSchema(db),
       checkHotTables(db),
+      checkHotTableGrowth(db, {
+        priorMetricsPath: options.priorMetricsPath ?? null,
+        nowMs,
+      }),
       checkWorkers(db),
       checkQueueCloseoutReconciliation(db, {
         legacyResidueCutoffMs: options.legacyResidueCutoffMs,
@@ -569,6 +744,7 @@ export function runMigrationHealthGate(rawOptions) {
         maxUnackedAgeMs: options.maxUnackedAgeMs ?? DEFAULT_MAX_UNACKED_AGE_MS,
         legacyResidueCutoffMs: options.legacyResidueCutoffMs,
       }),
+      checkQueueHygiene(db, { nowMs }),
     ];
     checks.push(checkLegacyResidueLifecycle(checks, {
       nowMs,
