@@ -19,6 +19,13 @@ import { validateGithubTaskCompletionEvidence } from "./github-task-completion.j
 import { TaskEventStream } from "./task-event-stream.js";
 import { TerminalTaskEventOutbox } from "./terminal-event-outbox.js";
 import { ConferenceRoomManager } from "./conference-room.js";
+import {
+  CrossBrokerTerminalBriefProjectionStore,
+  type CrossBrokerTerminalBriefProjection,
+  type CrossBrokerTerminalBriefProjectionFilters,
+  type CrossBrokerTerminalBriefProjectionRequest,
+  type CrossBrokerTerminalBriefProjectionResult,
+} from "./cross-broker-terminal-brief.js";
 import type { ArtifactRuntimeRepository } from "./artifact-repository.js";
 import type { AuditRuntimeRepository } from "./audit-repository.js";
 import type { ExchangeMessageRuntimeRepository, ExchangeRuntimeRepository } from "./exchange-repository.js";
@@ -332,6 +339,7 @@ export class InMemoryA2ABroker {
   private readonly maxBufferedEventsPerTask: number;
   private readonly taskEventStream: TaskEventStream;
   private readonly terminalTaskEventOutbox: TerminalTaskEventOutbox;
+  private readonly crossBrokerTerminalBriefs: CrossBrokerTerminalBriefProjectionStore;
   private readonly conferenceManager: ConferenceRoomManager;
   private readonly taskRepository?: TaskRuntimeRepository;
   private readonly auditRepository?: AuditRuntimeRepository;
@@ -370,6 +378,11 @@ export class InMemoryA2ABroker {
     this.maxBufferedEventsPerTask = options.maxBufferedEventsPerTask ?? 100;
     this.taskEventStream = new TaskEventStream({ maxEvents: options.maxTaskStatusEvents });
     this.terminalTaskEventOutbox = new TerminalTaskEventOutbox({ maxEvents: options.maxTerminalTaskOutboxEvents });
+    this.crossBrokerTerminalBriefs = new CrossBrokerTerminalBriefProjectionStore([], {
+      brokerId: this.brokerId,
+      hasParentRound: (parentRoundId) => this.tasks.has(parentRoundId),
+      parentBrokerOfRecord: (parentRoundId) => this.tasks.get(parentRoundId)?.brokerOfRecord,
+    });
     this.conferenceManager = new ConferenceRoomManager();
     if (snapshot) {
       this.loadSnapshot(snapshot);
@@ -389,6 +402,22 @@ export class InMemoryA2ABroker {
   /** Compact terminal task event outbox for durable webhook/SSE delivery. */
   getTerminalTaskEventOutbox(): TerminalTaskEventOutbox {
     return this.terminalTaskEventOutbox;
+  }
+
+  ingestCrossBrokerTerminalBriefProjection(request: CrossBrokerTerminalBriefProjectionRequest): CrossBrokerTerminalBriefProjectionResult {
+    const result = this.crossBrokerTerminalBriefs.ingest(request);
+    if (result.accepted) {
+      this.persistState();
+    }
+    return result;
+  }
+
+  listCrossBrokerTerminalBriefProjections(filters?: CrossBrokerTerminalBriefProjectionFilters): CrossBrokerTerminalBriefProjection[] {
+    return this.crossBrokerTerminalBriefs.list(filters);
+  }
+
+  getCrossBrokerTerminalBriefProjection(parentRoundId: string, originBrokerId: string): CrossBrokerTerminalBriefProjection | undefined {
+    return this.crossBrokerTerminalBriefs.get(parentRoundId, originBrokerId);
   }
 
   /**
@@ -2182,6 +2211,7 @@ export class InMemoryA2ABroker {
       tasks: [...this.tasks.values()],
       tombstones: [...this.tombstones.values()],
       terminalOutbox: this.terminalTaskEventOutbox.snapshot(),
+      crossBrokerTerminalBriefs: this.crossBrokerTerminalBriefs.snapshot(),
     };
   }
 
@@ -2443,6 +2473,7 @@ export class InMemoryA2ABroker {
     }
 
     this.terminalTaskEventOutbox.restoreSnapshot(snapshot.terminalOutbox ?? []);
+    this.crossBrokerTerminalBriefs.restore(snapshot.crossBrokerTerminalBriefs ?? []);
 
     this.applyRetentionPolicy();
   }

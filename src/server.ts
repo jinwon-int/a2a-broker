@@ -932,6 +932,41 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
       }
 
       if (
+        req.method === "POST" &&
+        path === "/a2a/cross-broker/terminal-briefs"
+      ) {
+        if (enforceRequesterIdentity) {
+          assertRequesterHasRole(requesterIdentity, ["hub", "operator"], "cross-broker-terminal-brief.ingest");
+        }
+
+        const body = await readJson(req);
+        const result = broker.ingestCrossBrokerTerminalBriefProjection(body as Parameters<typeof broker.ingestCrossBrokerTerminalBriefProjection>[0]);
+        if (!result.accepted) {
+          const status = result.ack.code === "missing_parent" ? 404 : result.ack.code === "stale_replay" ? 409 : 400;
+          return sendJson(res, status, result);
+        }
+        return sendJson(res, result.replayed ? 200 : 202, result);
+      }
+
+      if (
+        req.method === "GET" &&
+        path === "/a2a/cross-broker/terminal-briefs"
+      ) {
+        if (enforceRequesterIdentity) {
+          assertRequesterHasRole(requesterIdentity, ["hub", "operator"], "cross-broker-terminal-brief.query");
+        }
+
+        const parentRoundId = url.searchParams.get("parent_round_id") ?? undefined;
+        const originBrokerId = url.searchParams.get("origin_broker_id") ?? undefined;
+        const records = broker.listCrossBrokerTerminalBriefProjections({ parentRoundId, originBrokerId });
+        return sendJson(res, 200, {
+          kind: "a2a.cross-broker.terminal-briefs",
+          count: records.length,
+          records,
+        });
+      }
+
+      if (
         req.method === "GET" &&
         path === "/a2a/tasks/terminal-outbox"
       ) {
