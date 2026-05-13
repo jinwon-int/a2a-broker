@@ -57,6 +57,12 @@ export interface TerminalBriefGitHubEvidenceManifest {
   terminalBriefTitle?: string;
   parentRoundProgress?: number;
   parentRoundTotal?: number;
+  notificationOwnership?: {
+    ownerBrokerId: string;
+    scope: "parent-broker-only";
+    providerSendPermittedByProjection: false;
+    terminalAckPermittedByProjection: false;
+  };
   terminalOutboxCursor?: string;
   taskEventId?: number;
   terminalStatus?: TerminalTaskStatus;
@@ -273,6 +279,7 @@ function buildTerminalManifest(event: TerminalTaskOutboxEvent): TerminalBriefGit
     terminalBriefTitle: safeText(payload.terminalBriefTitle),
     parentRoundProgress: safePositiveInt(payload.parentRoundProgress),
     parentRoundTotal: safePositiveInt(payload.parentRoundTotal),
+    notificationOwnership: safeNotificationOwnership(payload.notificationOwnership),
     terminalOutboxCursor: event.id,
     taskEventId: event.taskEventId,
     terminalStatus: payload.status,
@@ -332,6 +339,9 @@ function renderCommentBody(
   if (manifest.taskBrief) lines.push(`task_brief: ${manifest.taskBrief}`);
   if (manifest.terminalBriefTitle) lines.push(`terminal_brief_title: ${manifest.terminalBriefTitle}`);
   if (manifest.parentRoundProgress && manifest.parentRoundTotal) lines.push(`parent_round_progress: ${manifest.parentRoundProgress}/${manifest.parentRoundTotal}`);
+  if (manifest.notificationOwnership) {
+    lines.push(`notification_owner: ${manifest.notificationOwnership.ownerBrokerId} (${manifest.notificationOwnership.scope}; provider_send_by_projection=false; terminal_ack_by_projection=false)`);
+  }
   if (manifest.terminalStatus) lines.push(`terminal_status: ${manifest.terminalStatus}`);
   if (manifest.terminalOutboxCursor) lines.push(`terminal_outbox_cursor: ${manifest.terminalOutboxCursor}`);
   if (manifest.receiptStatus) lines.push(`receipt_status: ${manifest.receiptStatus}`);
@@ -441,6 +451,18 @@ function safePositiveInt(value: unknown): number | undefined {
   return typeof value === "number" && Number.isInteger(value) && value > 0 && Number.isFinite(value)
     ? value
     : undefined;
+}
+
+function safeNotificationOwnership(value: unknown): TerminalBriefGitHubEvidenceManifest["notificationOwnership"] | undefined {
+  if (!isRecord(value)) return undefined;
+  const ownerBrokerId = safeText(value.ownerBrokerId);
+  if (!ownerBrokerId || value.scope !== "parent-broker-only") return undefined;
+  return {
+    ownerBrokerId,
+    scope: "parent-broker-only",
+    providerSendPermittedByProjection: false,
+    terminalAckPermittedByProjection: false,
+  };
 }
 
 function redactCommentText(value: string): string {

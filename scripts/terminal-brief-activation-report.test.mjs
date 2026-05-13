@@ -77,6 +77,48 @@ describe('terminal brief activation report', () => {
     assert.deepEqual(report.warnings, []);
   });
 
+  it('renders R9 Seoseo/Gwakga projection parity metadata and no-live GO/NO-GO packet', () => {
+    const report = runTerminalBriefActivationReport({
+      issue: '#570',
+      parent: '#567',
+      context: {
+        parentRoundId: 'a2a-r9b-terminal-brief-activation-readiness-20260513T152714Z',
+        parentBrokerFinalizer: 'seoseo',
+        handoffBroker: 'gwakga',
+        worker: 'dungae',
+        knownTotal: '7',
+      },
+      oneShotFreshTaskSent: 'https://github.com/jinwon-int/a2a-broker/issues/570#provider-accepted-only',
+    });
+    const markdown = renderMarkdown(report);
+
+    assert.equal(report.issue, '#570');
+    assert.equal(report.parent, '#567');
+    assert.equal(report.activationReady, false);
+    assert.equal(report.goNoGoPacket.decision, 'NO-GO');
+    assert.match(report.goNoGoPacket.evidencePolicy, /PR\/Done\/Block evidence only/);
+    assert.deepEqual(report.projectionParity, {
+      parentRoundId: 'a2a-r9b-terminal-brief-activation-readiness-20260513T152714Z',
+      parentBrokerFinalizer: 'seoseo',
+      handoffBroker: 'gwakga',
+      worker: 'dungae',
+      knownTotal: 7,
+      compactParentRoundTitle: 'A2A Terminal Brief 완료: dungae(n/7)',
+      parentBrokerAggregationMetadataRequired: true,
+      parentOnlyNotificationOwnership: true,
+      childProjectionProviderSendPermitted: false,
+      childProjectionTerminalAckPermitted: false,
+    });
+    assert.equal(report.receiptAckBoundaryProof.providerAcceptedMessageIdIsTerminalAck, false);
+    assert.equal(report.receiptAckBoundaryProof.projectionMayAckTerminalOutbox, false);
+    assert.equal(report.approvalGatedActivationRollbackPlan.activationRequiresFreshExplicitOperatorApproval, true);
+    assert.match(markdown, /GO\/NO-GO: NO-GO/);
+    assert.match(markdown, /compact title target: A2A Terminal Brief 완료: dungae\(n\/7\)/);
+    assert.match(markdown, /provider accepted\/message id counted as terminal ACK: no/);
+    assert.match(markdown, /activation requires fresh explicit operator approval: yes/);
+    assert.match(report.warnings.join('\n'), /provider send evidence is not operator-visible receipt evidence/);
+  });
+
   it('redacts non-http evidence and unsafe diagnostic strings from markdown', () => {
     const report = runTerminalBriefActivationReport({
       codeMerged: 'file:///work/repo/private.log',
