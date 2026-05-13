@@ -1,5 +1,6 @@
 import type { TaskRecord, TaskStatus } from "./types.js";
 import type { TaskStatusEvent } from "./task-events.js";
+import type { CrossBrokerTerminalBriefProjection } from "./cross-broker-terminal-brief.js";
 
 const TERMINAL_TASK_STATUSES = new Set<TaskStatus>(["succeeded", "failed", "canceled", "blocked"]);
 const TERMINAL_TASK_EVENT_KINDS = new Set<TaskStatusEvent["kind"]>(["succeeded", "failed", "canceled"]);
@@ -217,6 +218,65 @@ export class TerminalTaskEventOutbox {
         decision: "pending",
         reason: "terminal event accepted; awaiting current-session-visible/operator-visible/provider-delivery evidence before ACK",
         updatedAt: taskEvent.timestamp,
+        receiptStatus: "accepted",
+      }),
+      attempts: 0,
+    };
+    this.events.push(event);
+    this.markSeen(id);
+    this.enforceRetention();
+    return event;
+  }
+
+
+  enqueueCrossBrokerProjection(projection: CrossBrokerTerminalBriefProjection): TerminalTaskOutboxEvent | null {
+    const syntheticTaskId = projection.childTaskId ?? `cross-broker:${projection.parentRoundId}:${projection.originBrokerId}`;
+    const id = formatTerminalTaskEventId(
+      `cross-broker:${projection.parentRoundId}:${projection.originBrokerId}:${syntheticTaskId}`,
+      projection.status,
+      projection.completedAt,
+    );
+    const existing = this.events.find((event) => event.id === id);
+    if (existing) return existing;
+    if (this.seen.has(id)) return null;
+
+    const taskBrief = sanitizeTaskBrief(projection.taskBrief)
+      ?? sanitizeTaskBrief(`Cross-broker Terminal Brief from ${projection.originBrokerId}`);
+    const testSummary = sanitizeSummary(projection.summary);
+    const evidenceUrl = firstSafeHttpUrl(projection.evidenceUrl);
+    const payload: TerminalTaskEventPayload = {
+      taskId: syntheticTaskId,
+      status: projection.status,
+      run: projection.parentRoundId,
+      taskDescription: `Cross-broker Terminal Brief from ${projection.originBrokerId}`,
+      worker: projection.originBrokerId,
+      ...(taskBrief ? { taskBrief } : {}),
+      ...(evidenceUrl ? { doneUrl: evidenceUrl } : {}),
+      ...(testSummary ? { testSummary } : {}),
+      createdAt: projection.emittedAt,
+      updatedAt: projection.completedAt,
+      completedAt: projection.completedAt,
+      crossBrokerHandoff: {
+        parentRoundId: projection.parentRoundId,
+        originBrokerId: projection.brokerOfRecordId ?? "unknown-parent-broker",
+        handoffBrokerId: projection.originBrokerId,
+        ...(projection.childTaskId ? { originTaskId: projection.childTaskId } : {}),
+      },
+    };
+    const event: TerminalTaskOutboxEvent = {
+      id,
+      kind: "task.terminal",
+      taskEventId: 0,
+      payload,
+      createdAt: projection.receivedAt,
+      receipt: {
+        status: "accepted",
+        updatedAt: projection.receivedAt,
+      },
+      ackAudit: buildAckAudit(payload, {
+        decision: "pending",
+        reason: "cross-broker terminal projection accepted; awaiting parent-broker current-session-visible/operator-visible/provider-delivery evidence before ACK",
+        updatedAt: projection.receivedAt,
         receiptStatus: "accepted",
       }),
       attempts: 0,
