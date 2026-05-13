@@ -70,6 +70,8 @@ export interface BrokerStateSaveHints {
   hotTombstones?: TaskTombstone[];
   hotAuditEvents?: AuditEvent[];
   hotWorkers?: WorkerRecord[];
+  /** Dirty terminal-outbox rows whose ack/receipt state must be table-persisted immediately. */
+  hotTerminalOutboxEvents?: TerminalTaskOutboxEvent[];
 }
 
 export interface BrokerPersistenceInfo {
@@ -1792,6 +1794,7 @@ export class SqliteBrokerStateStore implements BrokerStateStore {
     const hotTombstoneHints = hints?.hotTombstones;
     const hotAuditHints = hints?.hotAuditEvents;
     const hotWorkerHints = hints?.hotWorkers;
+    const hotTerminalOutboxHints = hints?.hotTerminalOutboxEvents;
     if (hotExchangeHints) {
       this.applyCanonicalHotRetentionPlan("broker_exchanges", snapshot.exchanges.map((exchange) => exchange.id));
     } else {
@@ -1854,7 +1857,7 @@ export class SqliteBrokerStateStore implements BrokerStateStore {
 
     this.upsertHotAuditEventsUnsafe(hotAuditHints ?? snapshot.auditEvents);
 
-    this.upsertHotTerminalOutboxUnsafe(snapshot.terminalOutbox ?? []);
+    this.upsertHotTerminalOutboxUnsafe(hotTerminalOutboxHints ?? snapshot.terminalOutbox ?? []);
   }
 
   private applyCanonicalHotRetentionPlan(
