@@ -142,6 +142,8 @@ for (const worker of workers) {
 
 `GET /workers/capacity` returns a compact pre-dispatch view for repeated A2A rounds. It omits task payloads/messages and reports per-worker `queued`, `claimed`, `running`, `stale`, and `active` counts plus `latestTaskUpdatedAt`.
 
+For the Team2/Gwakga R8 comparison against Team1/Seoseo, see [`docs/team2-gwakga-ops-dashboard-capacity-parity.md`](docs/team2-gwakga-ops-dashboard-capacity-parity.md) for the bounded dashboard/capacity semantics and GO/NO-GO checklist.
+
 Before a seoseo → gwakga broker cutover, run the read-only two-broker guard to fail closed if the same worker id is online in both broker worker lists:
 
 ```bash
