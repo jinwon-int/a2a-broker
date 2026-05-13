@@ -407,6 +407,9 @@ export class InMemoryA2ABroker {
   ingestCrossBrokerTerminalBriefProjection(request: CrossBrokerTerminalBriefProjectionRequest): CrossBrokerTerminalBriefProjectionResult {
     const result = this.crossBrokerTerminalBriefs.ingest(request);
     if (result.accepted) {
+      if (!result.replayed) {
+        this.terminalTaskEventOutbox.enqueueCrossBrokerProjection(result.record);
+      }
       this.persistState();
     }
     return result;
