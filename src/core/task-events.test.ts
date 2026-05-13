@@ -299,6 +299,12 @@ describe("TerminalTaskEventOutbox", () => {
         run: "a2a-terminal-push-1",
         traceId: "trace-terminal-1",
         taskDescription: "Fix terminal closeout from /work/private token=fake-token-placeholder",
+        crossBrokerHandoff: {
+          parentRoundId: "parent-round-1",
+          originBrokerId: "gwakga",
+          handoffBrokerId: "seoseo",
+          originTaskId: "parent-task-1",
+        },
       },
     });
 
@@ -335,6 +341,12 @@ describe("TerminalTaskEventOutbox", () => {
     assert.equal(event.payload.doneUrl, "https://github.com/jinwon-int/a2a-broker/issues/218#issuecomment-1");
     assert.equal(event.payload.blockUrl, undefined);
     assert.match(event.payload.testSummary ?? "", /tests passed from \[path\]/);
+    assert.deepEqual(event.payload.crossBrokerHandoff, {
+      parentRoundId: "parent-round-1",
+      originBrokerId: "gwakga",
+      handoffBrokerId: "seoseo",
+      originTaskId: "parent-task-1",
+    });
     assert.deepEqual(event.ackAudit, {
       decision: "pending",
       reason: "terminal event accepted; awaiting current-session-visible/operator-visible/provider-delivery evidence before ACK",
