@@ -287,6 +287,12 @@ export class TerminalTaskEventOutbox {
       },
     };
     applyRoundProgressMetadata(payload, this.roundProgress);
+    // Compact parent-round title with progress when total is known.
+    if (payload.parentRoundProgress && payload.parentRoundTotal) {
+      payload.taskDescription = `A2A Terminal Brief \u{C644}\u{B8CC}: ${projection.originBrokerId}(${payload.parentRoundProgress}/${payload.parentRoundTotal})`;
+    } else {
+      payload.taskDescription = `A2A Terminal Brief \u{C644}\u{B8CC}: ${projection.originBrokerId}`;
+    }
     const event: TerminalTaskOutboxEvent = {
       id,
       kind: "task.terminal",

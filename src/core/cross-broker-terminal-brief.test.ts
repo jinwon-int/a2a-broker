@@ -186,6 +186,141 @@ test("cross-broker Terminal Brief projection redacts unsafe content and fails cl
   assert.equal(broker.getCrossBrokerTerminalBriefProjection("round-parent", "child-broker-b"), undefined);
 });
 
+test("no-live 7-child parent aggregation rehearsal (Team1 direct + Team2 cross-broker)", () => {
+  const broker = new InMemoryA2ABroker(undefined, undefined, { brokerId: "parent-seoseo" });
+
+  // Register 4 Team1 worker lanes and create the Seoseo parent round with total=7.
+  for (const workerId of ["nosuk", "bangtong", "yukson", "sogyo"]) {
+    registerWorker(broker, workerId);
+  }
+  broker.createTask({
+    id: "round-seoseo-7",
+    intent: "chat",
+    requester: { id: "hub", kind: "node", role: "hub" },
+    target: { id: "nosuk", kind: "node", role: "analyst" },
+    assignedWorkerId: "nosuk",
+    payload: { roundTotal: 7, roundId: "round-seoseo-7" },
+    message: "parent round-seoseo-7",
+  });
+
+  // --- 4 direct Team1 children (tasks on this broker, completed in order) ---
+  const team1 = ["nosuk", "bangtong", "yukson", "sogyo"];
+  const directChildIds = team1.map((w) => `team1-${w}`);
+  for (let i = 0; i < team1.length; i++) {
+    const tid = directChildIds[i];
+    broker.createTask({
+      id: tid,
+      intent: "propose_patch",
+      requester: { id: "seoseo", kind: "node", role: "hub" },
+      target: { id: team1[i], kind: "node", role: "analyst" },
+      assignedWorkerId: team1[i],
+      payload: {
+        parentRoundId: "round-seoseo-7",
+        parentRoundTotal: 7,
+        taskBrief: `Team1 direct ${team1[i]}`,
+      },
+      message: `parent: Team1 direct ${team1[i]}`,
+    });
+    broker.claimTask(tid, team1[i]);
+    broker.completeTask(tid, team1[i], { summary: `${team1[i]} direct child done` });
+  }
+
+  // --- 3 cross-broker Team2 projections (ingested at parent broker) ---
+  const team2Brokers = ["dungae", "seoyeong", "galaxy"];
+  for (let i = 0; i < team2Brokers.length; i++) {
+    const cb = team2Brokers[i];
+    broker.ingestCrossBrokerTerminalBriefProjection({
+      parentRoundId: "round-seoseo-7",
+      originBrokerId: cb,
+      brokerOfRecordId: "parent-seoseo",
+      childTaskId: `team2-${cb}`,
+      status: "succeeded" as const,
+      parentRoundTotal: 7,
+      summary: `${cb} cross-broker projection done`,
+      taskBrief: `Team2 cross-broker ${cb}`,
+      completedAt: new Date(Date.UTC(2026, 4, 13, i + 2, 0, 0)).toISOString(),
+      emittedAt: new Date(Date.UTC(2026, 4, 13, i + 2, 0, 1)).toISOString(),
+    });
+  }
+
+  // Verify all 7 terminal outbox events exist.
+  const outboxEvents = broker.getTerminalTaskEventOutbox().subscribe();
+  assert.equal(outboxEvents.length, 7);
+
+  // Check round progress ordering: direct tasks complete first (1-4),
+  // then cross-broker projections (5-7).
+  const progressEntries = outboxEvents.map((e) => ({
+    taskId: e.payload.taskId,
+    progress: e.payload.parentRoundProgress,
+    total: e.payload.parentRoundTotal,
+  }));
+
+  assert.equal(progressEntries[0].taskId, "team1-nosuk");
+  assert.equal(progressEntries[0].progress, 1);
+  assert.equal(progressEntries[0].total, 7);
+
+  assert.equal(progressEntries[1].taskId, "team1-bangtong");
+  assert.equal(progressEntries[1].progress, 2);
+  assert.equal(progressEntries[1].total, 7);
+
+  assert.equal(progressEntries[2].taskId, "team1-yukson");
+  assert.equal(progressEntries[2].progress, 3);
+  assert.equal(progressEntries[2].total, 7);
+
+  assert.equal(progressEntries[3].taskId, "team1-sogyo");
+  assert.equal(progressEntries[3].progress, 4);
+  assert.equal(progressEntries[3].total, 7);
+
+  assert.equal(progressEntries[4].taskId, "team2-dungae");
+  assert.equal(progressEntries[4].progress, 5);
+  assert.equal(progressEntries[4].total, 7);
+
+  assert.equal(progressEntries[5].taskId, "team2-seoyeong");
+  assert.equal(progressEntries[5].progress, 6);
+  assert.equal(progressEntries[5].total, 7);
+
+  assert.equal(progressEntries[6].taskId, "team2-galaxy");
+  assert.equal(progressEntries[6].progress, 7);
+  assert.equal(progressEntries[6].total, 7);
+
+  // Verify compact parent-round titles for cross-broker projections.
+  const crossBrokerEvents = outboxEvents.filter((e) => e.payload.taskId.startsWith("team2-"));
+  assert.equal(crossBrokerEvents.length, 3);
+  for (let i = 0; i < crossBrokerEvents.length; i++) {
+    const e = crossBrokerEvents[i];
+    const worker = e.payload.worker;
+    const expectedTitle = `A2A Terminal Brief \u{C644}\u{B8CC}: ${worker}(${5 + i}/7)`;
+    assert.equal(e.payload.taskDescription, expectedTitle);
+  }
+
+  // Verify parent-only notification ownership: all 7 events live on the
+  // parent broker's terminal outbox. No child broker has its own outbox
+  // events for these projections; the cross-broker projections are
+  // ingested at the parent broker only.
+  for (const e of outboxEvents) {
+    // All events should be in pending ACK state (no live provider send).
+    assert.equal(e.ackAudit?.decision, "pending");
+    assert.notEqual(e.ackAudit?.reason ?? "", "");
+    // No terminal ACK has been performed.
+    assert.equal(e.ack?.status, undefined);
+    // No live provider has received a delivery receipt.
+    assert.equal(e.receipt?.status, "accepted");
+    // All cross-broker events have the handoff metadata preserved.
+    const handoff = e.payload.crossBrokerHandoff;
+    if (handoff) {
+      assert.equal(handoff.parentRoundId, "round-seoseo-7");
+    }
+  }
+
+  // Verify the cross-broker projection store also preserves metadata.
+  const projections = broker.listCrossBrokerTerminalBriefProjections({ parentRoundId: "round-seoseo-7" });
+  assert.equal(projections.length, 3);
+  assert.deepEqual(
+    projections.map((p) => p.originBrokerId).sort(),
+    ["dungae", "galaxy", "seoyeong"],
+  );
+});
+
 test("cross-broker Terminal Brief projections survive broker snapshot persistence", () => {
   let snapshot: BrokerSnapshot = emptySnapshot();
   const store: BrokerStateStore = {
