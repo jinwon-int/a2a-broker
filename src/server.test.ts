@@ -3822,6 +3822,179 @@ test("GET /a2a/tasks/terminal-outbox reconciles unacknowledged records before cu
   }
 });
 
+
+test("POST /a2a/tasks/terminal-outbox/ack persists acknowledged_at, payload.ack, payload.receipt to SQLite hot rows", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "a2a-broker-outbox-ack-persistence-"));
+  const sqliteFile = join(dir, "state.sqlite");
+  const runtime = createBrokerServer({
+    host: "127.0.0.1",
+    port: 0,
+    publicBaseUrl: "https://broker.test/",
+    stateFile: join(dir, "state.json"),
+    sqliteFile,
+    persistenceBackend: "sqlite",
+    edgeSecret: "test-edge-secret",
+    enforceRequesterIdentity: true,
+    staleReaperEnabled: false,
+  });
+  try {
+    runtime.server.listen(0, "127.0.0.1");
+    await once(runtime.server, "listening");
+    const address = runtime.server.address();
+    if (!address || typeof address === "string") {
+      throw new Error("failed to bind test server");
+    }
+    const baseUrl = `http://127.0.0.1:${address.port}`;
+
+    const hubHeaders = {
+      "content-type": "application/json",
+      "x-a2a-edge-secret": "test-edge-secret",
+      "x-a2a-requester-id": "hub-a",
+      "x-a2a-requester-role": "hub",
+    };
+    const workerHeaders = {
+      "content-type": "application/json",
+      "x-a2a-edge-secret": "test-edge-secret",
+      "x-a2a-requester-id": "worker-a",
+      "x-a2a-requester-role": "analyst",
+    };
+
+    // Register a worker and complete two tasks to seed terminal outbox events.
+    await registerTestWorker(baseUrl, "worker-a", "analyst", "test-edge-secret");
+
+    async function createAndCompleteTask(name: string): Promise<string> {
+      const createRes = await fetch(`${baseUrl}/tasks`, {
+        method: "POST",
+        headers: hubHeaders,
+        body: JSON.stringify({
+          intent: "analyze",
+          requester: { id: "hub-a", kind: "node", role: "hub" },
+          target: { id: "worker-a", kind: "node", role: "analyst" },
+          assignedWorkerId: "worker-a",
+          payload: { githubRepo: "acme/test", githubIssueNumber: 1 },
+          message: `task ${name}`,
+        }),
+      });
+      const task = await createRes.json();
+      await fetch(`${baseUrl}/tasks/${task.id}/claim`, {
+        method: "POST",
+        headers: workerHeaders,
+        body: JSON.stringify({ workerId: "worker-a" }),
+      });
+      await fetch(`${baseUrl}/tasks/${task.id}/complete`, {
+        method: "POST",
+        headers: workerHeaders,
+        body: JSON.stringify({ workerId: "worker-a", result: { summary: `done ${name}` } }),
+      });
+      return task.id;
+    }
+
+    const task1Id = await createAndCompleteTask("one");
+    const task2Id = await createAndCompleteTask("two");
+
+    // List terminal outbox to get event IDs
+    const listRes = await fetch(`${baseUrl}/a2a/tasks/terminal-outbox`, {
+      headers: {
+        "x-a2a-edge-secret": "test-edge-secret",
+        "x-a2a-requester-id": "hub-a",
+        "x-a2a-requester-role": "hub",
+      },
+    });
+    assert.equal(listRes.status, 200);
+    const list = await listRes.json();
+    assert.equal(list.count, 2);
+    const [event1, event2] = list.events;
+    assert.ok(event1 && event2);
+
+    // Before ACK: health should report 2 unacked and 0 acked
+    const healthBefore = await (await fetch(`${baseUrl}/health`)).json();
+    const diagBefore = healthBefore.terminalOutboxDiagnostics as Record<string, unknown>;
+    assert.ok(diagBefore, "terminalOutboxDiagnostics should be present with SQLite store");
+    assert.equal(diagBefore.total, 2);
+    assert.equal(diagBefore.acked, 0);
+    assert.equal(diagBefore.unacked, 2);
+
+    // ACK the first event only
+    const acknowledgedAt = new Date().toISOString();
+    const ackRes = await fetch(`${baseUrl}/a2a/tasks/terminal-outbox/ack`, {
+      method: "POST",
+      headers: hubHeaders,
+      body: JSON.stringify({
+        id: event1.id,
+        receipt: {
+          evidence: "operator_visible",
+          acknowledgedAt,
+          receiptId: "operator-message-1",
+        },
+      }),
+    });
+    assert.equal(ackRes.status, 200);
+    const ackBody = await ackRes.json();
+    assert.ok(ackBody.event.ack, "ACK response should include ack state");
+    assert.equal(ackBody.event.ack.status, "receipt_confirmed");
+    assert.equal(ackBody.event.ack.evidence, "operator_visible");
+    assert.equal(ackBody.event.ack.acknowledgedAt, acknowledgedAt);
+
+    // Health after ACK: 1 acked, 1 unacked
+    const healthAfter = await (await fetch(`${baseUrl}/health`)).json();
+    const diagAfter = healthAfter.terminalOutboxDiagnostics as Record<string, unknown>;
+    assert.equal(diagAfter.total, 2, "total events unchanged");
+    assert.equal(diagAfter.acked, 1, "one event should be acked");
+    assert.equal(diagAfter.unacked, 1, "one event should remain unacked");
+    assert.ok(diagAfter.acked > diagBefore.acked, "acked count should increase");
+    assert.ok(diagAfter.unacked < diagBefore.unacked, "unacked count should decrease");
+
+    // Verify SQLite hot-row persistence directly
+    const db = new DatabaseSync(sqliteFile, { readOnly: true });
+    try {
+      const ackedRow = db
+        .prepare("SELECT acknowledged_at, payload FROM broker_terminal_outbox WHERE id = ?")
+        .get(event1.id) as { acknowledged_at: string | null; payload: string } | undefined;
+      assert.ok(ackedRow, "ACKed event should exist in broker_terminal_outbox");
+      assert.ok(
+        ackedRow.acknowledged_at !== null && ackedRow.acknowledged_at.length > 0,
+        `acknowledged_at should be non-null, got ${JSON.stringify(ackedRow.acknowledged_at)}`,
+      );
+      assert.equal(ackedRow.acknowledged_at, acknowledgedAt);
+
+      const parsed = JSON.parse(ackedRow.payload) as Record<string, unknown>;
+      assert.ok(parsed.ack, "payload.ack should be present in SQLite row");
+      assert.equal((parsed.ack as Record<string, unknown>).status, "receipt_confirmed");
+      assert.equal((parsed.ack as Record<string, unknown>).evidence, "operator_visible");
+      assert.equal((parsed.ack as Record<string, unknown>).acknowledgedAt, acknowledgedAt);
+      assert.ok(parsed.receipt, "payload.receipt should be present in SQLite row");
+      assert.equal((parsed.receipt as Record<string, unknown>).status, "operator_visible");
+      assert.equal((parsed.receipt as Record<string, unknown>).evidence, "operator_visible");
+
+      // The unACKed event should have null acknowledged_at and no ack in payload
+      const unackedRow = db
+        .prepare("SELECT acknowledged_at, payload FROM broker_terminal_outbox WHERE id = ?")
+        .get(event2.id) as { acknowledged_at: string | null; payload: string } | undefined;
+      assert.ok(unackedRow, "unACKed event should exist in broker_terminal_outbox");
+      assert.equal(unackedRow.acknowledged_at, null, "unACKed event should have null acknowledged_at");
+      const unackedParsed = JSON.parse(unackedRow.payload) as Record<string, unknown>;
+      assert.equal(unackedParsed.ack, undefined, "unACKed event should have no payload.ack");
+
+      // ACK count queries should work correctly
+      const ackCount = db
+        .prepare("SELECT COUNT(*) AS count FROM broker_terminal_outbox WHERE acknowledged_at IS NOT NULL")
+        .get() as { count: number | bigint };
+      assert.equal(Number(ackCount.count), 1, "SQLite should count 1 acked row");
+
+      const unackCount = db
+        .prepare("SELECT COUNT(*) AS count FROM broker_terminal_outbox WHERE acknowledged_at IS NULL")
+        .get() as { count: number | bigint };
+      assert.equal(Number(unackCount.count), 1, "SQLite should count 1 unacked row");
+    } finally {
+      db.close();
+    }
+  } finally {
+    runtime.stopStaleReaper();
+    await new Promise<void>((resolve) => runtime.server.close(() => resolve()));
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("SSE /a2a/workers/:id/assignment-events streams queued assignment hints with replay", async () => {
   const server = await startTestServer({ edgeSecret: "test-edge-secret" });
   try {

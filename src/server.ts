@@ -1034,7 +1034,7 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
           throw new BrokerError("bad_request", "terminal outbox ack requires a non-empty id");
         }
         const receipt = parseTerminalOutboxAckReceipt(body?.receipt);
-        const event = broker.getTerminalTaskEventOutbox().acknowledge(id, receipt);
+        const event = broker.acknowledgeTerminalOutboxEvent(id, receipt);
         if (!event) {
           throw new BrokerError("not_found", "terminal outbox event not found");
         }

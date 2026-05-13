@@ -17,7 +17,11 @@ import {
 } from "./store.js";
 import { validateGithubTaskCompletionEvidence } from "./github-task-completion.js";
 import { TaskEventStream } from "./task-event-stream.js";
-import { TerminalTaskEventOutbox } from "./terminal-event-outbox.js";
+import {
+  TerminalTaskEventOutbox,
+  type TerminalTaskOutboxAckInput,
+  type TerminalTaskOutboxEvent,
+} from "./terminal-event-outbox.js";
 import { ConferenceRoomManager } from "./conference-room.js";
 import {
   CrossBrokerTerminalBriefProjectionStore,
@@ -402,6 +406,18 @@ export class InMemoryA2ABroker {
   /** Compact terminal task event outbox for durable webhook/SSE delivery. */
   getTerminalTaskEventOutbox(): TerminalTaskEventOutbox {
     return this.terminalTaskEventOutbox;
+  }
+
+  /** Acknowledge a terminal outbox event and persist the updated state. */
+  acknowledgeTerminalOutboxEvent(
+    id: string,
+    receipt: TerminalTaskOutboxAckInput,
+  ): TerminalTaskOutboxEvent | null {
+    const event = this.terminalTaskEventOutbox.acknowledge(id, receipt);
+    if (event) {
+      this.persistState();
+    }
+    return event;
   }
 
   ingestCrossBrokerTerminalBriefProjection(request: CrossBrokerTerminalBriefProjectionRequest): CrossBrokerTerminalBriefProjectionResult {
