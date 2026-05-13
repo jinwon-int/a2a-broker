@@ -65,6 +65,25 @@ test("cross-broker Terminal Brief ingest is idempotent by parentRoundId/originBr
   const records = broker.listCrossBrokerTerminalBriefProjections({ parentRoundId: "round-parent" });
   assert.equal(records.length, 1);
   assert.equal(records[0]?.originBrokerId, "child-broker-a");
+
+  const terminalEvents = broker.getTerminalTaskEventOutbox().subscribe();
+  assert.equal(terminalEvents.length, 1);
+  assert.equal(terminalEvents[0]?.payload.taskId, "child-task-1");
+  assert.equal(terminalEvents[0]?.payload.worker, "child-broker-a");
+  assert.equal(terminalEvents[0]?.payload.run, "round-parent");
+  assert.equal(terminalEvents[0]?.payload.status, "succeeded");
+  assert.equal(terminalEvents[0]?.payload.testSummary, "child completed safely");
+  assert.equal(terminalEvents[0]?.payload.doneUrl, "https://github.com/acme/example/issues/1#issuecomment-done");
+  assert.deepEqual(terminalEvents[0]?.payload.crossBrokerHandoff, {
+    parentRoundId: "round-parent",
+    originBrokerId: "parent-broker",
+    handoffBrokerId: "child-broker-a",
+    originTaskId: "child-task-1",
+  });
+  assert.equal(terminalEvents[0]?.ackAudit?.decision, "pending");
+
+  broker.ingestCrossBrokerTerminalBriefProjection(projection());
+  assert.equal(broker.getTerminalTaskEventOutbox().subscribe().length, 1, "duplicate projection must not duplicate parent Terminal Brief output");
 });
 
 test("cross-broker Terminal Brief ingest rejects wrong-origin packets", () => {
