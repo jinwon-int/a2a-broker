@@ -239,6 +239,40 @@ describe("projectAlerts", () => {
     assert.equal(result.alerts[0]!.kind, "task_timeout");
   });
 
+  it("compacts failed tombstone error metadata so alert scans stay bounded", () => {
+    const largeDetails = { output: "x".repeat(200_000) };
+    const reports = [
+      makeReport(
+        {
+          diagnosticStatus: "terminal",
+          tombstone: {
+            taskId: "task-1",
+            terminalStatus: "failed",
+            tombstoneReason: "failed",
+            durationMs: 100_000,
+            requeueCount: 0,
+            tombstonedAt: new Date(1_000_000_000).toISOString(),
+            error: {
+              code: "worker_failed",
+              message: "failure " + "m".repeat(5_000),
+              details: largeDetails,
+            },
+          },
+        },
+        { id: "task-1", status: "failed" },
+      ),
+    ];
+
+    const result = projectAlerts(reports, { nowMs });
+    const error = result.alerts[0]!.metadata.error as Record<string, unknown>;
+    assert.equal(error.code, "worker_failed");
+    assert.equal(error.messageTruncated, true);
+    assert.equal(error.detailsOmitted, true);
+    assert.equal(typeof error.detailsBytes, "number");
+    assert.ok(JSON.stringify(result.alerts[0]).length < 2_000);
+    assert.doesNotMatch(JSON.stringify(result.alerts[0]), /xxxxxxxx/);
+  });
+
   it("produces alerts for failed and canceled tombstones at info severity", () => {
     const reports = [
       makeReport(
