@@ -572,6 +572,8 @@ test("broker task lifecycle mutations can use the SQLite runtime repository with
       broker.listTasks({ assignedWorkerId: "worker-sqlite" }).map((task) => task.id).sort(),
       [completed.id, failed.id, requeued.id].sort(),
     );
+    assert.equal(broker.listTasks({ assignedWorkerId: "worker-sqlite", limit: 2 }).length, 2);
+    assert.equal(sqliteStore.readHotTasks({ assignedWorkerId: "worker-sqlite", limit: 1 }).length, 1);
     assert.equal(snapshots.at(-1)?.tasks.find((task) => task.id === requeued.id)?.status, "queued");
   } finally {
     sqliteStore.close();

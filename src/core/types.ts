@@ -500,6 +500,8 @@ export interface TaskListFilters {
   claimedBy?: string;
   assignedWorkerId?: string;
   taskOrigin?: TaskOrigin;
+  /** Maximum number of newest matching tasks to return. */
+  limit?: number;
 }
 
 export interface ChangeProposal {

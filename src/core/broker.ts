@@ -1336,10 +1336,11 @@ export class InMemoryA2ABroker {
         tasksById.set(repositoryTask.id, repositoryTask);
       }
     }
-    return sortedCopy(
+    const tasks = sortedCopy(
       [...tasksById.values()].filter((task) => taskMatchesFilters(task, filters)),
       sortNewestFirst,
     );
+    return applyTaskListLimit(tasks, filters?.limit);
   }
 
   reassignTask(taskId: string, request: TaskReassignRequest): TaskRecord {
@@ -3738,6 +3739,12 @@ function taskMatchesFilters(task: TaskRecord, filters?: TaskListFilters): boolea
     return false;
   }
   return true;
+}
+
+function applyTaskListLimit(tasks: TaskRecord[], limit: number | undefined): TaskRecord[] {
+  return typeof limit === "number" && Number.isInteger(limit) && limit >= 0
+    ? tasks.slice(0, limit)
+    : tasks;
 }
 
 function proposalMatchesFilters(proposal: ChangeProposal, filters?: ProposalListFilters): boolean {

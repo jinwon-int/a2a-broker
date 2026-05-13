@@ -117,6 +117,9 @@ import {
 } from "./core/terminal-event-outbox.js";
 import type { TaskStatusEvent } from "./core/task-events.js";
 
+const DEFAULT_TASK_LIST_LIMIT = 100;
+const MAX_TASK_LIST_LIMIT = 500;
+
 interface ThreadedExchangeMessage extends A2AExchangeMessageRecord {
   replies: ThreadedExchangeMessage[];
 }
@@ -1415,10 +1418,14 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
       }
 
       if (req.method === "GET" && path === "/tasks") {
-        const filters = taskFiltersFromUrl(url);
+        const filters = taskFiltersFromUrl(url, { defaultLimit: DEFAULT_TASK_LIST_LIMIT });
         const tasks = listTasksForReadPath(stateStore, broker, filters);
         const includeFullTaskRecords = url.searchParams.get("detail") === "full" || url.searchParams.get("include") === "full";
-        return sendJson(res, 200, { items: includeFullTaskRecords ? tasks : tasks.map(projectTaskListItem) });
+        return sendJson(res, 200, {
+          count: tasks.length,
+          limit: filters.limit,
+          items: includeFullTaskRecords ? tasks : tasks.map(projectTaskListItem),
+        });
       }
 
       if (req.method === "POST" && path === "/tasks") {
@@ -2201,7 +2208,7 @@ function workerFiltersFromUrl(url: URL): WorkerListFilters {
   };
 }
 
-function taskFiltersFromUrl(url: URL): {
+function taskFiltersFromUrl(url: URL, options: { defaultLimit?: number } = {}): {
   exchangeId?: string;
   status?: TaskStatus;
   targetNodeId?: string;
@@ -2210,6 +2217,7 @@ function taskFiltersFromUrl(url: URL): {
   claimedBy?: string;
   assignedWorkerId?: string;
   taskOrigin?: TaskOrigin;
+  limit?: number;
 } {
   return {
     exchangeId: optionalString(url.searchParams.get("exchangeId")),
@@ -2239,6 +2247,7 @@ function taskFiltersFromUrl(url: URL): {
     claimedBy: optionalString(url.searchParams.get("claimedBy")),
     assignedWorkerId: optionalString(url.searchParams.get("assignedWorkerId")),
     taskOrigin: optionalEnum(url.searchParams.get("taskOrigin"), ["github", "api", "sessions_send", "operator", "unknown"]),
+    limit: boundedLimitQueryParam(url, "limit", MAX_TASK_LIST_LIMIT, options.defaultLimit),
   };
 }
 
@@ -2668,6 +2677,22 @@ function numberQueryParam(url: URL, name: string): number | undefined {
     throw new BrokerError("bad_request", `${name} must be a non-negative number`);
   }
   return parsed;
+}
+
+function boundedLimitQueryParam(
+  url: URL,
+  name: string,
+  max: number,
+  defaultValue?: number,
+): number | undefined {
+  const parsed = numberQueryParam(url, name);
+  if (parsed === undefined) {
+    return defaultValue;
+  }
+  if (!Number.isInteger(parsed)) {
+    throw new BrokerError("bad_request", `${name} must be an integer`);
+  }
+  return Math.min(parsed, max);
 }
 
 function booleanQueryParam(url: URL, name: string): boolean | undefined {
