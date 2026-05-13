@@ -112,12 +112,12 @@ function isGithubReadOnlyValidationTask(task: TaskRecord): boolean {
     return false;
   }
 
-  if (task.intent === "verify" && mode === "github-verify") {
+  if (task.intent === "verify" && GITHUB_READ_ONLY_VALIDATION_MODES.has(mode)) {
     return true;
   }
 
-  if (task.intent === "analyze") {
-    return GITHUB_READ_ONLY_VALIDATION_MODES.has(mode);
+  if (task.intent === "analyze" && GITHUB_READ_ONLY_VALIDATION_MODES.has(mode)) {
+    return true;
   }
 
   return task.intent === "validate_change" && GITHUB_READ_ONLY_VALIDATION_MODES.has(mode);
