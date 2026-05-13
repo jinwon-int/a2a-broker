@@ -42,7 +42,7 @@ test("broker rehearsal manifest composes no-live contracts for runner lanes", ()
     "operator_confirmed",
     "provider_delivery_receipt",
   ]);
-  assert.deepEqual(manifest.terminalOutboxReadinessGate.rejectedEvidence, ["provider_send_success"]);
+  assert.deepEqual(manifest.terminalOutboxReadinessGate.rejectedEvidence, ["provider_send_success", "provider_accepted"]);
 
   const providerSent = manifest.ackAuditDecisions.find((decision) => decision.receiptStatus === "provider_sent");
   assert.equal(providerSent?.ackAllowed, false);
@@ -66,5 +66,6 @@ test("broker rehearsal renderer emits compact operator-readable evidence", () =>
   assert.match(markdown, /terminalOutboxAck: not attempted/);
   assert.match(markdown, /github-propose-patch/);
   assert.match(markdown, /provider_send_success/);
+  assert.match(markdown, /provider_accepted/);
   assert.doesNotMatch(markdown, /rawPrompt|rawLogs|provider send complete/i);
 });

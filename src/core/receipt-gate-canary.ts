@@ -345,6 +345,82 @@ export function evaluateProjectionStep(fixture: ProjectionStepFixture): Projecti
   return { stepId: fixture.stepId, status: fixture.status, hasReceipt: fixture.hasReceipt, ackAllowed, providerCalled, productionAckAttempted, summary };
 }
 
+// ---------------------------------------------------------------------------
+// Terminal ACK evidence policy health diagnostics (no-live)
+//
+// [[a2a-broker#580]] Bangtong safety lane: validates that only
+// current_session_visible, operator_visible, operator_confirmed, and
+// provider_delivery_receipt are accepted as terminal ACK evidence, and that
+// provider_send_success, provider_accepted, and gateway_send_success are
+// always rejected.
+// ---------------------------------------------------------------------------
+
+export type AckEvidencePolicyDiagnosticId =
+  | "current_session_visible"
+  | "operator_visible"
+  | "operator_confirmed"
+  | "provider_delivery_receipt"
+  | "provider_send_success"
+  | "provider_accepted"
+  | "gateway_send_success";
+
+export const ACK_EVIDENCE_POLICY_DIAGNOSTICS: readonly AckEvidencePolicyDiagnosticId[] = [
+  "current_session_visible",
+  "operator_visible",
+  "operator_confirmed",
+  "provider_delivery_receipt",
+  "provider_send_success",
+  "provider_accepted",
+  "gateway_send_success",
+] as const;
+
+export interface AckEvidencePolicyCell {
+  evidenceType: AckEvidencePolicyDiagnosticId;
+  isValidAckEvidence: boolean;
+  policyVerdict: "pass" | "fail";
+  summary: string;
+}
+
+export function evaluateAckEvidencePolicy(): AckEvidencePolicyCell[] {
+  // The terminal-event-outbox TERMINAL_TASK_ACK_EVIDENCE set defines valid types.
+  const validEvidence = new Set<string>([
+    "current_session_visible",
+    "operator_visible",
+    "operator_confirmed",
+    "provider_delivery_receipt",
+  ]);
+  return ACK_EVIDENCE_POLICY_DIAGNOSTICS.map((evidenceType) => {
+    const isValidAckEvidence = validEvidence.has(evidenceType);
+    const expectsValid = evidenceType !== "provider_send_success"
+      && evidenceType !== "provider_accepted"
+      && evidenceType !== "gateway_send_success";
+    const policyVerdict: "pass" | "fail" = isValidAckEvidence === expectsValid ? "pass" : "fail";
+    const summary = isValidAckEvidence
+      ? `valid terminal ACK evidence type; accepted by isTerminalTaskOutboxAckEvidence gate`
+      : evidenceType === "provider_send_success"
+        ? "provider_send_success is send-only success evidence; rejected as terminal ACK evidence — provider_send_success ≠ operator-visible ≠ ACK"
+        : evidenceType === "provider_accepted"
+          ? "provider_accepted is transport-level ack, not operator-visible confirmation; rejected as terminal ACK evidence — provider_accepted ≠ operator-visible ≠ ACK"
+          : "gateway_send_success is transport send evidence; rejected as terminal ACK evidence — gateway delivery ≠ operator-visible ≠ ACK";
+    return { evidenceType, isValidAckEvidence, policyVerdict, summary };
+  });
+}
+
+export function renderAckEvidencePolicyDiagnostics(cells: AckEvidencePolicyCell[]): string {
+  const rows = cells.map((cell) =>
+    `| ${cell.evidenceType} | ${cell.isValidAckEvidence ? "yes" : "no"} | ${cell.policyVerdict} | ${cell.summary} |`,
+  );
+  return [
+    "Terminal ACK evidence policy health diagnostics",
+    "",
+    "Validates that provider_send_success, provider_accepted, and gateway_send_success are rejected as terminal ACK evidence, and only current_session_visible, operator_visible, operator_confirmed, and provider_delivery_receipt are accepted.",
+    "",
+    "| Evidence type | Valid ACK evidence | Policy verdict | Summary |",
+    "| --- | --- | --- | --- |",
+    ...rows,
+  ].join("\n");
+}
+
 export function renderBrokerPluginWorkerProjectionMarkdown(projection: BrokerPluginWorkerProjection): string {
   const rows = projection.steps.map((step) =>
     `| ${step.stepId} | ${step.status} | ${step.hasReceipt ? "yes" : "no"} | ${step.ackAllowed ? "yes" : "no"} | ${step.summary} |`,

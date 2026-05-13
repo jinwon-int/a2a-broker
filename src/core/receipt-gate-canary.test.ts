@@ -7,6 +7,9 @@ import {
   PROJECTION_STEPS,
   runBrokerPluginWorkerProjection,
   renderBrokerPluginWorkerProjectionMarkdown,
+  ACK_EVIDENCE_POLICY_DIAGNOSTICS,
+  evaluateAckEvidencePolicy,
+  renderAckEvidencePolicyDiagnostics,
 } from "./receipt-gate-canary.js";
 
 describe("receipt-gate no-live canary matrix", () => {
@@ -145,6 +148,57 @@ describe("broker → plugin → worker projection canary", () => {
     assert.match(markdown, /provider_sent 비ACK 확인/);
     assert.match(markdown, /provider_accepted 비ACK 확인/);
     assert.match(markdown, /Run mode: no-live/);
+    assert.doesNotMatch(markdown, /token|secret|password|file:\/\//i);
+  });
+});
+
+describe("terminal ACK evidence policy health diagnostics", () => {
+  it("covers all known evidence types without provider calls or production ACKs", () => {
+    const cells = evaluateAckEvidencePolicy();
+
+    assert.equal(cells.length, ACK_EVIDENCE_POLICY_DIAGNOSTICS.length);
+    assert.deepEqual(cells.map((c) => c.evidenceType), [...ACK_EVIDENCE_POLICY_DIAGNOSTICS]);
+    assert.equal(cells.every((c) => c.policyVerdict === "pass"), true);
+  });
+
+  it("rejects provider_send_success, provider_accepted, and gateway_send_success as terminal ACK evidence", () => {
+    const cells = evaluateAckEvidencePolicy();
+    const byType = new Map(cells.map((c) => [c.evidenceType, c]));
+
+    // These must be rejected as terminal ACK evidence
+    assert.equal(byType.get("provider_send_success")?.isValidAckEvidence, false);
+    assert.match(byType.get("provider_send_success")?.summary ?? "", /provider_send_success is send-only success/);
+
+    assert.equal(byType.get("provider_accepted")?.isValidAckEvidence, false);
+    assert.match(byType.get("provider_accepted")?.summary ?? "", /provider_accepted is transport-level ack/);
+
+    assert.equal(byType.get("gateway_send_success")?.isValidAckEvidence, false);
+    assert.match(byType.get("gateway_send_success")?.summary ?? "", /gateway delivery ≠ operator-visible ≠ ACK/);
+  });
+
+  it("accepts current_session_visible, operator_visible, operator_confirmed, and provider_delivery_receipt", () => {
+    const cells = evaluateAckEvidencePolicy();
+    const byType = new Map(cells.map((c) => [c.evidenceType, c]));
+
+    assert.equal(byType.get("current_session_visible")?.isValidAckEvidence, true);
+    assert.equal(byType.get("operator_visible")?.isValidAckEvidence, true);
+    assert.equal(byType.get("operator_confirmed")?.isValidAckEvidence, true);
+    assert.equal(byType.get("provider_delivery_receipt")?.isValidAckEvidence, true);
+  });
+
+  it("renders human-readable markdown with rejection summaries", () => {
+    const cells = evaluateAckEvidencePolicy();
+    const markdown = renderAckEvidencePolicyDiagnostics(cells);
+
+    assert.match(markdown, /Terminal ACK evidence policy health diagnostics/);
+    assert.match(markdown, /provider_send_success/);
+    assert.match(markdown, /provider_accepted/);
+    assert.match(markdown, /gateway_send_success/);
+    assert.match(markdown, /current_session_visible/);
+    assert.match(markdown, /operator_visible/);
+    assert.match(markdown, /operator_confirmed/);
+    assert.match(markdown, /provider_delivery_receipt/);
+    assert.match(markdown, /≠ operator-visible/);
     assert.doesNotMatch(markdown, /token|secret|password|file:\/\//i);
   });
 });

@@ -1,4 +1,4 @@
-import { runReceiptGateCanaryMatrix } from "./receipt-gate-canary.js";
+import { runReceiptGateCanaryMatrix, evaluateAckEvidencePolicy } from "./receipt-gate-canary.js";
 
 export type BrokerRehearsalRunMode = "no-live";
 export type BrokerRehearsalVerdict = "pass" | "fail";
@@ -45,7 +45,7 @@ export interface BrokerRehearsalManifest {
     subscribeOnly: true;
     ackEndpointExercised: false;
     requiredAckEvidence: ["operator_visible", "operator_confirmed", "provider_delivery_receipt"];
-    rejectedEvidence: ["provider_send_success"];
+    rejectedEvidence: ["provider_send_success", "provider_accepted"];
     readyWhen: string[];
   };
   ackAuditDecisions: Array<{
@@ -62,6 +62,7 @@ export interface BrokerRehearsalManifest {
     forbidden: ["rawPrompt", "rawLogs", "localPath", "secrets", "providerSendOnlySuccess"];
   };
   receiptGateCanary: ReturnType<typeof runReceiptGateCanaryMatrix>;
+  ackEvidencePolicyDiagnostics: ReturnType<typeof evaluateAckEvidencePolicy>;
   operatorSummary: string[];
   overallVerdict: BrokerRehearsalVerdict;
 }
@@ -72,6 +73,7 @@ export function buildBrokerRehearsalManifest(options: BrokerRehearsalManifestOpt
   const issueNumber = options.issueNumber ?? 328;
   const issueUrl = `https://github.com/${repo}/issues/${issueNumber}`;
   const receiptGateCanary = runReceiptGateCanaryMatrix({ generatedAt });
+  const ackEvidencePolicyDiagnostics = evaluateAckEvidencePolicy();
 
   const manifest: BrokerRehearsalManifest = {
     kind: "a2a-broker.rehearsal-manifest",
@@ -103,7 +105,7 @@ export function buildBrokerRehearsalManifest(options: BrokerRehearsalManifestOpt
       subscribeOnly: true,
       ackEndpointExercised: false,
       requiredAckEvidence: ["operator_visible", "operator_confirmed", "provider_delivery_receipt"],
-      rejectedEvidence: ["provider_send_success"],
+      rejectedEvidence: ["provider_send_success", "provider_accepted"],
       readyWhen: [
         "terminal event is replayable from the broker outbox cursor",
         "operator-visible or provider-delivery receipt evidence exists",
@@ -156,6 +158,7 @@ export function buildBrokerRehearsalManifest(options: BrokerRehearsalManifestOpt
       forbidden: ["rawPrompt", "rawLogs", "localPath", "secrets", "providerSendOnlySuccess"],
     },
     receiptGateCanary,
+    ackEvidencePolicyDiagnostics,
     operatorSummary: [
       "no-live rehearsal only; no provider send or broker terminal ACK is attempted",
       "canonical GitHub task payload is present for runner/plugin lanes",

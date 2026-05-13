@@ -676,7 +676,7 @@ describe("TerminalTaskEventOutbox", () => {
       receiptStatus: "accepted",
     });
 
-    for (const evidence of ["gateway_send_success", "provider_send_success"]) {
+    for (const evidence of ["gateway_send_success", "provider_send_success", "provider_accepted"]) {
       assert.throws(
         () => outbox.acknowledge(event.id, { evidence } as any),
         /current-session-visible\/receipt\/operator-visible evidence/,
