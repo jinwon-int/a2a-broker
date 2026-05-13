@@ -17,7 +17,12 @@ import {
 } from "./store.js";
 import { validateGithubTaskCompletionEvidence } from "./github-task-completion.js";
 import { TaskEventStream } from "./task-event-stream.js";
-import { TerminalTaskEventOutbox } from "./terminal-event-outbox.js";
+import {
+  TerminalTaskEventOutbox,
+  type TerminalTaskOutboxAckInput,
+  type TerminalTaskOutboxEvent,
+  type TerminalTaskOutboxReceiptUpdateInput,
+} from "./terminal-event-outbox.js";
 import { ConferenceRoomManager } from "./conference-room.js";
 import {
   CrossBrokerTerminalBriefProjectionStore,
@@ -333,6 +338,7 @@ export class InMemoryA2ABroker {
   private readonly pendingHotProposals = new Map<string, ChangeProposal>();
   private readonly pendingHotArtifacts = new Map<string, ArtifactRecord>();
   private readonly pendingHotValidations = new Map<string, ValidationResult>();
+  private readonly pendingHotTerminalOutboxEvents = new Map<string, TerminalTaskOutboxEvent>();
   private readonly lastPersistedWorkerHeartbeatAtMs = new Map<string, number>();
   private readonly stateListeners = new Set<BrokerStateListener>();
   private readonly profilingListeners = new Set<BrokerProfilingListener>();
@@ -402,6 +408,33 @@ export class InMemoryA2ABroker {
   /** Compact terminal task event outbox for durable webhook/SSE delivery. */
   getTerminalTaskEventOutbox(): TerminalTaskEventOutbox {
     return this.terminalTaskEventOutbox;
+  }
+
+  /**
+   * Mark a terminal outbox event as acknowledged and durably persist the
+   * change to the state store. Returns the updated event or null if not found.
+   */
+  acknowledgeTerminalEvent(id: string, receipt: TerminalTaskOutboxAckInput): TerminalTaskOutboxEvent | null {
+    const event = this.terminalTaskEventOutbox.acknowledge(id, receipt);
+    if (event) {
+      this.pendingHotTerminalOutboxEvents.set(id, structuredClone(event));
+      this.persistState();
+    }
+    return event;
+  }
+
+  /**
+   * Record a provider-side receipt status for a terminal outbox event and
+   * durably persist the change to the state store. Returns the updated event
+   * or null if not found.
+   */
+  recordTerminalEventReceiptStatus(id: string, receipt: TerminalTaskOutboxReceiptUpdateInput): TerminalTaskOutboxEvent | null {
+    const event = this.terminalTaskEventOutbox.recordReceiptStatus(id, receipt);
+    if (event) {
+      this.pendingHotTerminalOutboxEvents.set(id, structuredClone(event));
+      this.persistState();
+    }
+    return event;
   }
 
   ingestCrossBrokerTerminalBriefProjection(request: CrossBrokerTerminalBriefProjectionRequest): CrossBrokerTerminalBriefProjectionResult {
@@ -2553,7 +2586,8 @@ export class InMemoryA2ABroker {
       this.pendingHotTasks.size === 0 &&
       this.pendingHotTombstones.size === 0 &&
       this.pendingHotAuditEvents.size === 0 &&
-      this.pendingHotWorkers.size === 0
+      this.pendingHotWorkers.size === 0 &&
+      this.pendingHotTerminalOutboxEvents.size === 0
     ) {
       return undefined;
     }
@@ -2575,6 +2609,7 @@ export class InMemoryA2ABroker {
     const hotTombstones = [...this.pendingHotTombstones.values()].filter((tombstone) => retainedTombstoneTaskIds.has(tombstone.taskId));
     const hotAuditEvents = [...this.pendingHotAuditEvents.values()].filter((event) => retainedAuditEventIds.has(event.id));
     const hotWorkers = [...this.pendingHotWorkers.values()].filter((worker) => retainedWorkerIds.has(worker.nodeId));
+    const hotTerminalOutboxEvents = [...this.pendingHotTerminalOutboxEvents.values()];
     this.pendingHotExchanges.clear();
     this.pendingHotExchangeMessages.clear();
     this.pendingHotProposals.clear();
@@ -2584,6 +2619,7 @@ export class InMemoryA2ABroker {
     this.pendingHotTombstones.clear();
     this.pendingHotAuditEvents.clear();
     this.pendingHotWorkers.clear();
+    this.pendingHotTerminalOutboxEvents.clear();
     return {
       ...(hotExchanges.length ? { hotExchanges } : {}),
       ...(hotExchangeMessages.length ? { hotExchangeMessages } : {}),
@@ -2594,6 +2630,7 @@ export class InMemoryA2ABroker {
       ...(hotTombstones.length ? { hotTombstones } : {}),
       ...(hotAuditEvents.length ? { hotAuditEvents } : {}),
       ...(hotWorkers.length ? { hotWorkers } : {}),
+      ...(hotTerminalOutboxEvents.length ? { hotTerminalOutbox: hotTerminalOutboxEvents } : {}),
     };
   }
 

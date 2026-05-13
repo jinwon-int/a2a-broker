@@ -70,6 +70,7 @@ export interface BrokerStateSaveHints {
   hotTombstones?: TaskTombstone[];
   hotAuditEvents?: AuditEvent[];
   hotWorkers?: WorkerRecord[];
+  hotTerminalOutbox?: TerminalTaskOutboxEvent[];
 }
 
 export interface BrokerPersistenceInfo {
@@ -1792,6 +1793,7 @@ export class SqliteBrokerStateStore implements BrokerStateStore {
     const hotTombstoneHints = hints?.hotTombstones;
     const hotAuditHints = hints?.hotAuditEvents;
     const hotWorkerHints = hints?.hotWorkers;
+    const hotTerminalOutboxHints = hints?.hotTerminalOutbox;
     if (hotExchangeHints) {
       this.applyCanonicalHotRetentionPlan("broker_exchanges", snapshot.exchanges.map((exchange) => exchange.id));
     } else {
@@ -1839,6 +1841,8 @@ export class SqliteBrokerStateStore implements BrokerStateStore {
     }
     this.applyCanonicalHotRetentionPlan("broker_terminal_outbox", (snapshot.terminalOutbox ?? []).map((event) => event.id));
 
+    this.upsertHotTerminalOutboxUnsafe(hotTerminalOutboxHints ?? snapshot.terminalOutbox ?? []);
+
     this.upsertHotExchangesUnsafe(hotExchangeHints ?? snapshot.exchanges);
     this.upsertHotExchangeMessagesUnsafe(hotExchangeMessageHints ?? snapshot.exchangeMessages);
 
@@ -1853,8 +1857,6 @@ export class SqliteBrokerStateStore implements BrokerStateStore {
     this.upsertHotWorkersUnsafe(hotWorkerHints ?? snapshot.workers);
 
     this.upsertHotAuditEventsUnsafe(hotAuditHints ?? snapshot.auditEvents);
-
-    this.upsertHotTerminalOutboxUnsafe(snapshot.terminalOutbox ?? []);
   }
 
   private applyCanonicalHotRetentionPlan(
