@@ -1614,6 +1614,18 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
         return sendJson(res, 200, task);
       }
 
+      if (req.method === "POST" && segments[0] === "tasks" && segments[1] && segments[2] === "heartbeat") {
+        const body = await readJson<TaskClaimRequest>(req);
+        if (!body?.workerId) {
+          throw new BrokerError("bad_request", "workerId is required");
+        }
+        if (enforceRequesterIdentity) {
+          assertRequesterMatchesParty(requesterIdentity, { id: body.workerId }, "task.heartbeat");
+        }
+        const task = broker.heartbeatTask(segments[1], body.workerId);
+        return sendJson(res, 200, task);
+      }
+
       if (req.method === "POST" && segments[0] === "tasks" && segments[1] && segments[2] === "complete") {
         const body = await readJson<TaskCompleteRequest>(req);
         if (!body?.workerId) {

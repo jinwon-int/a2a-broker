@@ -157,6 +157,62 @@ test("worker registers, heartbeats, polls queued work, and completes tasks", asy
   }
 });
 
+test("worker sends task heartbeats while a handler is running", async () => {
+  const server = await startTestServer();
+  const worker = new A2ABrokerWorker({
+    brokerUrl: server.baseUrl,
+    requesterKind: "node",
+    pollIntervalMs: 25,
+    heartbeatIntervalMs: 20,
+    handlerTimeoutMs: 1_000,
+    userAgent: "a2a-broker-worker-test",
+    handler: async (task) => {
+      await new Promise((resolve) => setTimeout(resolve, 75));
+      return { result: { summary: `slow echo ${task.intent}` } };
+    },
+    worker: {
+      nodeId: "worker-a",
+      role: "analyst",
+      displayName: "Worker A",
+      capabilities: {
+        canAnalyze: true,
+        canBackfill: false,
+        canPatchWorkspace: false,
+        canPromoteLive: false,
+        workspaceIds: ["test"],
+        environments: ["research"],
+      },
+    },
+  });
+
+  try {
+    await worker.register();
+    await createTask(server.baseUrl, {
+      intent: "analyze",
+      requester: { id: "hub-a", kind: "node", role: "hub" },
+      target: { id: "worker-a", kind: "node", role: "analyst" },
+      assignedWorkerId: "worker-a",
+      message: "run slow echo",
+      payload: {},
+    });
+
+    const processed = await worker.runOnce();
+    assert.equal(processed, 1);
+
+    const auditResponse = await fetch(`${server.baseUrl}/audit?action=task.heartbeat`);
+    const audit = await auditResponse.json();
+    assert.ok(audit.items.length >= 1, "expected at least one task heartbeat audit event");
+
+    const taskResponse = await fetch(`${server.baseUrl}/tasks/${audit.items[0].targetId}`);
+    const completedTask = await taskResponse.json();
+    assert.equal(completedTask.status, "succeeded");
+    assert.equal(typeof completedTask.lastHeartbeatAt, "string");
+  } finally {
+    await worker.stop();
+    await server.close();
+  }
+});
+
 test("worker includes x-a2a-edge-secret when configured", async () => {
   const server = await startTestServer({ edgeSecret: "test-edge-secret" });
   const worker = createWorker(server.baseUrl, { edgeSecret: "test-edge-secret" });
