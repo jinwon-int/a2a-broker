@@ -62,6 +62,34 @@ async function startTestServer(options: Partial<BrokerServerOptions> = {}) {
   };
 }
 
+async function startSqliteTestServer(options: Partial<BrokerServerOptions> = {}) {
+  const runtime = createBrokerServer({
+    host: "127.0.0.1",
+    port: 0,
+    publicBaseUrl: "https://broker.test/",
+    persistenceBackend: "sqlite",
+    enforceRequesterIdentity: true,
+    staleReaperEnabled: false,
+    ...options,
+  });
+  runtime.server.listen(0, "127.0.0.1");
+  await once(runtime.server, "listening");
+  const address = runtime.server.address();
+  if (!address || typeof address === "string") {
+    throw new Error("failed to bind test server");
+  }
+  return {
+    baseUrl: `http://127.0.0.1:${address.port}`,
+    runtime,
+    close: async () => {
+      runtime.stopStaleReaper();
+      runtime.server.close();
+      runtime.server.closeAllConnections?.();
+      await once(runtime.server, "close");
+    },
+  };
+}
+
 function jsonHeaders(headers: Record<string, string> = {}): Record<string, string> {
   return {
     "content-type": "application/json",
@@ -3742,6 +3770,207 @@ test("GET/POST /a2a/tasks/terminal-outbox replays and acknowledges compact recor
     }
   } finally {
     await server.close();
+  }
+});
+
+test("SQLite terminal outbox persists receipt/ACK validation matrix and replay health", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "a2a-broker-sqlite-terminal-outbox-matrix-"));
+  const sqliteOptions: Partial<BrokerServerOptions> = {
+    edgeSecret: "test-edge-secret",
+    stateFile: join(dir, "state.json"),
+    sqliteFile: join(dir, "state.sqlite"),
+    persistenceBackend: "sqlite",
+    rateLimitMaxRequests: 200,
+    workerRateLimitMaxRequests: 200,
+  };
+  let server: Awaited<ReturnType<typeof startSqliteTestServer>> | undefined;
+  const closeServer = async () => {
+    if (!server) return;
+    const active = server;
+    server = undefined;
+    await active.close();
+  };
+
+  try {
+    server = await startSqliteTestServer(sqliteOptions);
+    await registerTestWorker(server.baseUrl, "worker-a", "analyst", "test-edge-secret");
+
+    const hubHeaders = jsonHeaders({
+      "x-a2a-edge-secret": "test-edge-secret",
+      "x-a2a-requester-id": "hub-a",
+      "x-a2a-requester-role": "hub",
+    });
+    const workerHeaders = jsonHeaders({
+      "x-a2a-edge-secret": "test-edge-secret",
+      "x-a2a-requester-id": "worker-a",
+      "x-a2a-requester-role": "analyst",
+    });
+
+    const completeTerminalTask = async (name: string): Promise<any> => {
+      if (!server) throw new Error("server not started");
+      const taskRes = await fetch(`${server.baseUrl}/tasks`, {
+        method: "POST",
+        headers: hubHeaders,
+        body: JSON.stringify({
+          intent: "analyze",
+          requester: { id: "hub-a", kind: "node", role: "hub" },
+          target: { id: "worker-a", kind: "node", role: "analyst" },
+          assignedWorkerId: "worker-a",
+          payload: { githubRepo: "acme/example", githubIssueNumber: 583, taskBrief: `SQLite terminal outbox ${name}` },
+          message: `sqlite-terminal-outbox-${name}`,
+        }),
+      });
+      assert.equal(taskRes.status, 201);
+      const task = await taskRes.json();
+
+      const claimRes = await fetch(`${server.baseUrl}/tasks/${task.id}/claim`, {
+        method: "POST",
+        headers: workerHeaders,
+        body: JSON.stringify({ workerId: "worker-a" }),
+      });
+      assert.equal(claimRes.status, 200);
+
+      const completeRes = await fetch(`${server.baseUrl}/tasks/${task.id}/complete`, {
+        method: "POST",
+        headers: workerHeaders,
+        body: JSON.stringify({ workerId: "worker-a", result: { summary: `Done: ${name}` } }),
+      });
+      assert.equal(completeRes.status, 200);
+
+      const outbox = await (await fetch(`${server.baseUrl}/a2a/tasks/terminal-outbox`, { headers: hubHeaders })).json();
+      const event = outbox.events.find((candidate: any) => candidate.payload.taskId === task.id);
+      assert.ok(event, `missing terminal outbox event for ${name}`);
+      assert.equal(event.receipt.status, "accepted");
+      assert.equal(event.ack, undefined);
+      return event;
+    };
+
+    const matrixEvent = await completeTerminalTask("receipt-matrix");
+    const currentSessionAckEvent = await completeTerminalTask("current-session-ack");
+    const operatorAckEvent = await completeTerminalTask("operator-ack");
+
+    const receiptStatuses = [
+      "accepted",
+      "started",
+      "produced",
+      "provider_sent",
+      "provider_accepted",
+      "current_session_visible",
+      "operator_visible",
+      "stale",
+      "failed",
+    ];
+    for (const [index, status] of receiptStatuses.entries()) {
+      const updatedAt = `2026-05-13T17:00:0${index}.000Z`;
+      const receiptRes: Response = await fetch(`${server.baseUrl}/a2a/tasks/terminal-outbox/receipt`, {
+        method: "POST",
+        headers: hubHeaders,
+        body: JSON.stringify({
+          id: matrixEvent.id,
+          receipt: { status, updatedAt, note: `${status} should not imply terminal ACK` },
+        }),
+      });
+      assert.equal(receiptRes.status, 200, status);
+      const receiptBody = await receiptRes.json();
+      assert.equal(receiptBody.event.receipt.status, status);
+      assert.equal(receiptBody.event.receipt.updatedAt, updatedAt);
+      assert.equal(receiptBody.event.ack, undefined, `${status} must not create ACK state`);
+      assert.equal(receiptBody.event.ackAudit.receiptStatus, status);
+      assert.equal(
+        receiptBody.event.ackAudit.decision,
+        status === "current_session_visible" || status === "operator_visible" ? "eligible" : "pending",
+        status,
+      );
+    }
+
+    const providerAcceptedAckRes = await fetch(`${server.baseUrl}/a2a/tasks/terminal-outbox/ack`, {
+      method: "POST",
+      headers: hubHeaders,
+      body: JSON.stringify({ id: matrixEvent.id, receipt: { evidence: "provider_accepted" } }),
+    });
+    assert.equal(providerAcceptedAckRes.status, 400);
+
+    const currentSessionAckAt = "2026-05-13T17:01:00.000Z";
+    const currentAckRes = await fetch(`${server.baseUrl}/a2a/tasks/terminal-outbox/ack`, {
+      method: "POST",
+      headers: hubHeaders,
+      body: JSON.stringify({
+        id: currentSessionAckEvent.id,
+        receipt: {
+          evidence: "current_session_visible",
+          acknowledgedAt: currentSessionAckAt,
+          receiptId: "current-session-visible-583",
+        },
+      }),
+    });
+    assert.equal(currentAckRes.status, 200);
+    const currentAck = await currentAckRes.json();
+    assert.equal(currentAck.event.ack.evidence, "current_session_visible");
+    assert.equal(currentAck.event.ack.acknowledgedAt, currentSessionAckAt);
+    assert.equal(currentAck.event.receipt.status, "current_session_visible");
+    assert.equal(currentAck.event.ackAudit.decision, "confirmed");
+
+    const operatorAckAt = "2026-05-13T17:02:00.000Z";
+    const operatorAckRes = await fetch(`${server.baseUrl}/a2a/tasks/terminal-outbox/ack`, {
+      method: "POST",
+      headers: hubHeaders,
+      body: JSON.stringify({
+        id: operatorAckEvent.id,
+        receipt: {
+          evidence: "operator_visible",
+          acknowledgedAt: operatorAckAt,
+          receiptId: "operator-visible-583",
+        },
+      }),
+    });
+    assert.equal(operatorAckRes.status, 200);
+    const operatorAck = await operatorAckRes.json();
+    assert.equal(operatorAck.event.ack.evidence, "operator_visible");
+    assert.equal(operatorAck.event.ack.acknowledgedAt, operatorAckAt);
+    assert.equal(operatorAck.event.receipt.status, "operator_visible");
+    assert.equal(operatorAck.event.ackAudit.decision, "confirmed");
+
+    await closeServer();
+    server = await startSqliteTestServer(sqliteOptions);
+
+    const restoredOutbox = await (await fetch(`${server.baseUrl}/a2a/tasks/terminal-outbox`, { headers: hubHeaders })).json();
+    assert.equal(restoredOutbox.count, 3);
+    const restoredMatrix = restoredOutbox.events.find((event: any) => event.id === matrixEvent.id);
+    const restoredCurrent = restoredOutbox.events.find((event: any) => event.id === currentSessionAckEvent.id);
+    const restoredOperator = restoredOutbox.events.find((event: any) => event.id === operatorAckEvent.id);
+    assert.ok(restoredMatrix);
+    assert.ok(restoredCurrent);
+    assert.ok(restoredOperator);
+    assert.equal(restoredMatrix.receipt.status, "failed");
+    assert.equal(restoredMatrix.ack, undefined);
+    assert.equal(restoredMatrix.ackAudit.decision, "pending");
+    assert.equal(restoredCurrent.ack.evidence, "current_session_visible");
+    assert.equal(restoredCurrent.receipt.status, "current_session_visible");
+    assert.equal(restoredOperator.ack.evidence, "operator_visible");
+    assert.equal(restoredOperator.receipt.status, "operator_visible");
+
+    const health = await (await fetch(`${server.baseUrl}/health`)).json();
+    const outboxMetrics = health.persistence.hotTableLoadMetrics.tables["broker_terminal_outbox"];
+    assert.equal(outboxMetrics.count, 3);
+    assert.equal(outboxMetrics.unackedCount, 1);
+    assert.deepEqual(outboxMetrics.runtimeLoad, {
+      limit: 1000,
+      loadedCount: 3,
+      skippedCount: 0,
+    });
+
+    const reconcile = await (
+      await fetch(
+        `${server.baseUrl}/a2a/tasks/terminal-outbox?after_id=${encodeURIComponent(operatorAckEvent.id)}&reconcile_unacked=true`,
+        { headers: hubHeaders },
+      )
+    ).json();
+    assert.equal(reconcile.reconciledUnacked, 1);
+    assert.deepEqual(reconcile.events.map((event: any) => event.id), [matrixEvent.id]);
+    assert.equal(reconcile.cursor, operatorAckEvent.id);
+  } finally {
+    await closeServer();
+    rmSync(dir, { recursive: true, force: true });
   }
 });
 
