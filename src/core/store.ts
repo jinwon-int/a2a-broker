@@ -21,6 +21,7 @@ import type {
   WorkerListFilters,
   WorkerRecord,
 } from "./types.js";
+import type { CrossBrokerTerminalBriefProjection } from "./cross-broker-terminal-brief.js";
 import type { ArtifactRuntimeRepository } from "./artifact-repository.js";
 import type { AuditRuntimeRepository } from "./audit-repository.js";
 import type { ExchangeMessageRuntimeRepository, ExchangeRuntimeRepository } from "./exchange-repository.js";
@@ -50,6 +51,7 @@ export interface BrokerSnapshot {
   goals?: GoalRecord[];
   tombstones?: TaskTombstone[];
   terminalOutbox?: TerminalTaskOutboxEvent[];
+  crossBrokerTerminalBriefs?: CrossBrokerTerminalBriefProjection[];
 }
 
 export interface BrokerStateStore {
@@ -719,6 +721,34 @@ export const DEFAULT_HOT_RUNTIME_MAX_TERMINAL_TASKS = 2_000;
 export const DEFAULT_HOT_RUNTIME_MAX_AUDIT_EVENTS = 5_000;
 export const DEFAULT_HOT_RUNTIME_MAX_TERMINAL_OUTBOX_EVENTS = DEFAULT_TERMINAL_TASK_OUTBOX_RETENTION;
 
+const crossBrokerTerminalBriefProjectionSchema = z
+  .object({
+    id: z.string().min(1),
+    parentRoundId: z.string().min(1),
+    originBrokerId: z.string().min(1),
+    brokerOfRecordId: z.string().min(1).optional(),
+    childTaskId: z.string().min(1).optional(),
+    childRunId: z.string().min(1).optional(),
+    status: z.enum(["succeeded", "failed", "canceled", "blocked"]),
+    summary: z.string().optional(),
+    taskBrief: z.string().optional(),
+    evidenceUrl: z.string().url().optional(),
+    completedAt: z.string(),
+    emittedAt: z.string(),
+    receivedAt: z.string(),
+    sourceDigest: z.string().min(1),
+    replayCount: z.number().int().nonnegative(),
+    ack: z
+      .object({
+        decision: z.enum(["accepted", "duplicate_replay"]),
+        terminalAck: z.literal(false),
+        reason: z.string(),
+        updatedAt: z.string(),
+      })
+      .passthrough(),
+  })
+  .passthrough();
+
 const brokerSnapshotSchema = z
   .object({
     version: z.number().int().nonnegative().optional().default(CURRENT_BROKER_STATE_VERSION),
@@ -732,6 +762,7 @@ const brokerSnapshotSchema = z
     tasks: z.array(taskSchema).optional().default([]),
     tombstones: z.array(tombstoneSchema).optional().default([]),
     terminalOutbox: z.array(terminalOutboxEventSchema).optional().default([]),
+    crossBrokerTerminalBriefs: z.array(crossBrokerTerminalBriefProjectionSchema).optional().default([]),
   })
   .passthrough();
 
@@ -854,6 +885,7 @@ export class SqliteBrokerStateStore implements BrokerStateStore {
       tasks: this.readHotTasksForRuntime(),
       tombstones: this.readHotTombstones(),
       terminalOutbox: this.readHotTerminalOutbox({ limit: this.maxHotRuntimeTerminalOutboxEvents }),
+      crossBrokerTerminalBriefs: [],
     };
   }
 
@@ -2345,6 +2377,7 @@ export function emptySnapshot(): BrokerSnapshot {
     tasks: [],
     tombstones: [],
     terminalOutbox: [],
+    crossBrokerTerminalBriefs: [],
   };
 }
 
