@@ -60,6 +60,7 @@ export interface ReceiptGateCanaryMatrix {
   runMode: "no-live";
   generatedAt: string;
   cells: ReceiptGateCanaryCell[];
+  validationBlockers: string[];
   overallVerdict: "pass" | "fail";
 }
 
@@ -142,12 +143,14 @@ export function runReceiptGateCanaryMatrix(options: {
 } = {}): ReceiptGateCanaryMatrix {
   const fixtures = options.fixtures ?? defaultReceiptGateCanaryFixtures();
   const cells = fixtures.map(evaluateReceiptGateCanaryFixture);
+  const validationBlockers = validateReceiptGateCanaryCells(cells);
   return {
     kind: "receipt-gate.canary.matrix",
     runMode: "no-live",
     generatedAt: options.generatedAt ?? new Date().toISOString(),
     cells,
-    overallVerdict: cells.every((cell) => cell.verdict === "pass") ? "pass" : "fail",
+    validationBlockers,
+    overallVerdict: cells.every((cell) => cell.verdict === "pass") && validationBlockers.length === 0 ? "pass" : "fail",
   };
 }
 
@@ -181,6 +184,39 @@ export function evaluateReceiptGateCanaryFixture(fixture: ReceiptGateCanaryFixtu
   };
 }
 
+export function validateReceiptGateCanaryCells(cells: ReceiptGateCanaryCell[]): string[] {
+  const blockers: string[] = [];
+  const counts = new Map<string, number>();
+
+  for (const cell of cells) {
+    counts.set(cell.scenarioId, (counts.get(cell.scenarioId) ?? 0) + 1);
+
+    if (cell.providerCalled !== false) {
+      blockers.push(`scenario ${cell.scenarioId} attempted a provider call`);
+    }
+    if (cell.productionAckAttempted !== false) {
+      blockers.push(`scenario ${cell.scenarioId} attempted a production ACK`);
+    }
+    if (cell.ackAllowed !== (cell.decision === "receipt_confirmed")) {
+      blockers.push(`scenario ${cell.scenarioId} has inconsistent ACK decision ${cell.decision}`);
+    }
+  }
+
+  for (const scenarioId of RECEIPT_GATE_CANARY_SCENARIOS) {
+    const count = counts.get(scenarioId) ?? 0;
+    if (count === 0) blockers.push(`missing required canary scenario ${scenarioId}`);
+    if (count > 1) blockers.push(`duplicate canary scenario ${scenarioId}`);
+  }
+
+  for (const scenarioId of counts.keys()) {
+    if (!RECEIPT_GATE_CANARY_SCENARIOS.includes(scenarioId as ReceiptGateCanaryScenarioId)) {
+      blockers.push(`unexpected canary scenario ${scenarioId}`);
+    }
+  }
+
+  return blockers;
+}
+
 export function renderReceiptGateCanaryMarkdown(matrix: ReceiptGateCanaryMatrix): string {
   const rows = matrix.cells.map((cell) => (
     `| ${cell.scenarioId} | ${cell.verdict} | ${cell.decision} | ${cell.ackAllowed ? "yes" : "no"} | ${cell.summary} |`
@@ -190,6 +226,7 @@ export function renderReceiptGateCanaryMarkdown(matrix: ReceiptGateCanaryMatrix)
     "",
     `Generated: ${matrix.generatedAt}`,
     "Run mode: no-live (providerCalled=false, productionAckAttempted=false for every scenario)",
+    ...(matrix.validationBlockers.length > 0 ? ["", "Validation blockers:", ...matrix.validationBlockers.map((blocker) => `- ${blocker}`)] : []),
     "",
     "| Scenario | Verdict | Decision | ACK allowed | Operator-safe evidence |",
     "| --- | --- | --- | --- | --- |",

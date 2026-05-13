@@ -44,6 +44,13 @@ export interface QueueHygieneRequeueBreakdown {
   sampleTaskIds: string[];
 }
 
+export interface QueueHygieneTimestampAnomalies {
+  /** Active task ids whose creation timestamp cannot be parsed (capped at 20). */
+  invalidCreatedAtTaskIds: string[];
+  /** Active task ids dated in the future relative to the snapshot time (capped at 20). */
+  futureCreatedAtTaskIds: string[];
+}
+
 export interface QueueHygieneSnapshot {
   kind: "broker.queue-hygiene.snapshot";
   generatedAt: string;
@@ -59,6 +66,8 @@ export interface QueueHygieneSnapshot {
   ageBuckets: QueueHygieneAgeBucket[];
   /** Requeue chain analysis. */
   requeue: QueueHygieneRequeueBreakdown;
+  /** Timestamp anomalies that would otherwise hide stale active residue. */
+  timestampAnomalies: QueueHygieneTimestampAnomalies;
   /** Overall hygiene verdict. */
   severity: QueueHygieneSeverity;
   /** Structured warnings for operators. */
@@ -126,8 +135,9 @@ export function buildQueueHygieneSnapshot(
   const byStatus = buildStatusBreakdown(tasks, nowMs);
   const ageBuckets = buildAgeBuckets(activeTasks, nowMs);
   const requeue = buildRequeueBreakdown(tasks);
-  const severity = computeHygieneSeverity(byStatus, ageBuckets, requeue, t);
-  const warnings = buildHygieneWarnings(byStatus, ageBuckets, requeue, severity, t);
+  const timestampAnomalies = buildTimestampAnomalies(activeTasks, nowMs);
+  const severity = computeHygieneSeverity(byStatus, ageBuckets, requeue, timestampAnomalies, t);
+  const warnings = buildHygieneWarnings(byStatus, ageBuckets, requeue, timestampAnomalies, severity, t);
 
   return {
     kind: "broker.queue-hygiene.snapshot",
@@ -138,6 +148,7 @@ export function buildQueueHygieneSnapshot(
     byStatus,
     ageBuckets,
     requeue,
+    timestampAnomalies,
     severity,
     warnings,
   };
@@ -245,10 +256,32 @@ function buildRequeueBreakdown(
   };
 }
 
+function buildTimestampAnomalies(
+  activeTasks: TaskRecord[],
+  nowMs: number,
+): QueueHygieneTimestampAnomalies {
+  const invalidCreatedAtTaskIds: string[] = [];
+  const futureCreatedAtTaskIds: string[] = [];
+
+  for (const task of activeTasks) {
+    const createdAtMs = Date.parse(task.createdAt);
+    if (!Number.isFinite(createdAtMs)) {
+      if (invalidCreatedAtTaskIds.length < 20) invalidCreatedAtTaskIds.push(task.id);
+      continue;
+    }
+    if (createdAtMs > nowMs && futureCreatedAtTaskIds.length < 20) {
+      futureCreatedAtTaskIds.push(task.id);
+    }
+  }
+
+  return { invalidCreatedAtTaskIds, futureCreatedAtTaskIds };
+}
+
 function computeHygieneSeverity(
   byStatus: QueueHygieneStatusBreakdown[],
   _ageBuckets: QueueHygieneAgeBucket[],
   requeue: QueueHygieneRequeueBreakdown,
+  timestampAnomalies: QueueHygieneTimestampAnomalies,
   t: ReturnType<typeof defaultHygieneThresholds>,
 ): QueueHygieneSeverity {
   const activeTotal = byStatus
@@ -269,6 +302,9 @@ function computeHygieneSeverity(
 
   // Warning: active tasks exceed warning threshold
   if (activeTotal >= t.activeTaskWarning) return "warning";
+
+  // Warning: timestamp anomalies can hide stale active residue from age buckets
+  if (timestampAnomalies.invalidCreatedAtTaskIds.length > 0 || timestampAnomalies.futureCreatedAtTaskIds.length > 0) return "warning";
 
   // Warning: requeue depth exceeds warning threshold
   if (requeue.maxRequeueDepth >= t.requeueDepthWarning) return "warning";
@@ -292,6 +328,7 @@ function buildHygieneWarnings(
   byStatus: QueueHygieneStatusBreakdown[],
   ageBuckets: QueueHygieneAgeBucket[],
   requeue: QueueHygieneRequeueBreakdown,
+  timestampAnomalies: QueueHygieneTimestampAnomalies,
   severity: QueueHygieneSeverity,
   _t: ReturnType<typeof defaultHygieneThresholds>,
 ): string[] {
@@ -312,6 +349,12 @@ function buildHygieneWarnings(
 
   if (requeue.requeued > 0) {
     warnings.push(`Requeued tasks: ${requeue.requeued} (${requeue.multiRequeued} multi-requeued, max depth=${requeue.maxRequeueDepth})`);
+  }
+
+  if (timestampAnomalies.invalidCreatedAtTaskIds.length > 0 || timestampAnomalies.futureCreatedAtTaskIds.length > 0) {
+    warnings.push(
+      `Timestamp anomalies: invalidCreatedAt=${timestampAnomalies.invalidCreatedAtTaskIds.length}, futureCreatedAt=${timestampAnomalies.futureCreatedAtTaskIds.length}`,
+    );
   }
 
   // Age bucket warnings

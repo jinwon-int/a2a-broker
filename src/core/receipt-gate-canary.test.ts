@@ -2,12 +2,19 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
   RECEIPT_GATE_CANARY_SCENARIOS,
+  defaultReceiptGateCanaryFixtures,
   renderReceiptGateCanaryMarkdown,
   runReceiptGateCanaryMatrix,
+  validateReceiptGateCanaryCells,
   PROJECTION_STEPS,
   runBrokerPluginWorkerProjection,
   renderBrokerPluginWorkerProjectionMarkdown,
 } from "./receipt-gate-canary.js";
+
+function defaultFixturesExcept(...scenarioIds: string[]) {
+  const skipped = new Set(scenarioIds);
+  return defaultReceiptGateCanaryFixtures().filter((fixture) => !skipped.has(fixture.scenarioId));
+}
 
 describe("receipt-gate no-live canary matrix", () => {
   it("covers required receipt-gate scenarios without provider calls or production ACKs", () => {
@@ -16,6 +23,7 @@ describe("receipt-gate no-live canary matrix", () => {
     assert.equal(matrix.kind, "receipt-gate.canary.matrix");
     assert.equal(matrix.runMode, "no-live");
     assert.equal(matrix.overallVerdict, "pass");
+    assert.deepEqual(matrix.validationBlockers, []);
     assert.deepEqual(matrix.cells.map((cell) => cell.scenarioId), [...RECEIPT_GATE_CANARY_SCENARIOS]);
     assert.equal(matrix.cells.every((cell) => cell.providerCalled === false), true);
     assert.equal(matrix.cells.every((cell) => cell.productionAckAttempted === false), true);
@@ -74,6 +82,38 @@ describe("receipt-gate no-live canary matrix", () => {
     assert.equal(retry.providerCalled, false);
     assert.equal(retry.productionAckAttempted, false);
     assert.match(retry.summary, /no live requeue performed/);
+  });
+
+  it("fails closed when required canary scenarios are missing", () => {
+    const fixtures = defaultFixturesExcept("provider_accepted_no_receipt");
+    const matrix = runReceiptGateCanaryMatrix({ generatedAt: "2026-05-03T00:00:00.000Z", fixtures });
+
+    assert.equal(matrix.overallVerdict, "fail");
+    assert.deepEqual(matrix.validationBlockers, ["missing required canary scenario provider_accepted_no_receipt"]);
+
+    const markdown = renderReceiptGateCanaryMarkdown(matrix);
+    assert.match(markdown, /Validation blockers:/);
+    assert.match(markdown, /missing required canary scenario provider_accepted_no_receipt/);
+  });
+
+  it("fails closed on duplicate canary scenarios or inconsistent ACK decisions", () => {
+    const matrix = runReceiptGateCanaryMatrix({
+      generatedAt: "2026-05-03T00:00:00.000Z",
+      fixtures: [
+        ...defaultFixturesExcept(),
+        defaultFixturesExcept().find((fixture) => fixture.scenarioId === "send_accepted_no_receipt")!,
+      ],
+    });
+    assert.equal(matrix.overallVerdict, "fail");
+    assert.ok(matrix.validationBlockers.includes("duplicate canary scenario send_accepted_no_receipt"));
+
+    const blockers = validateReceiptGateCanaryCells([
+      {
+        ...matrix.cells.find((cell) => cell.scenarioId === "send_accepted_no_receipt")!,
+        ackAllowed: true,
+      },
+    ]);
+    assert.ok(blockers.some((blocker) => blocker.includes("inconsistent ACK decision hold_unacked")));
   });
 
   it("renders operator-safe evidence summaries", () => {
