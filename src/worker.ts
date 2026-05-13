@@ -221,11 +221,15 @@ export class A2ABrokerWorker {
       throw error;
     }
 
+    let stopTaskHeartbeat: (() => void) | undefined;
     try {
       const runningTask = await this.startTask(task.id);
+      stopTaskHeartbeat = this.startTaskHeartbeatTimer(task.id);
       const outcome = normalizeWorkerHandlerOutcome(await this.config.handler(runningTask));
 
       if (outcome.error) {
+        stopTaskHeartbeat?.();
+        stopTaskHeartbeat = undefined;
         await this.failTask(task.id, outcome.error);
         console.warn(`[worker:${this.workerId}] task ${task.id} failed: ${outcome.error.message}`);
         return true;
@@ -233,16 +237,22 @@ export class A2ABrokerWorker {
 
       const completionEvidenceError = validateTaskCompletionEvidence(runningTask, outcome.result);
       if (completionEvidenceError) {
+        stopTaskHeartbeat?.();
+        stopTaskHeartbeat = undefined;
         await this.failTask(task.id, completionEvidenceError);
         console.warn(`[worker:${this.workerId}] task ${task.id} failed: ${completionEvidenceError.message}`);
         return true;
       }
 
+      stopTaskHeartbeat?.();
+      stopTaskHeartbeat = undefined;
       await this.completeTask(task.id, outcome.result);
       return true;
     } catch (error) {
       const taskError = toTaskError(error);
       try {
+        stopTaskHeartbeat?.();
+        stopTaskHeartbeat = undefined;
         await this.failTask(task.id, taskError);
       } catch (failError) {
         console.error(`[worker:${this.workerId}] failed to mark task ${task.id} as failed`, failError);
@@ -250,6 +260,8 @@ export class A2ABrokerWorker {
       }
       console.warn(`[worker:${this.workerId}] task ${task.id} failed: ${taskError.message}`);
       return true;
+    } finally {
+      stopTaskHeartbeat?.();
     }
   }
 
@@ -265,6 +277,42 @@ export class A2ABrokerWorker {
       method: "POST",
       body: { workerId: this.workerId },
     });
+  }
+
+  private async heartbeatTask(taskId: string): Promise<TaskRecord> {
+    return this.requestJson<TaskRecord>(`/tasks/${encodeURIComponent(taskId)}/heartbeat`, {
+      method: "POST",
+      body: { workerId: this.workerId },
+    });
+  }
+
+  private startTaskHeartbeatTimer(taskId: string): () => void {
+    let stopped = false;
+    const heartbeatTimer = setInterval(() => {
+      if (stopped) {
+        return;
+      }
+      void this.safeTaskHeartbeat(taskId);
+    }, this.config.heartbeatIntervalMs);
+    if (typeof heartbeatTimer.unref === "function") {
+      heartbeatTimer.unref();
+    }
+    return () => {
+      stopped = true;
+      clearInterval(heartbeatTimer);
+    };
+  }
+
+  private async safeTaskHeartbeat(taskId: string): Promise<void> {
+    if (this.stopping) {
+      return;
+    }
+
+    try {
+      await this.heartbeatTask(taskId);
+    } catch (error) {
+      console.error(`[worker:${this.workerId}] task ${taskId} heartbeat failed`, error);
+    }
   }
 
   private async completeTask(taskId: string, result?: TaskResult): Promise<TaskRecord> {
