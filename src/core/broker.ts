@@ -4043,6 +4043,24 @@ function normalizePolicyError(error: unknown): BrokerError {
   return new BrokerError("policy_denied", "policy denied");
 }
 
+const GITHUB_READ_ONLY_TASK_MODES = new Set([
+  "analysis-only",
+  "read-only-analysis",
+  "analyze-only",
+  "github-verify",
+  "github-read-only-validation",
+  "read-only-validation",
+  "github-libero-validation",
+  "libero-validation",
+]);
+
+function isGithubReadOnlyTaskRequest(request: CreateTaskRequest, mode: string | undefined): boolean {
+  if (!mode || !GITHUB_READ_ONLY_TASK_MODES.has(mode)) {
+    return false;
+  }
+  return request.intent === "analyze" || request.intent === "verify" || request.intent === "validate_change";
+}
+
 function normalizeGitHubPatchTaskRequest(request: CreateTaskRequest): CreateTaskRequest {
   const payload = request.payload ?? {};
   const mode = readString(payload["mode"]);
@@ -4068,6 +4086,8 @@ function normalizeGitHubPatchTaskRequest(request: CreateTaskRequest): CreateTask
   const legacyCompatibilityAllowed = hasLegacyGitHubMetadata && (workMode === "github" || githubWorkMode === "github");
   const hasExplicitGithubDispatchSignal =
     mode === "github-propose-patch" ||
+    (isGithubReadOnlyTaskRequest(request, mode) &&
+      (payloadHasRepoIssuePair || messageIssue !== undefined || payloadIssue !== undefined || hasLegacyGitHubMetadata)) ||
     (mode !== undefined && hasLegacyGitHubMetadata) ||
     messageIssue !== undefined ||
     payloadIssue !== undefined ||
@@ -4079,6 +4099,37 @@ function normalizeGitHubPatchTaskRequest(request: CreateTaskRequest): CreateTask
 
   if (!looksLikeGithubTask) {
     return request;
+  }
+
+  if (isGithubReadOnlyTaskRequest(request, mode)) {
+    if (request.taskOrigin !== undefined && request.taskOrigin !== "github") {
+      throw new BrokerError("bad_request", "GitHub read-only validation tasks require taskOrigin=github");
+    }
+
+    const normalizedRepo = repo ?? legacyRepo ?? payloadIssue?.repo ?? messageIssue?.repo;
+    if (!normalizedRepo || !/^[^/\s]+\/[^/\s]+$/.test(normalizedRepo)) {
+      throw new BrokerError("bad_request", "GitHub read-only validation payload requires repo in owner/name form");
+    }
+
+    const normalizedIssueNumber = issueNumber ?? legacyIssueNumber ?? payloadIssue?.issueNumber ?? messageIssue?.issueNumber;
+    if (normalizedIssueNumber === undefined) {
+      throw new BrokerError("bad_request", "GitHub read-only validation payload requires issueNumber, issue, or issueUrl");
+    }
+
+    const normalizedIssueUrl = issueUrl ?? legacyIssueUrl ??
+      `https://github.com/${normalizedRepo}/issues/${normalizedIssueNumber}`;
+    return {
+      ...request,
+      taskOrigin: "github",
+      payload: {
+        ...payload,
+        mode,
+        repo: normalizedRepo,
+        issue: `#${normalizedIssueNumber}`,
+        issueNumber: normalizedIssueNumber,
+        issueUrl: normalizedIssueUrl,
+      },
+    };
   }
 
   if (request.intent !== "propose_patch") {

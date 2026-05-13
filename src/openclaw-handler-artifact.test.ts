@@ -856,6 +856,7 @@ console.log(JSON.stringify({
   status: "completed",
   workDir: "/tmp/work-fixture",
   artifacts: [],
+  noDiff: true,
   doneCommentUrl: "https://github.com/owner/repo/issues/1#issuecomment-789"
 }));
 `);
@@ -1106,6 +1107,25 @@ test("docker runner evidence-missing fails validateTaskCompletionEvidence (contr
   const evidenceError = validateTaskCompletionEvidence(makeTaskRecord(task), emptyResult);
   assert.ok(evidenceError, "should reject empty result from github-propose-patch task");
   assert.equal(evidenceError!.code, "github_completion_evidence_missing");
+});
+
+test("GitHub read-only validation requires Done or Block evidence but not a PR", () => {
+  const task = githubTask({
+    intent: "verify",
+    payload: { mode: "github-verify", repo: "owner/repo", issue: "#527" },
+  });
+
+  const missingEvidenceError = validateTaskCompletionEvidence(
+    { ...makeTaskRecord(task), taskOrigin: "github" },
+    { summary: "read-only validation completed", output: { runner: { status: "completed", artifacts: [] } } } as any,
+  );
+  assert.equal(missingEvidenceError?.code, "github_completion_evidence_missing");
+
+  const doneEvidenceError = validateTaskCompletionEvidence(
+    { ...makeTaskRecord(task), taskOrigin: "github" },
+    { summary: "read-only validation completed", output: { doneCommentUrl: "https://github.com/owner/repo/issues/527#issuecomment-done" } } as any,
+  );
+  assert.equal(doneEvidenceError, null);
 });
 
 test("docker runner with multi-evidence output maps all URLs correctly (contract #169)", () => {

@@ -2227,6 +2227,7 @@ function taskFiltersFromUrl(url: URL): {
     intent: optionalEnum(url.searchParams.get("intent"), [
       "chat",
       "analyze",
+      "verify",
       "backfill",
       "propose_patch",
       "propose_params",
