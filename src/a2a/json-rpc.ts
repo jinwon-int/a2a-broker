@@ -231,6 +231,7 @@ function parseListTaskFilters(params: unknown): TaskListFilters {
     intent: optionalEnum(params.intent, [
       "chat",
       "analyze",
+      "verify",
       "backfill",
       "propose_patch",
       "propose_params",
@@ -263,6 +264,7 @@ function executeSendMessage(
   const intent = optionalEnum(metadata.intent, [
     "chat",
     "analyze",
+    "verify",
     "backfill",
     "propose_patch",
     "propose_params",

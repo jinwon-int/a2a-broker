@@ -9,6 +9,7 @@ export type A2APartyRole =
 export type A2AExchangeIntent =
   | "chat"
   | "analyze"
+  | "verify"
   | "backfill"
   | "propose_patch"
   | "propose_params"

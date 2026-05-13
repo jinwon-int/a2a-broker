@@ -2963,6 +2963,57 @@ test("broker normalizes legacy GitHub dispatch fields with compatibility marker"
   });
 });
 
+test("broker accepts GitHub read-only validation lanes with issue metadata", () => {
+  const broker = new InMemoryA2ABroker();
+  registerWorker(broker, "worker-github-readonly");
+
+  const task = broker.createTask({
+    intent: "analyze",
+    requester: { id: "hub-a", kind: "node", role: "hub" },
+    target: { id: "worker-github-readonly", kind: "node", role: "analyst" },
+    message: "libero validation for https://github.com/acme/platform/issues/527",
+    payload: {
+      mode: "read-only-analysis",
+      repo: "acme/platform",
+      issueUrl: "https://github.com/acme/platform/issues/527",
+      assignmentRole: "libero",
+    },
+  });
+
+  assert.equal(task.intent, "analyze");
+  assert.equal(task.taskOrigin, "github");
+  assert.equal(task.payload.mode, "read-only-analysis");
+  assert.equal(task.payload.repo, "acme/platform");
+  assert.equal(task.payload.issue, "#527");
+  assert.equal(task.payload.issueNumber, 527);
+  assert.equal(task.payload.issueUrl, "https://github.com/acme/platform/issues/527");
+  assert.equal(task.payload.assignmentRole, "libero");
+});
+
+test("broker accepts github-verify as a read-only evidence lane", () => {
+  const broker = new InMemoryA2ABroker();
+  registerWorker(broker, "worker-github-verify");
+
+  const task = broker.createTask({
+    intent: "verify",
+    taskOrigin: "github",
+    requester: { id: "hub-a", kind: "node", role: "hub" },
+    target: { id: "worker-github-verify", kind: "node", role: "analyst" },
+    message: "run no-live validation",
+    payload: {
+      mode: "github-verify",
+      repo: "acme/platform",
+      issueNumber: 528,
+    },
+  });
+
+  assert.equal(task.intent, "verify");
+  assert.equal(task.taskOrigin, "github");
+  assert.equal(task.payload.mode, "github-verify");
+  assert.equal(task.payload.issue, "#528");
+  assert.equal(task.payload.issueUrl, "https://github.com/acme/platform/issues/528");
+});
+
 test("broker rejects non-canonical GitHub dispatch with wrong taskOrigin", () => {
   const broker = new InMemoryA2ABroker();
   registerWorker(broker, "worker-github-reject");
