@@ -168,6 +168,13 @@ test("cross-broker Terminal Brief projection carries parent round denominator in
     originTaskId: "child-task-1",
     childWorkerId: "dungae",
   });
+  assert.deepEqual(terminalEvents[0]?.payload.notificationOwnership, {
+    ownerBrokerId: "parent-broker",
+    scope: "parent-broker-only",
+    providerSendPermittedByProjection: false,
+    terminalAckPermittedByProjection: false,
+    reason: "cross-broker projections are parent-broker aggregation evidence only; child/handoff brokers do not notify or ACK",
+  });
   assert.equal(terminalEvents[1]?.payload.run, "round-parent");
   assert.equal(terminalEvents[1]?.payload.parentRoundTotal, undefined);
   assert.equal(terminalEvents[1]?.payload.parentRoundProgress, undefined);
