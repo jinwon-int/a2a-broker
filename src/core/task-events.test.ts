@@ -476,6 +476,8 @@ describe("TerminalTaskEventOutbox", () => {
         { taskId: "direct-parent-round-second", run: "parent-round-direct", parentRoundProgress: 2, parentRoundTotal: 2 },
       ],
     );
+    assert.equal(events[0]?.payload.terminalBriefTitle, "A2A Terminal Brief 완료: worker-1(1/2)");
+    assert.equal(events[1]?.payload.terminalBriefTitle, "A2A Terminal Brief 완료: worker-2(2/2)");
     assert.equal(events[2]?.payload.taskId, "direct-parent-round-unknown-total");
     assert.equal(events[2]?.payload.run, "parent-round-unknown-total");
     assert.equal(events[2]?.payload.parentRoundTotal, undefined);

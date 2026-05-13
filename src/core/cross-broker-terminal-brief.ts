@@ -25,6 +25,10 @@ export interface CrossBrokerTerminalBriefProjectionRequest {
   brokerOfRecordId?: string;
   childTaskId?: string;
   childRunId?: string;
+  /** Worker that produced the child Terminal Brief, when distinct from the handoff broker. */
+  childWorkerId?: string;
+  /** Backward-compatible alias accepted from compact handoff packets. */
+  workerId?: string;
   status: Extract<TaskStatus, "succeeded" | "failed" | "canceled" | "blocked">;
   summary?: string;
   taskBrief?: string;
@@ -44,6 +48,8 @@ export interface CrossBrokerTerminalBriefProjection {
   brokerOfRecordId?: string;
   childTaskId?: string;
   childRunId?: string;
+  /** Worker that produced the child Terminal Brief, when distinct from the handoff broker. */
+  childWorkerId?: string;
   status: Extract<TaskStatus, "succeeded" | "failed" | "canceled" | "blocked">;
   summary?: string;
   taskBrief?: string;
@@ -218,6 +224,7 @@ function normalizeRequest(request: CrossBrokerTerminalBriefProjectionRequest): O
   const brokerOfRecordId = normalizeToken(request.brokerOfRecordId);
   const childTaskId = normalizeToken(request.childTaskId);
   const childRunId = normalizeToken(request.childRunId);
+  const childWorkerId = normalizeToken(request.childWorkerId ?? request.workerId);
   const emittedAt = normalizeIso(request.emittedAt);
   const evidenceUrl = normalizeHttpUrl(request.evidenceUrl);
   const summary = sanitizeText(request.summary, MAX_SUMMARY_CHARS);
@@ -229,6 +236,7 @@ function normalizeRequest(request: CrossBrokerTerminalBriefProjectionRequest): O
     ...(brokerOfRecordId ? { brokerOfRecordId } : {}),
     ...(childTaskId ? { childTaskId } : {}),
     ...(childRunId ? { childRunId } : {}),
+    ...(childWorkerId ? { childWorkerId } : {}),
     status,
     ...(summary ? { summary } : {}),
     ...(taskBrief ? { taskBrief } : {}),
