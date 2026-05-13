@@ -17,7 +17,12 @@ import {
 } from "./store.js";
 import { validateGithubTaskCompletionEvidence } from "./github-task-completion.js";
 import { TaskEventStream } from "./task-event-stream.js";
-import { TerminalTaskEventOutbox } from "./terminal-event-outbox.js";
+import {
+  TerminalTaskEventOutbox,
+  type TerminalTaskOutboxAckInput,
+  type TerminalTaskOutboxEvent,
+  type TerminalTaskOutboxReceiptUpdateInput,
+} from "./terminal-event-outbox.js";
 import { ConferenceRoomManager } from "./conference-room.js";
 import {
   CrossBrokerTerminalBriefProjectionStore,
@@ -274,6 +279,7 @@ export interface BrokerProfilingSample {
     hotTombstones: number;
     hotAuditEvents: number;
     hotWorkers: number;
+    hotTerminalOutboxEvents: number;
   };
 }
 
@@ -328,6 +334,7 @@ export class InMemoryA2ABroker {
   private readonly pendingHotTombstones = new Map<string, TaskTombstone>();
   private readonly pendingHotAuditEvents = new Map<string, AuditEvent>();
   private readonly pendingHotWorkers = new Map<string, WorkerRecord>();
+  private readonly pendingHotTerminalOutboxEvents = new Map<string, TerminalTaskOutboxEvent>();
   private readonly pendingHotExchanges = new Map<string, A2AExchangeState>();
   private readonly pendingHotExchangeMessages = new Map<string, A2AExchangeMessageRecord>();
   private readonly pendingHotProposals = new Map<string, ChangeProposal>();
@@ -402,6 +409,20 @@ export class InMemoryA2ABroker {
   /** Compact terminal task event outbox for durable webhook/SSE delivery. */
   getTerminalTaskEventOutbox(): TerminalTaskEventOutbox {
     return this.terminalTaskEventOutbox;
+  }
+
+  acknowledgeTerminalTaskOutboxEvent(id: string, receipt: TerminalTaskOutboxAckInput): TerminalTaskOutboxEvent | null {
+    const event = this.terminalTaskEventOutbox.acknowledge(id, receipt);
+    if (!event) return null;
+    this.persistTerminalTaskOutboxEvent(event);
+    return event;
+  }
+
+  recordTerminalTaskOutboxReceiptStatus(id: string, receipt: TerminalTaskOutboxReceiptUpdateInput): TerminalTaskOutboxEvent | null {
+    const event = this.terminalTaskEventOutbox.recordReceiptStatus(id, receipt);
+    if (!event) return null;
+    this.persistTerminalTaskOutboxEvent(event);
+    return event;
   }
 
   ingestCrossBrokerTerminalBriefProjection(request: CrossBrokerTerminalBriefProjectionRequest): CrossBrokerTerminalBriefProjectionResult {
@@ -2543,6 +2564,11 @@ export class InMemoryA2ABroker {
     this.pendingHotWorkers.set(normalizedWorker.nodeId, structuredClone(normalizedWorker));
   }
 
+  private persistTerminalTaskOutboxEvent(event: TerminalTaskOutboxEvent): void {
+    this.pendingHotTerminalOutboxEvents.set(event.id, structuredClone(event));
+    this.persistState();
+  }
+
   private consumeStateSaveHints(snapshot: BrokerSnapshot): BrokerStateSaveHints | undefined {
     if (
       this.pendingHotExchanges.size === 0 &&
@@ -2553,7 +2579,8 @@ export class InMemoryA2ABroker {
       this.pendingHotTasks.size === 0 &&
       this.pendingHotTombstones.size === 0 &&
       this.pendingHotAuditEvents.size === 0 &&
-      this.pendingHotWorkers.size === 0
+      this.pendingHotWorkers.size === 0 &&
+      this.pendingHotTerminalOutboxEvents.size === 0
     ) {
       return undefined;
     }
@@ -2566,6 +2593,7 @@ export class InMemoryA2ABroker {
     const retainedTombstoneTaskIds = new Set((snapshot.tombstones ?? []).map((tombstone) => tombstone.taskId));
     const retainedAuditEventIds = new Set(snapshot.auditEvents.map((event) => event.id));
     const retainedWorkerIds = new Set(snapshot.workers.map((worker) => worker.nodeId));
+    const retainedTerminalOutboxIds = new Set((snapshot.terminalOutbox ?? []).map((event) => event.id));
     const hotExchanges = [...this.pendingHotExchanges.values()].filter((exchange) => retainedExchangeIds.has(exchange.id));
     const hotExchangeMessages = [...this.pendingHotExchangeMessages.values()].filter((message) => retainedExchangeMessageIds.has(message.id));
     const hotProposals = [...this.pendingHotProposals.values()].filter((proposal) => retainedProposalIds.has(proposal.id));
@@ -2575,6 +2603,7 @@ export class InMemoryA2ABroker {
     const hotTombstones = [...this.pendingHotTombstones.values()].filter((tombstone) => retainedTombstoneTaskIds.has(tombstone.taskId));
     const hotAuditEvents = [...this.pendingHotAuditEvents.values()].filter((event) => retainedAuditEventIds.has(event.id));
     const hotWorkers = [...this.pendingHotWorkers.values()].filter((worker) => retainedWorkerIds.has(worker.nodeId));
+    const hotTerminalOutboxEvents = [...this.pendingHotTerminalOutboxEvents.values()].filter((event) => retainedTerminalOutboxIds.has(event.id));
     this.pendingHotExchanges.clear();
     this.pendingHotExchangeMessages.clear();
     this.pendingHotProposals.clear();
@@ -2584,6 +2613,7 @@ export class InMemoryA2ABroker {
     this.pendingHotTombstones.clear();
     this.pendingHotAuditEvents.clear();
     this.pendingHotWorkers.clear();
+    this.pendingHotTerminalOutboxEvents.clear();
     return {
       ...(hotExchanges.length ? { hotExchanges } : {}),
       ...(hotExchangeMessages.length ? { hotExchangeMessages } : {}),
@@ -2594,6 +2624,7 @@ export class InMemoryA2ABroker {
       ...(hotTombstones.length ? { hotTombstones } : {}),
       ...(hotAuditEvents.length ? { hotAuditEvents } : {}),
       ...(hotWorkers.length ? { hotWorkers } : {}),
+      ...(hotTerminalOutboxEvents.length ? { hotTerminalOutboxEvents } : {}),
     };
   }
 
@@ -3729,6 +3760,7 @@ function countStateSaveHints(hints: BrokerStateSaveHints): NonNullable<BrokerPro
     hotTombstones: hints.hotTombstones?.length ?? 0,
     hotAuditEvents: hints.hotAuditEvents?.length ?? 0,
     hotWorkers: hints.hotWorkers?.length ?? 0,
+    hotTerminalOutboxEvents: hints.hotTerminalOutboxEvents?.length ?? 0,
   };
 }
 

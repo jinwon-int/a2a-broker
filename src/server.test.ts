@@ -3745,6 +3745,135 @@ test("GET/POST /a2a/tasks/terminal-outbox replays and acknowledges compact recor
   }
 });
 
+test("terminal outbox receipt and ACK endpoints persist SQLite hot rows", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "a2a-broker-sqlite-outbox-"));
+  const store = new SqliteBrokerStateStore(join(dir, "state.sqlite"), { loadSource: "hot-tables" });
+  const server = await startTestServer({ stateStore: store, edgeSecret: "test-edge-secret" });
+  try {
+    await registerTestWorker(server.baseUrl, "worker-a", "analyst", "test-edge-secret");
+
+    const hubHeaders = jsonHeaders({
+      "x-a2a-edge-secret": "test-edge-secret",
+      "x-a2a-requester-id": "hub-a",
+      "x-a2a-requester-role": "hub",
+    });
+    const workerHeaders = jsonHeaders({
+      "x-a2a-edge-secret": "test-edge-secret",
+      "x-a2a-requester-id": "worker-a",
+      "x-a2a-requester-role": "analyst",
+    });
+
+    const createRes = await fetch(server.baseUrl + "/tasks", {
+      method: "POST",
+      headers: hubHeaders,
+      body: JSON.stringify({
+        intent: "analyze",
+        requester: { id: "hub-a", kind: "node", role: "hub" },
+        target: { id: "worker-a", kind: "node", role: "analyst" },
+        assignedWorkerId: "worker-a",
+        message: "persist terminal outbox ACK",
+      }),
+    });
+    assert.equal(createRes.status, 201);
+    const task = await createRes.json();
+
+    const claimRes = await fetch(server.baseUrl + "/tasks/" + encodeURIComponent(task.id) + "/claim", {
+      method: "POST",
+      headers: workerHeaders,
+      body: JSON.stringify({ workerId: "worker-a" }),
+    });
+    assert.equal(claimRes.status, 200);
+
+    const completeRes = await fetch(server.baseUrl + "/tasks/" + encodeURIComponent(task.id) + "/complete", {
+      method: "POST",
+      headers: workerHeaders,
+      body: JSON.stringify({ workerId: "worker-a", result: { summary: "done" } }),
+    });
+    assert.equal(completeRes.status, 200);
+
+    const [event] = store.readHotTerminalOutbox();
+    assert.ok(event, "terminal outbox event should be persisted before ACK");
+    assert.equal(event.ack, undefined);
+    let diagnostics = store.readHotTerminalOutboxDiagnostics();
+    assert.equal(diagnostics.total, 1);
+    assert.equal(diagnostics.acked, 0);
+    assert.equal(diagnostics.unacked, 1);
+    assert.equal(diagnostics.unackedRatio, 1);
+    assert.equal(diagnostics.oldestUnackedCreatedAt, event.createdAt);
+    assert.deepEqual(diagnostics.warnings, []);
+
+    const receiptAt = "2026-05-02T00:00:00.000Z";
+    const receiptRes = await fetch(server.baseUrl + "/a2a/tasks/terminal-outbox/receipt", {
+      method: "POST",
+      headers: hubHeaders,
+      body: JSON.stringify({
+        id: event.id,
+        receipt: { status: "provider_accepted", updatedAt: receiptAt, note: "provider accepted only" },
+      }),
+    });
+    assert.equal(receiptRes.status, 200);
+    let persisted = store.readHotTerminalOutbox()[0]!;
+    assert.deepEqual(persisted.receipt, {
+      status: "provider_accepted",
+      updatedAt: receiptAt,
+      note: "provider accepted only",
+    });
+    assert.equal(store.readHotTerminalOutboxDiagnostics().unacked, 1);
+
+    const acknowledgedAt = "2026-05-02T00:01:00.000Z";
+    const ackRes = await fetch(server.baseUrl + "/a2a/tasks/terminal-outbox/ack", {
+      method: "POST",
+      headers: hubHeaders,
+      body: JSON.stringify({
+        id: event.id,
+        receipt: {
+          evidence: "operator_visible",
+          acknowledgedAt,
+          receiptId: "operator-message-1",
+        },
+      }),
+    });
+    assert.equal(ackRes.status, 200);
+    persisted = store.readHotTerminalOutbox()[0]!;
+    assert.deepEqual(persisted.ack, {
+      status: "receipt_confirmed",
+      evidence: "operator_visible",
+      acknowledgedAt,
+      receiptId: "operator-message-1",
+    });
+    assert.equal(persisted.receipt.status, "operator_visible");
+    assert.equal(persisted.attempts, 1);
+    diagnostics = store.readHotTerminalOutboxDiagnostics();
+    assert.equal(diagnostics.total, 1);
+    assert.equal(diagnostics.acked, 1);
+    assert.equal(diagnostics.unacked, 0);
+    assert.equal(diagnostics.unackedRatio, 0);
+    assert.equal(diagnostics.oldestUnackedCreatedAt, null);
+    assert.equal(diagnostics.oldestUnackedAgeMs, null);
+    assert.deepEqual(diagnostics.warnings, []);
+
+    const duplicateAckRes = await fetch(server.baseUrl + "/a2a/tasks/terminal-outbox/ack", {
+      method: "POST",
+      headers: hubHeaders,
+      body: JSON.stringify({
+        id: event.id,
+        receipt: {
+          evidence: "operator_visible",
+          acknowledgedAt,
+          receiptId: "operator-message-1",
+        },
+      }),
+    });
+    assert.equal(duplicateAckRes.status, 200);
+    persisted = store.readHotTerminalOutbox()[0]!;
+    assert.equal(persisted.attempts, 1, "duplicate ACK should not create another terminal attempt");
+    assert.equal(store.readHotTerminalOutboxDiagnostics().acked, 1);
+  } finally {
+    await server.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("GET /a2a/tasks/terminal-outbox reconciles unacknowledged records before cursor", async () => {
   const server = await startTestServer({ edgeSecret: "test-edge-secret" });
   try {

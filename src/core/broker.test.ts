@@ -335,6 +335,7 @@ test("broker profiling hooks receive compact persistence samples", () => {
       hotTombstones: 0,
       hotAuditEvents: 1,
       hotWorkers: 0,
+      hotTerminalOutboxEvents: 0,
     });
   }
 });

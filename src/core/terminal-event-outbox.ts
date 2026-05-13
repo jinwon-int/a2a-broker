@@ -387,6 +387,9 @@ export class TerminalTaskEventOutbox {
       throw new TypeError("terminal outbox ack requires current-session-visible/receipt/operator-visible evidence");
     }
     if (!event) return null;
+    if (event.ack) {
+      return event;
+    }
     event.ack = buildAckState(receipt);
     event.receipt = buildReceiptStateFromAck(event.ack);
     event.ackAudit = buildAckAudit(event.payload, {
