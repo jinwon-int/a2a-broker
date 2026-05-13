@@ -61,6 +61,14 @@ export interface TerminalTaskEventPayload {
     originTaskId?: string;
     childWorkerId?: string;
   };
+  /** Explicit delivery ownership for projected child briefs; projections never send or ACK. */
+  notificationOwnership?: {
+    ownerBrokerId: string;
+    scope: "parent-broker-only";
+    providerSendPermittedByProjection: false;
+    terminalAckPermittedByProjection: false;
+    reason: string;
+  };
   /**
    * Parent broker completion sequence for this round (1-based numerator).
    * Only populated when the broker has a round progress counter; absent for
@@ -270,6 +278,7 @@ export class TerminalTaskEventOutbox {
       ?? sanitizeTaskBrief(`Cross-broker Terminal Brief from ${projection.originBrokerId}`);
     const testSummary = sanitizeSummary(projection.summary);
     const evidenceUrl = firstSafeHttpUrl(projection.evidenceUrl);
+    const parentBrokerId = projection.brokerOfRecordId ?? "unknown-parent-broker";
     const payload: TerminalTaskEventPayload = {
       taskId: syntheticTaskId,
       status: projection.status,
@@ -285,10 +294,17 @@ export class TerminalTaskEventOutbox {
       ...(projection.parentRoundTotal ? { parentRoundTotal: projection.parentRoundTotal } : {}),
       crossBrokerHandoff: {
         parentRoundId: projection.parentRoundId,
-        originBrokerId: projection.brokerOfRecordId ?? "unknown-parent-broker",
+        originBrokerId: parentBrokerId,
         handoffBrokerId: projection.originBrokerId,
         ...(projection.childTaskId ? { originTaskId: projection.childTaskId } : {}),
         ...(projection.childWorkerId ? { childWorkerId: projection.childWorkerId } : {}),
+      },
+      notificationOwnership: {
+        ownerBrokerId: parentBrokerId,
+        scope: "parent-broker-only",
+        providerSendPermittedByProjection: false,
+        terminalAckPermittedByProjection: false,
+        reason: "cross-broker projections are parent-broker aggregation evidence only; child/handoff brokers do not notify or ACK",
       },
     };
     applyRoundProgressMetadata(payload, this.roundProgress);

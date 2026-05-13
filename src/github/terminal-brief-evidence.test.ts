@@ -30,6 +30,13 @@ function makeTerminalEvent(overrides: Partial<TerminalTaskOutboxEvent> = {}): Te
       parentRoundProgress: 3,
       parentRoundTotal: 7,
       terminalBriefTitle: "A2A Terminal Brief 완료: dungae(3/7)",
+      notificationOwnership: {
+        ownerBrokerId: "seoseo",
+        scope: "parent-broker-only",
+        providerSendPermittedByProjection: false,
+        terminalAckPermittedByProjection: false,
+        reason: "parent owns notifications",
+      },
       prUrl: "https://github.com/acme/platform/pull/9",
       createdAt: "2026-05-11T00:00:00.000Z",
       updatedAt: "2026-05-11T00:05:00.000Z",
@@ -71,8 +78,15 @@ describe("Terminal Brief GitHub evidence projection", () => {
     assert.equal(projection.manifest.terminalBriefTitle, "A2A Terminal Brief 완료: dungae(3/7)");
     assert.equal(projection.manifest.parentRoundProgress, 3);
     assert.equal(projection.manifest.parentRoundTotal, 7);
+    assert.deepEqual(projection.manifest.notificationOwnership, {
+      ownerBrokerId: "seoseo",
+      scope: "parent-broker-only",
+      providerSendPermittedByProjection: false,
+      terminalAckPermittedByProjection: false,
+    });
     assert.match(projection.body, /terminal_brief_title: A2A Terminal Brief 완료: dungae\(3\/7\)/);
     assert.match(projection.body, /parent_round_progress: 3\/7/);
+    assert.match(projection.body, /notification_owner: seoseo \(parent-broker-only; provider_send_by_projection=false; terminal_ack_by_projection=false\)/);
     assert.match(projection.body, /pull_request: https:\/\/github\.com\/acme\/platform\/pull\/9/);
     assert.match(projection.body, /not a Terminal Brief ACK, read receipt, visibility proof, or operator approval/);
     assert.doesNotMatch(projection.body, /operator_visible.*confirmed/);
