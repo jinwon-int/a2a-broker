@@ -256,7 +256,7 @@ describe("analyzeTerminalOutboxBacklogRisk — risk levels", () => {
 
   it("returns high with one critical signal", () => {
     const s = snapshot({
-      total: 600, acked: 50, unacked: 550, unackedRatio: 0.92,
+      total: 100, acked: 5, unacked: 95, unackedRatio: 0.95,
     });
     const result = analyzeTerminalOutboxBacklogRisk(s);
     assert.strictEqual(result.risk, "high");
@@ -276,7 +276,7 @@ describe("analyzeTerminalOutboxBacklogRisk — risk levels", () => {
   });
 
   it("returns low with one warning signal", () => {
-    const s = snapshot({ total: 200, acked: 50, unacked: 150, unackedRatio: 0.75 });
+    const s = snapshot({ total: 100, acked: 20, unacked: 80, unackedRatio: 0.8 });
     const result = analyzeTerminalOutboxBacklogRisk(s);
     assert.strictEqual(result.risk, "low");
     assert.strictEqual(result.stabilityGatePass, true);

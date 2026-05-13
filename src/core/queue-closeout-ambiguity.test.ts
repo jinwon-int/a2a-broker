@@ -23,13 +23,13 @@ function emptySnapshot(): QueueCloseoutSnapshot {
   };
 }
 
-function snap(overrides: Partial<QueueCloseoutSnapshot> & { counts?: Partial<QueueCloseoutSnapshot["counts"]> }): QueueCloseoutSnapshot {
+function snap(overrides: Omit<Partial<QueueCloseoutSnapshot>, "counts"> & { counts?: Partial<QueueCloseoutSnapshot["counts"]> }): QueueCloseoutSnapshot {
+  const { counts, ...rest } = overrides;
   const base = emptySnapshot();
-  if (overrides.counts) {
-    base.counts = { ...base.counts, ...overrides.counts };
-    delete overrides.counts;
+  if (counts) {
+    base.counts = { ...base.counts, ...counts };
   }
-  return { ...base, ...overrides };
+  return { ...base, ...rest };
 }
 
 // ---------------------------------------------------------------------------
