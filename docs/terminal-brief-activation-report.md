@@ -52,6 +52,15 @@ Expected gate semantics:
 
 The report returns `Block` until all seven gates have bounded HTTP evidence and no separation warnings are present. It is still a successful no-live validation artifact when it blocks activation because evidence is missing.
 
+## R9 parent-round projection parity addendum
+
+For Seoseo-owned parent rounds receiving Gwakga handoff child Terminal Briefs, no-live activation evidence must prove:
+
+- projected records preserve `brokerOfRecordId=seoseo`, `originBrokerId=gwakga`, the child worker id, and the parent-round total;
+- parent-broker outbox records render compact titles as `A2A Terminal Brief 완료: <worker>(n/7)` only when both numerator and denominator are known;
+- notification ownership stays parent-only: the broker exposes replayable outbox/evidence records but does not send providers or ACK terminal rows;
+- activation remains blocked until the no-live report links bounded PR/Done/Block evidence and excludes OpenClaw runtime/bootstrap context paths.
+
 Validation:
 
 ```bash
