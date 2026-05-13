@@ -53,6 +53,12 @@ export interface TerminalTaskEventPayload {
   createdAt: string;
   updatedAt: string;
   completedAt?: string;
+  crossBrokerHandoff?: {
+    parentRoundId: string;
+    originBrokerId: string;
+    handoffBrokerId?: string;
+    originTaskId?: string;
+  };
 }
 
 export interface TerminalTaskOutboxEvent {
@@ -479,11 +485,40 @@ function buildTerminalTaskPayload(task: TaskRecord): TerminalTaskEventPayload {
     task.payload["blockCommentUrl"],
   );
   if (blockUrl) payload.blockUrl = blockUrl;
+  const crossBrokerHandoff = buildCrossBrokerHandoff(task.payload["crossBrokerHandoff"], output["crossBrokerHandoff"]);
+  if (crossBrokerHandoff) payload.crossBrokerHandoff = crossBrokerHandoff;
   const summary = task.result?.summary ?? task.result?.note ?? task.error?.message;
   const safeSummary = sanitizeSummary(summary);
   if (safeSummary) payload.testSummary = safeSummary;
   if (task.completedAt) payload.completedAt = task.completedAt;
   return payload;
+}
+
+
+function buildCrossBrokerHandoff(...values: unknown[]): TerminalTaskEventPayload["crossBrokerHandoff"] | undefined {
+  for (const value of values) {
+    if (!isRecord(value)) continue;
+    const parentRoundId = sanitizeCrossBrokerToken(value["parentRoundId"] ?? value["roundId"]);
+    const originBrokerId = sanitizeCrossBrokerToken(value["originBrokerId"] ?? (isRecord(value["originBroker"]) ? value["originBroker"]["id"] : undefined) ?? value["origin"]);
+    if (!parentRoundId || !originBrokerId) continue;
+    const handoffBrokerId = sanitizeCrossBrokerToken(value["handoffBrokerId"] ?? value["localBrokerId"] ?? value["brokerId"]);
+    const originTaskId = sanitizeCrossBrokerToken(value["originTaskId"] ?? value["parentTaskId"]);
+    return {
+      parentRoundId,
+      originBrokerId,
+      ...(handoffBrokerId ? { handoffBrokerId } : {}),
+      ...(originTaskId ? { originTaskId } : {}),
+    };
+  }
+  return undefined;
+}
+
+function sanitizeCrossBrokerToken(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  if (!trimmed || trimmed.length > 160) return undefined;
+  if (/token|secret|password|authorization|api[_-]?key/i.test(trimmed)) return undefined;
+  return sanitizeSummary(trimmed);
 }
 
 function buildTaskBrief(task: TaskRecord, output: Record<string, unknown>): string | undefined {
