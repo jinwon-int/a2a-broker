@@ -17,7 +17,12 @@ import {
 } from "./store.js";
 import { validateGithubTaskCompletionEvidence } from "./github-task-completion.js";
 import { TaskEventStream } from "./task-event-stream.js";
-import { TerminalTaskEventOutbox } from "./terminal-event-outbox.js";
+import {
+  TerminalTaskEventOutbox,
+  type TerminalTaskOutboxAckInput,
+  type TerminalTaskOutboxEvent,
+  type TerminalTaskOutboxReceiptUpdateInput,
+} from "./terminal-event-outbox.js";
 import { ConferenceRoomManager } from "./conference-room.js";
 import {
   CrossBrokerTerminalBriefProjectionStore,
@@ -402,6 +407,24 @@ export class InMemoryA2ABroker {
   /** Compact terminal task event outbox for durable webhook/SSE delivery. */
   getTerminalTaskEventOutbox(): TerminalTaskEventOutbox {
     return this.terminalTaskEventOutbox;
+  }
+
+  /** Record terminal-outbox receipt status and persist it for SQLite/json restart safety. */
+  recordTerminalTaskOutboxReceiptStatus(id: string, receipt: TerminalTaskOutboxReceiptUpdateInput): TerminalTaskOutboxEvent | null {
+    const event = this.terminalTaskEventOutbox.recordReceiptStatus(id, receipt);
+    if (event) {
+      this.persistState();
+    }
+    return event;
+  }
+
+  /** Acknowledge terminal-outbox receipt evidence and persist the ACK cursor state. */
+  acknowledgeTerminalTaskOutbox(id: string, receipt: TerminalTaskOutboxAckInput): TerminalTaskOutboxEvent | null {
+    const event = this.terminalTaskEventOutbox.acknowledge(id, receipt);
+    if (event) {
+      this.persistState();
+    }
+    return event;
   }
 
   ingestCrossBrokerTerminalBriefProjection(request: CrossBrokerTerminalBriefProjectionRequest): CrossBrokerTerminalBriefProjectionResult {
