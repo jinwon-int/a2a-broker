@@ -3098,6 +3098,9 @@ export class InMemoryA2ABroker {
    * - `stale_worker`: workers with no recent heartbeat (online but last seen
    *   beyond the stale threshold).
    * - `malformed_task`: queued tasks missing required target/requester fields.
+   * - `orphaned_claim`: claimed or running tasks whose claiming worker is
+   *   stale — common residue after a fleet update where old workers are
+   *   replaced and their in-flight tasks lose their executor.
    * - `terminal_outbox_backlog`: unacknowledged terminal outbox events older
    *   than the backlog threshold.
    * - `historical_terminal_task`: terminal (succeeded/failed/canceled) tasks
@@ -3184,6 +3187,52 @@ export class InMemoryA2ABroker {
       }
     }
 
+    // --- Orphaned claims: claimed/running tasks whose claiming worker is stale ---
+    const staleWorkerIds = new Set(
+      [...this.workers.entries()]
+        .filter(([, w]) => {
+          const lastSeenMs = w.lastSeenAt ? Date.parse(w.lastSeenAt) : 0;
+          return Number.isFinite(lastSeenMs) && nowMs - lastSeenMs > staleWorkerAfterMs;
+        })
+        .map(([id]) => id),
+    );
+    if (staleWorkerIds.size > 0) {
+      for (const task of this.tasks.values()) {
+        if (task.status !== "claimed" && task.status !== "running") continue;
+        const workerId = task.claimedBy ?? task.assignedWorkerId;
+        if (!workerId || !staleWorkerIds.has(workerId)) continue;
+
+        const lastActivityMs = task.lastHeartbeatAt
+          ? Date.parse(task.lastHeartbeatAt)
+          : task.claimedAt
+            ? Date.parse(task.claimedAt)
+            : Date.parse(task.createdAt);
+        const ageMs = nowMs - (Number.isFinite(lastActivityMs) ? lastActivityMs : nowMs);
+
+        const risk: CleanupCandidate["risk"] =
+          task.status === "running" ? "high_risk" : "caution";
+
+        candidates.push({
+          id: `cleanup:orphaned-claim:${encodeURIComponent(task.id)}`,
+          class: "orphaned_claim",
+          reason: `task ${task.id} is ${task.status} but its claiming worker ${workerId} has been stale for ${formatAgeMs(nowMs - (this.workers.get(workerId)?.lastSeenAt ? Date.parse(this.workers.get(workerId)!.lastSeenAt) : nowMs))}`,
+          risk,
+          entityId: task.id,
+          updatedAt: task.lastHeartbeatAt ?? task.claimedAt ?? task.updatedAt,
+          ageMs,
+          metadata: {
+            taskId: task.id,
+            status: task.status,
+            intent: task.intent,
+            staleWorkerId: workerId,
+            lastHeartbeatAt: task.lastHeartbeatAt,
+            claimedAt: task.claimedAt,
+            requeueCount: task.requeueCount,
+          },
+        });
+      }
+    }
+
     // --- Terminal outbox backlog ---
     const outboxEvents = this.terminalTaskEventOutbox.snapshot();
     for (const event of outboxEvents) {
@@ -3255,6 +3304,7 @@ export class InMemoryA2ABroker {
     const summary: CleanupDryRunPlan["summary"] = {
       stale_worker: 0,
       malformed_task: 0,
+      orphaned_claim: 0,
       terminal_outbox_backlog: 0,
       historical_terminal_task: 0,
     };
@@ -3270,6 +3320,11 @@ export class InMemoryA2ABroker {
     if (summary.malformed_task > 0) {
       riskNotes.push(
         `Malformed queued tasks detected (${summary.malformed_task}): inspect payload before cancellation; may indicate upstream ingestion issues.`,
+      );
+    }
+    if (summary.orphaned_claim > 0) {
+      riskNotes.push(
+        `Orphaned claims detected (${summary.orphaned_claim}): claimed/running tasks assigned to stale workers after fleet update. Requeue or fail these tasks to unblock the queue. Use --allow-worker-prune only after reassignment.`,
       );
     }
     if (summary.terminal_outbox_backlog > 0) {
