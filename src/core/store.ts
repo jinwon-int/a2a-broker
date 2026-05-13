@@ -224,6 +224,8 @@ export interface SqliteTaskHotTableFilters {
   taskOrigin?: TaskRecord["taskOrigin"];
   /** Optional cap on result rows to prevent unbounded heap materialization on hot-table diagnostic/cleanup reads. */
   maxRows?: number;
+  /** Runtime listing cap. Unlike maxRows, limit=0 intentionally returns no rows. */
+  limit?: number;
 }
 
 export interface SqliteExchangeHotTableFilters {
@@ -916,7 +918,7 @@ export class SqliteBrokerStateStore implements BrokerStateStore {
         ["task_origin", filters.taskOrigin],
       ],
       "updated_at DESC, id ASC",
-      filters.maxRows,
+      filters.limit ?? (filters.maxRows !== undefined && filters.maxRows > 0 ? normalizeOptionalSqliteLimit(filters.maxRows) : undefined),
     );
     return this.db
       .prepare(sql)
@@ -2197,6 +2199,7 @@ export class SqliteTaskRuntimeRepository implements TaskRuntimeRepository {
   }
 
   listTasks(filters: TaskListFilters = {}): TaskRecord[] {
+    const sqliteCanApplyLimit = !filters.exchangeId && !filters.proposalId && !filters.claimedBy;
     return this.store
       .readHotTasks({
         status: filters.status,
@@ -2204,8 +2207,10 @@ export class SqliteTaskRuntimeRepository implements TaskRuntimeRepository {
         intent: filters.intent,
         assignedWorkerId: filters.assignedWorkerId,
         taskOrigin: filters.taskOrigin,
+        limit: sqliteCanApplyLimit ? filters.limit : undefined,
       })
-      .filter((task) => taskMatchesRuntimeFilters(task, filters));
+      .filter((task) => taskMatchesRuntimeFilters(task, filters))
+      .slice(0, normalizeRuntimeTaskListLimit(filters.limit));
   }
 
   upsertTask(task: TaskRecord): void {
@@ -2478,9 +2483,9 @@ function buildHotTableSelect(
   tableName: SqliteHotEntityTable,
   filters: Array<[string, string | undefined]>,
   orderBy: string,
-  maxRows?: number,
-): { sql: string; params: string[] } {
-  const params: string[] = [];
+  limit?: number,
+): { sql: string; params: Array<string | number> } {
+  const params: Array<string | number> = [];
   const clauses = filters.flatMap(([column, value]) => {
     if (!value) {
       return [];
@@ -2488,14 +2493,15 @@ function buildHotTableSelect(
     params.push(value);
     return [`${column} = ?`];
   });
-  const maxRowsClause = maxRows !== undefined && maxRows > 0 ? " LIMIT ?" : "";
-  if (maxRowsClause) {
-    params.push(String(maxRows));
-  }
+  const hasLimit = typeof limit === "number" && Number.isInteger(limit) && limit > 0;
   return {
-    sql: `SELECT payload FROM ${tableName}${clauses.length ? ` WHERE ${clauses.join(" AND ")}` : ""} ORDER BY ${orderBy}${maxRowsClause}`,
-    params,
+    sql: `SELECT payload FROM ${tableName}${clauses.length ? ` WHERE ${clauses.join(" AND ")}` : ""} ORDER BY ${orderBy}${hasLimit ? " LIMIT ?" : ""}`,
+    params: hasLimit ? [...params, limit] : params,
   };
+}
+
+function normalizeRuntimeTaskListLimit(limit: number | undefined): number | undefined {
+  return typeof limit === "number" && Number.isInteger(limit) && limit >= 0 ? limit : undefined;
 }
 
 function countSnapshotEntities(snapshot: BrokerSnapshot): Record<string, number> {

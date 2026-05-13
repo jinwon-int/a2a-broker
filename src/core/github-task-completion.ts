@@ -34,6 +34,25 @@ export function validateGithubTaskCompletionEvidence(task: TaskRecord, result?: 
     return null;
   }
 
+  if (isGithubReadOnlyValidationTask(task) && !hasGithubNoPatchCompletionEvidence(result)) {
+    return {
+      code: "github_completion_evidence_missing",
+      message:
+        "github-origin read-only validation/libero tasks must return Done-comment or Block-comment evidence; PR-only evidence is reserved for propose_patch tasks",
+      details: {
+        taskId: task.id,
+        taskOrigin: task.taskOrigin,
+        mode: typeof task.payload?.mode === "string" ? task.payload.mode : undefined,
+        requiredEvidence: [
+          "result.output.github.doneCommentUrl",
+          "result.output.github.blockCommentUrl",
+          "result.output.doneCommentUrl",
+          "result.output.blockCommentUrl",
+        ],
+      },
+    };
+  }
+
   if (!hasGithubCompletionEvidence(result)) {
     return {
       code: "github_completion_evidence_missing",
@@ -127,6 +146,23 @@ function hasGithubCompletionEvidence(result?: TaskResult): boolean {
     isHttpUrl(output.doneCommentUrl) ||
     isHttpUrl(output.blockCommentUrl)
   );
+}
+
+function hasGithubNoPatchCompletionEvidence(result?: TaskResult): boolean {
+  const output = result?.output;
+  if (!output || typeof output !== "object" || Array.isArray(output)) {
+    return false;
+  }
+
+  const github = output.github;
+  if (github && typeof github === "object" && !Array.isArray(github)) {
+    const record = github as Record<string, unknown>;
+    if (isHttpUrl(record.doneCommentUrl) || isHttpUrl(record.blockCommentUrl)) {
+      return true;
+    }
+  }
+
+  return isHttpUrl(output.doneCommentUrl) || isHttpUrl(output.blockCommentUrl);
 }
 
 function validateCompletionReceipt(result?: TaskResult): TaskError | null {

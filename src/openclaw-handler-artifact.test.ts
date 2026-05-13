@@ -1114,15 +1114,23 @@ test("GitHub read-only validation requires Done or Block evidence but not a PR",
     intent: "verify",
     payload: { mode: "github-verify", repo: "owner/repo", issue: "#527" },
   });
+  const taskRecord = { ...makeTaskRecord(task), taskOrigin: "github" as const };
 
   const missingEvidenceError = validateTaskCompletionEvidence(
-    { ...makeTaskRecord(task), taskOrigin: "github" },
+    taskRecord,
     { summary: "read-only validation completed", output: { runner: { status: "completed", artifacts: [] } } } as any,
   );
   assert.equal(missingEvidenceError?.code, "github_completion_evidence_missing");
 
+  const prOnlyEvidenceError = validateTaskCompletionEvidence(
+    taskRecord,
+    { summary: "read-only validation completed", output: { prUrl: "https://github.com/owner/repo/pull/527" } } as any,
+  );
+  assert.equal(prOnlyEvidenceError?.code, "github_completion_evidence_missing");
+  assert.match(prOnlyEvidenceError?.message ?? "", /Done-comment or Block-comment/);
+
   const doneEvidenceError = validateTaskCompletionEvidence(
-    { ...makeTaskRecord(task), taskOrigin: "github" },
+    taskRecord,
     { summary: "read-only validation completed", output: { doneCommentUrl: "https://github.com/owner/repo/issues/527#issuecomment-done" } } as any,
   );
   assert.equal(doneEvidenceError, null);

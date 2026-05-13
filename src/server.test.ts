@@ -874,6 +874,42 @@ test("GET /tasks returns lightweight task summaries and keeps full detail opt-in
   }
 });
 
+test("GET /tasks applies explicit bounded limits", async () => {
+  const { baseUrl, close } = await startTestServer({ enforceRequesterIdentity: false });
+  try {
+    await registerTestWorker(baseUrl, "worker-a", "analyst");
+    for (let i = 0; i < 3; i += 1) {
+      const createRes = await fetch(`${baseUrl}/tasks`, {
+        method: "POST",
+        headers: jsonHeaders(),
+        body: JSON.stringify({
+          id: `task-list-bound-${i}`,
+          requester: { id: "requester", kind: "session", role: "hub" },
+          target: { id: "worker-a", kind: "node", role: "analyst" },
+          targetNodeId: "worker-a",
+          intent: "chat",
+          message: `bounded task ${i}`,
+        }),
+      });
+      assert.equal(createRes.status, 201);
+    }
+
+    const limitedBody = await (await fetch(`${baseUrl}/tasks?limit=2`)).json();
+    assert.equal(limitedBody.count, 2);
+    assert.equal(limitedBody.limit, 2);
+    assert.equal(limitedBody.items.length, 2);
+
+    const cappedBody = await (await fetch(`${baseUrl}/tasks?limit=9999`)).json();
+    assert.equal(cappedBody.count, 3);
+    assert.equal(cappedBody.limit, 500);
+
+    const badLimitRes = await fetch(`${baseUrl}/tasks?limit=1.5`);
+    assert.equal(badLimitRes.status, 400);
+  } finally {
+    await close();
+  }
+});
+
 test("server can hydrate broker runtime from SQLite hot-table load source", async () => {
   const dir = mkdtempSync(join(tmpdir(), "a2a-broker-sqlite-hot-load-"));
   const sqliteFile = join(dir, "state.sqlite");
