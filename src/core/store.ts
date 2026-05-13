@@ -744,6 +744,7 @@ const crossBrokerTerminalBriefProjectionSchema = z
     receivedAt: z.string(),
     sourceDigest: z.string().min(1),
     replayCount: z.number().int().nonnegative(),
+    parentRoundTotal: z.number().int().positive().optional(),
     ack: z
       .object({
         decision: z.enum(["accepted", "duplicate_replay"]),
