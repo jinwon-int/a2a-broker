@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 
 import { DEFAULT_BROKER_RETENTION_POLICY } from "./broker.js";
+import { DEFAULT_TERMINAL_TASK_OUTBOX_RETENTION } from "./terminal-event-outbox.js";
 import type {
   SqliteBrokerStateStore,
   SqliteHotRetentionApplyResult,
@@ -18,6 +19,8 @@ export interface BrokerCleanupPlanOptions {
   maxAuditEvents?: number;
   workerRetentionMs?: number;
   maxInactiveWorkers?: number;
+  terminalOutboxRetentionMs?: number;
+  maxAcknowledgedTerminalOutboxEvents?: number;
   protectedTaskIds?: string[];
   protectedWorkerIds?: string[];
 }
@@ -74,6 +77,8 @@ const DEFAULT_CLEANUP_OPTIONS: Required<Omit<BrokerCleanupPlanOptions, "nowMs" |
   maxAuditEvents: DEFAULT_BROKER_RETENTION_POLICY.maxAuditEvents,
   workerRetentionMs: DEFAULT_BROKER_RETENTION_POLICY.inactiveWorkerRetentionMs,
   maxInactiveWorkers: DEFAULT_BROKER_RETENTION_POLICY.maxInactiveWorkers,
+  terminalOutboxRetentionMs: DEFAULT_BROKER_RETENTION_POLICY.terminalRetentionMs,
+  maxAcknowledgedTerminalOutboxEvents: DEFAULT_TERMINAL_TASK_OUTBOX_RETENTION,
 };
 
 const RISK_ORDER: BrokerCleanupRiskClass[] = ["low", "medium", "high"];
@@ -114,11 +119,22 @@ export function buildBrokerCleanupPlan(
       workerIds: workerPlan.retainedIds,
     },
   });
+  const terminalOutboxPlan = store.planHotTerminalOutboxRetention({
+    nowMs,
+    retentionMs: normalized.terminalOutboxRetentionMs,
+    maxAcknowledgedRecords: normalized.maxAcknowledgedTerminalOutboxEvents,
+  });
 
   const tables = [
     decoratePlan(taskPlan, "terminal task rows older than retention/cap window", "medium"),
     decoratePlan(auditPlan, "audit rows outside retention/cap window after protected target coverage", "low"),
     decoratePlan(workerPlan, "inactive worker rows outside retention/cap window", "high", true),
+    decoratePlan(
+      terminalOutboxPlan,
+      "acknowledged terminal outbox rows older than retention/cap window; unacked rows are always retained",
+      "high",
+      true,
+    ),
   ];
   const tableCounts = store.readHotEntityTableCounts();
   const candidateTables = tables.filter((plan) => plan.pruneCount > 0).length;
@@ -164,6 +180,7 @@ export function buildBrokerCleanupPlan(
     notes: [
       "This is a dry-run discovery/plan only; no rows are mutated by buildBrokerCleanupPlan.",
       "Worker-row pruning is fail-closed by default because stale rows may still be valid home-broker records.",
+      "Terminal outbox pruning is dry-run-only here; unacked rows remain protected until a separate operator ACK/prune approval path exists.",
       "Execution appends a broker.cleanup.applied audit row after pruning; rollback is restore from the backup/checkpoint named in backupProof.",
       "Provider accepted-send receipts are not terminal ACK evidence and are not used as cleanup proof.",
     ],
@@ -227,6 +244,10 @@ export function validateCleanupExecution(
   if ((workerPlan?.pruneCount ?? 0) > 0 && options.allowWorkerPrune !== true) {
     blockers.push("worker prune candidates require allowWorkerPrune=true because stale workers may still be valid home-broker records");
   }
+  const terminalOutboxPlan = plan.tables.find((table) => table.table === "broker_terminal_outbox");
+  if ((terminalOutboxPlan?.pruneCount ?? 0) > 0) {
+    blockers.push("terminal outbox prune candidates are dry-run-only; require separate operator ACK/prune approval path");
+  }
   return blockers;
 }
 
@@ -242,6 +263,11 @@ function normalizeCleanupOptions(
     maxAuditEvents: normalizeNonNegativeInteger(input.maxAuditEvents, DEFAULT_CLEANUP_OPTIONS.maxAuditEvents),
     workerRetentionMs: normalizeNonNegativeInteger(input.workerRetentionMs, DEFAULT_CLEANUP_OPTIONS.workerRetentionMs),
     maxInactiveWorkers: normalizeNonNegativeInteger(input.maxInactiveWorkers, DEFAULT_CLEANUP_OPTIONS.maxInactiveWorkers),
+    terminalOutboxRetentionMs: normalizeNonNegativeInteger(input.terminalOutboxRetentionMs, DEFAULT_CLEANUP_OPTIONS.terminalOutboxRetentionMs),
+    maxAcknowledgedTerminalOutboxEvents: normalizeNonNegativeInteger(
+      input.maxAcknowledgedTerminalOutboxEvents,
+      DEFAULT_CLEANUP_OPTIONS.maxAcknowledgedTerminalOutboxEvents,
+    ),
     protectedTaskIds: normalizeStringArray(input.protectedTaskIds),
     protectedWorkerIds: normalizeStringArray(input.protectedWorkerIds),
   };

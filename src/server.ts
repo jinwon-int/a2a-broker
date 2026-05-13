@@ -2692,6 +2692,8 @@ function cleanupPlanOptionsFromUrl(url: URL): BrokerCleanupPlanOptions {
     maxAuditEvents: numberQueryParam(url, "max_audit_events"),
     workerRetentionMs: numberQueryParam(url, "worker_retention_ms"),
     maxInactiveWorkers: numberQueryParam(url, "max_inactive_workers"),
+    terminalOutboxRetentionMs: numberQueryParam(url, "terminal_outbox_retention_ms"),
+    maxAcknowledgedTerminalOutboxEvents: numberQueryParam(url, "max_acknowledged_terminal_outbox_events"),
     protectedTaskIds: stringListQueryParam(url, "protected_task_id"),
     protectedWorkerIds: stringListQueryParam(url, "protected_worker_id"),
   };
@@ -2706,6 +2708,8 @@ function cleanupPlanOptionsFromBody(body: Record<string, unknown> | null | undef
     maxAuditEvents: nonNegativeNumberBodyField(body, "maxAuditEvents"),
     workerRetentionMs: nonNegativeNumberBodyField(body, "workerRetentionMs"),
     maxInactiveWorkers: nonNegativeNumberBodyField(body, "maxInactiveWorkers"),
+    terminalOutboxRetentionMs: nonNegativeNumberBodyField(body, "terminalOutboxRetentionMs"),
+    maxAcknowledgedTerminalOutboxEvents: nonNegativeNumberBodyField(body, "maxAcknowledgedTerminalOutboxEvents"),
     protectedTaskIds: stringListBodyField(body, "protectedTaskIds"),
     protectedWorkerIds: stringListBodyField(body, "protectedWorkerIds"),
   };
