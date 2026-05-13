@@ -676,6 +676,150 @@ test("SqliteBrokerStateStore projects empty hot tables as an empty runtime snaps
   }
 });
 
+test("SqliteBrokerStateStore readHotTasks respects maxRows cap", () => {
+  const temp = withTempFile("state.sqlite");
+  try {
+    const store = new SqliteBrokerStateStore(temp.filePath);
+    store.save({
+      version: CURRENT_BROKER_STATE_VERSION,
+      exchanges: [],
+      exchangeMessages: [],
+      proposals: [],
+      artifacts: [],
+      validations: [],
+      workers: [],
+      tasks: [
+        makeTask("task-a", "queued", "worker-a"),
+        makeTask("task-b", "running", "worker-a"),
+        makeTask("task-c", "running", "worker-b"),
+        makeTask("task-d", "succeeded", "worker-b"),
+        makeTask("task-e", "succeeded", "worker-b"),
+      ],
+      auditEvents: [],
+      tombstones: [],
+      terminalOutbox: [],
+      crossBrokerTerminalBriefs: [],
+    });
+
+    assert.equal(store.readHotTasks().length, 5, "bounded: no maxRows returns all 5 tasks");
+    assert.equal(store.readHotTasks({ maxRows: 1 }).length, 1, "maxRows=1 must return at most 1 task");
+    assert.equal(store.readHotTasks({ maxRows: 3 }).length, 3, "maxRows=3 must return at most 3 tasks");
+    assert.equal(store.readHotTasks({ maxRows: 100 }).length, 5, "maxRows larger than dataset returns all rows");
+    assert.equal(store.readHotTasks({ maxRows: 0 }).length, 5, "maxRows=0 (disabled) returns all rows");
+    // With AND filter + maxRows
+    assert.equal(store.readHotTasks({ status: "succeeded", maxRows: 1 }).length, 1, "filtered + maxRows=1 returns 1");
+
+    store.close();
+  } finally {
+    temp.cleanup();
+  }
+});
+
+test("SqliteBrokerStateStore readHotAuditEvents respects maxRows cap", () => {
+  const temp = withTempFile("state.sqlite");
+  try {
+    const store = new SqliteBrokerStateStore(temp.filePath);
+    store.save({
+      version: CURRENT_BROKER_STATE_VERSION,
+      exchanges: [],
+      exchangeMessages: [],
+      proposals: [],
+      artifacts: [],
+      validations: [],
+      workers: [],
+      tasks: [],
+      auditEvents: [
+        makeAuditEvent("audit-1", "task.created", "task-a"),
+        makeAuditEvent("audit-2", "task.started", "task-b"),
+        makeAuditEvent("audit-3", "task.succeeded", "task-b"),
+        makeAuditEvent("audit-4", "task.created", "task-b"),
+      ],
+      tombstones: [],
+      terminalOutbox: [],
+      crossBrokerTerminalBriefs: [],
+    });
+
+    assert.equal(store.readHotAuditEvents().length, 4, "no maxRows returns all 4 audit events");
+    assert.equal(store.readHotAuditEvents({ maxRows: 1 }).length, 1, "maxRows=1 must return at most 1");
+    assert.equal(store.readHotAuditEvents({ maxRows: 2 }).length, 2, "maxRows=2 must return at most 2");
+    assert.equal(store.readHotAuditEvents({ maxRows: 100 }).length, 4, "maxRows > dataset returns all");
+    assert.equal(store.readHotAuditEvents({ maxRows: 0 }).length, 4, "maxRows=0 returns all");
+
+    store.close();
+  } finally {
+    temp.cleanup();
+  }
+});
+
+test("SqliteBrokerStateStore readHotWorkers respects maxRows cap", () => {
+  const temp = withTempFile("state.sqlite");
+  try {
+    const store = new SqliteBrokerStateStore(temp.filePath);
+    store.save({
+      version: CURRENT_BROKER_STATE_VERSION,
+      exchanges: [],
+      exchangeMessages: [],
+      proposals: [],
+      artifacts: [],
+      validations: [],
+      workers: [
+        makeWorker("worker-a"),
+        makeWorker("worker-b"),
+        makeWorker("worker-c"),
+      ],
+      tasks: [],
+      auditEvents: [],
+      tombstones: [],
+      terminalOutbox: [],
+      crossBrokerTerminalBriefs: [],
+    });
+
+    assert.equal(store.readHotWorkers().length, 3, "no maxRows returns all 3 workers");
+    assert.equal(store.readHotWorkers({ maxRows: 1 }).length, 1, "maxRows=1 must return at most 1");
+    assert.equal(store.readHotWorkers({ maxRows: 100 }).length, 3, "maxRows > dataset returns all");
+    assert.equal(store.readHotWorkers({ maxRows: 0 }).length, 3, "maxRows=0 returns all");
+
+    store.close();
+  } finally {
+    temp.cleanup();
+  }
+});
+
+test("SqliteBrokerStateStore readHotTombstones respects maxRows cap", () => {
+  const temp = withTempFile("state.sqlite");
+  try {
+    const store = new SqliteBrokerStateStore(temp.filePath);
+    store.save({
+      version: CURRENT_BROKER_STATE_VERSION,
+      exchanges: [],
+      exchangeMessages: [],
+      proposals: [],
+      artifacts: [],
+      validations: [],
+      workers: [],
+      tasks: [],
+      auditEvents: [],
+      tombstones: [
+        makeTombstone("t1", "failed", "2026-04-27T01:00:00.000Z"),
+        makeTombstone("t2", "dead_lettered", "2026-04-26T01:00:00.000Z"),
+        makeTombstone("t3", "canceled", "2026-04-25T01:00:00.000Z"),
+      ],
+      terminalOutbox: [],
+      crossBrokerTerminalBriefs: [],
+    });
+
+    assert.equal(store.readHotTombstones().length, 3, "no maxRows returns all 3 tombstones");
+    assert.equal(store.readHotTombstones({ maxRows: 1 }).length, 1, "maxRows=1 must return at most 1");
+    assert.equal(store.readHotTombstones({ maxRows: 2 }).length, 2, "maxRows=2 must return at most 2");
+    assert.equal(store.readHotTombstones({ maxRows: 100 }).length, 3, "maxRows > dataset returns all");
+    assert.equal(store.readHotTombstones({ maxRows: 0 }).length, 3, "maxRows=0 returns all");
+
+    store.close();
+  } finally {
+    temp.cleanup();
+  }
+});
+
 test("SqliteBrokerStateStore skips invalid worker hot rows and reports diagnostics", () => {
   const temp = withTempFile("state.sqlite");
   try {

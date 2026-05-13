@@ -222,6 +222,8 @@ export interface SqliteTaskHotTableFilters {
   intent?: TaskRecord["intent"];
   assignedWorkerId?: string;
   taskOrigin?: TaskRecord["taskOrigin"];
+  /** Optional cap on result rows to prevent unbounded heap materialization on hot-table diagnostic/cleanup reads. */
+  maxRows?: number;
 }
 
 export interface SqliteExchangeHotTableFilters {
@@ -257,11 +259,15 @@ export interface SqliteAuditHotTableFilters {
   action?: AuditEvent["action"];
   targetType?: AuditEvent["targetType"];
   targetId?: string;
+  /** Optional cap on result rows to prevent unbounded heap materialization on hot-table diagnostic/cleanup reads. */
+  maxRows?: number;
 }
 
 export interface SqliteWorkerHotTableFilters {
   nodeId?: string;
   role?: WorkerRecord["role"];
+  /** Optional cap on result rows to prevent unbounded heap materialization on hot-table diagnostic/cleanup reads. */
+  maxRows?: number;
 }
 
 export interface SqliteTombstoneHotTableFilters {
@@ -269,6 +275,8 @@ export interface SqliteTombstoneHotTableFilters {
   tombstoneReason?: TaskTombstone["tombstoneReason"];
   terminalStatus?: TaskTombstone["terminalStatus"];
   since?: string;
+  /** Optional cap on result rows to prevent unbounded heap materialization on hot-table diagnostic/cleanup reads. */
+  maxRows?: number;
 }
 
 export interface SqliteHotRetentionPlan {
@@ -908,6 +916,7 @@ export class SqliteBrokerStateStore implements BrokerStateStore {
         ["task_origin", filters.taskOrigin],
       ],
       "updated_at DESC, id ASC",
+      filters.maxRows,
     );
     return this.db
       .prepare(sql)
@@ -998,6 +1007,7 @@ export class SqliteBrokerStateStore implements BrokerStateStore {
         ["role", filters.role],
       ],
       "last_seen_at DESC, node_id ASC",
+      filters.maxRows,
     );
     return this.db
       .prepare(sql)
@@ -1014,6 +1024,7 @@ export class SqliteBrokerStateStore implements BrokerStateStore {
         ["terminal_status", filters.terminalStatus],
       ],
       "tombstoned_at DESC, task_id ASC",
+      filters.maxRows,
     );
     const tombstones = this.db
       .prepare(sql)
@@ -1054,6 +1065,7 @@ export class SqliteBrokerStateStore implements BrokerStateStore {
         ["target_id", filters.targetId],
       ],
       "created_at DESC, id ASC",
+      filters.maxRows,
     );
     const events = this.db
       .prepare(sql)
@@ -2466,6 +2478,7 @@ function buildHotTableSelect(
   tableName: SqliteHotEntityTable,
   filters: Array<[string, string | undefined]>,
   orderBy: string,
+  maxRows?: number,
 ): { sql: string; params: string[] } {
   const params: string[] = [];
   const clauses = filters.flatMap(([column, value]) => {
@@ -2475,8 +2488,12 @@ function buildHotTableSelect(
     params.push(value);
     return [`${column} = ?`];
   });
+  const maxRowsClause = maxRows !== undefined && maxRows > 0 ? " LIMIT ?" : "";
+  if (maxRowsClause) {
+    params.push(String(maxRows));
+  }
   return {
-    sql: `SELECT payload FROM ${tableName}${clauses.length ? ` WHERE ${clauses.join(" AND ")}` : ""} ORDER BY ${orderBy}`,
+    sql: `SELECT payload FROM ${tableName}${clauses.length ? ` WHERE ${clauses.join(" AND ")}` : ""} ORDER BY ${orderBy}${maxRowsClause}`,
     params,
   };
 }
