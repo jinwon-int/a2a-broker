@@ -150,10 +150,10 @@ describe("buildQueueHygieneSnapshot", () => {
     assert.ok(snapshot.ageBuckets.some((b) => b.label === "> 24 hr" && b.count === 1));
   });
 
-  it("handles missing createdAt gracefully", () => {
+  it("handles missing createdAt gracefully and surfaces stale-residue timestamp anomalies", () => {
     const tasks: TaskRecord[] = [
-      makeTask({ status: "queued", createdAt: "" }),
-      makeTask({ status: "claimed", createdAt: "not-a-date" }),
+      makeTask({ id: "bad-created-at-1", status: "queued", createdAt: "" }),
+      makeTask({ id: "bad-created-at-2", status: "claimed", createdAt: "not-a-date" }),
     ];
 
     const snapshot = buildQueueHygieneSnapshot({ tasks, nowMs: NOW_MS });
@@ -162,6 +162,20 @@ describe("buildQueueHygieneSnapshot", () => {
     const queued = snapshot.byStatus.find((s) => s.status === "queued")!;
     assert.equal(queued.count, 1);
     assert.equal(queued.oldestAgeMs, null);
+    assert.equal(snapshot.severity, "warning");
+    assert.deepEqual(snapshot.timestampAnomalies.invalidCreatedAtTaskIds, ["bad-created-at-1", "bad-created-at-2"]);
+    assert.ok(snapshot.warnings.some((w) => w.includes("Timestamp anomalies")));
+  });
+
+  it("warns when active task timestamps are future-dated", () => {
+    const snapshot = buildQueueHygieneSnapshot({
+      tasks: [makeTask({ id: "future-task", status: "running", createdAt: "2026-05-13T06:05:00.000Z" })],
+      nowMs: NOW_MS,
+    });
+
+    assert.equal(snapshot.severity, "warning");
+    assert.deepEqual(snapshot.timestampAnomalies.futureCreatedAtTaskIds, ["future-task"]);
+    assert.ok(snapshot.warnings.some((w) => w.includes("futureCreatedAt=1")));
   });
 
   it("produces empty age buckets when no active tasks", () => {
