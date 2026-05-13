@@ -317,6 +317,12 @@ export interface SqliteWorkerHotRetentionPlanOptions {
   protectedWorkerIds?: string[];
 }
 
+export interface SqliteTerminalOutboxHotRetentionPlanOptions {
+  nowMs?: number;
+  retentionMs: number;
+  maxAcknowledgedRecords: number;
+}
+
 const SQLITE_SCHEMA_VERSION = 10;
 const HOT_AUDIT_RECENT_WINDOW_MS = 10 * 60 * 1000;
 const HOT_AUDIT_HEARTBEAT_CHURN_WARNING_COUNT = 20;
@@ -1391,6 +1397,14 @@ export class SqliteBrokerStateStore implements BrokerStateStore {
       .all()
       .map((row) => parseHotEntityPayload(row, workerSchema, "broker_workers")) as WorkerRecord[];
     return planWorkerRetentionFromRecords(records, options);
+  }
+
+  planHotTerminalOutboxRetention(options: SqliteTerminalOutboxHotRetentionPlanOptions): SqliteHotRetentionPlan {
+    const records = this.db
+      .prepare("SELECT payload FROM broker_terminal_outbox")
+      .all()
+      .map((row) => parseHotEntityPayload(row, terminalOutboxEventSchema, "broker_terminal_outbox")) as TerminalTaskOutboxEvent[];
+    return planTerminalOutboxRetentionFromRecords(records, options);
   }
 
   applyHotRetentionPlan(plan: SqliteHotRetentionPlan): SqliteHotRetentionApplyResult {
@@ -2563,6 +2577,37 @@ function planWorkerRetentionFromRecords(
     .forEach((entry) => retainedIds.add(entry.id));
 
   return buildRetentionPlan("broker_workers", cutoffMs, records.map((record) => record.nodeId), retainedIds);
+}
+
+function planTerminalOutboxRetentionFromRecords(
+  records: TerminalTaskOutboxEvent[],
+  options: SqliteTerminalOutboxHotRetentionPlanOptions,
+): SqliteHotRetentionPlan {
+  const nowMs = options.nowMs ?? Date.now();
+  const cutoffMs = nowMs - options.retentionMs;
+  const retainedIds = new Set<string>();
+  const acknowledgedCandidates: Array<{ id: string; timestampMs: number }> = [];
+
+  for (const event of records) {
+    const acknowledgedAt = event.ack?.acknowledgedAt ?? event.deliveredAt;
+    const acknowledgedMs = acknowledgedAt ? parseRetentionTimestamp(acknowledgedAt) : null;
+    if (acknowledgedMs === null) {
+      retainedIds.add(event.id);
+      continue;
+    }
+    if (acknowledgedMs >= cutoffMs) {
+      retainedIds.add(event.id);
+      continue;
+    }
+    acknowledgedCandidates.push({ id: event.id, timestampMs: acknowledgedMs });
+  }
+
+  [...acknowledgedCandidates]
+    .sort((a, b) => b.timestampMs - a.timestampMs || a.id.localeCompare(b.id))
+    .slice(0, options.maxAcknowledgedRecords)
+    .forEach((entry) => retainedIds.add(entry.id));
+
+  return buildRetentionPlan("broker_terminal_outbox", cutoffMs, records.map((record) => record.id), retainedIds);
 }
 
 export function buildHotEntityHintCoverage(

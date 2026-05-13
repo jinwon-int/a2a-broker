@@ -1700,6 +1700,10 @@ test("broker cleanup plan reports dry-run candidates with stable gates", () => {
         makeAuditEvent("cleanup-audit-old-terminal", "task.failed", oldTerminal.id, "2026-04-27T00:00:00.000Z"),
         makeAuditEvent("cleanup-audit-active", "task.started", active.id, "2026-04-27T00:00:00.000Z"),
       ],
+      terminalOutbox: [
+        makeOutboxEvent("cleanup-outbox-acked", oldTerminal.id, 1, "2026-04-27T00:00:00.000Z", "2026-04-27T00:00:00.000Z"),
+        makeOutboxEvent("cleanup-outbox-unacked", oldTerminal.id, 2, "2026-04-27T00:00:00.000Z", null),
+      ],
     });
 
     const plan = buildBrokerCleanupPlan(store, {
@@ -1710,18 +1714,58 @@ test("broker cleanup plan reports dry-run candidates with stable gates", () => {
       maxAuditEvents: 0,
       workerRetentionMs: 30 * 60 * 1000,
       maxInactiveWorkers: 0,
+      terminalOutboxRetentionMs: 30 * 60 * 1000,
+      maxAcknowledgedTerminalOutboxEvents: 0,
     });
 
     assert.equal(plan.kind, "broker.cleanup.plan");
     assert.equal(plan.mode, "dry-run");
-    assert.equal(plan.summary.totalPruneCandidates, 3);
+    assert.equal(plan.summary.totalPruneCandidates, 4);
     assert.equal(plan.summary.highestRisk, "high");
     assert.equal(plan.planId.length, 16);
     assert.deepEqual(plan.tables.find((table) => table.table === "broker_tasks")?.pruneIds, [oldTerminal.id]);
     assert.deepEqual(plan.tables.find((table) => table.table === "broker_audit_events")?.pruneIds, ["cleanup-audit-old-terminal"]);
     assert.deepEqual(plan.tables.find((table) => table.table === "broker_workers")?.pruneIds, ["worker-idle"]);
+    assert.deepEqual(plan.tables.find((table) => table.table === "broker_terminal_outbox")?.pruneIds, ["cleanup-outbox-acked"]);
+    assert.deepEqual(plan.tables.find((table) => table.table === "broker_terminal_outbox")?.retainedIds, ["cleanup-outbox-unacked"]);
     assert.equal(plan.tables.find((table) => table.table === "broker_workers")?.executionBlockedByDefault, true);
+    assert.equal(plan.tables.find((table) => table.table === "broker_terminal_outbox")?.executionBlockedByDefault, true);
+    assert.match(plan.notes.join("\n"), /Terminal outbox pruning is dry-run-only/);
     assert.equal(store.readHotTasks().length, 2, "dry-run plan must not mutate task rows");
+    assert.equal(store.readHotTerminalOutbox().length, 2, "dry-run plan must not mutate terminal outbox rows");
+    store.close();
+  } finally {
+    temp.cleanup();
+  }
+});
+
+test("broker cleanup execution blocks terminal outbox pruning as dry-run-only", () => {
+  const temp = withTempFile("state.sqlite");
+  try {
+    const store = new SqliteBrokerStateStore(temp.filePath);
+    store.save({
+      ...emptySnapshot(),
+      terminalOutbox: [
+        makeOutboxEvent("cleanup-outbox-acked", "task-outbox", 1, "2026-04-27T00:00:00.000Z", "2026-04-27T00:00:00.000Z"),
+      ],
+    });
+
+    const plan = buildBrokerCleanupPlan(store, {
+      nowMs: Date.parse("2026-04-27T01:00:00.000Z"),
+      terminalOutboxRetentionMs: 30 * 60 * 1000,
+      maxAcknowledgedTerminalOutboxEvents: 0,
+    });
+
+    assert.deepEqual(plan.tables.find((table) => table.table === "broker_terminal_outbox")?.pruneIds, ["cleanup-outbox-acked"]);
+    assert.throws(
+      () => executeBrokerCleanupPlan(store, plan, {
+        approvalToken: plan.planId,
+        confirmation: BROKER_CLEANUP_CONFIRMATION,
+        backupProof: "sqlite backup: /tmp/backup.sqlite sha256=abc123",
+      }),
+      /terminal outbox prune candidates are dry-run-only/,
+    );
+    assert.equal(store.readHotTerminalOutbox().length, 1, "blocked execution must not mutate terminal outbox rows");
     store.close();
   } finally {
     temp.cleanup();
@@ -1782,6 +1826,7 @@ test("broker cleanup execution requires approval, backup proof, and worker overr
       ["broker_tasks", 1],
       ["broker_audit_events", 1],
       ["broker_workers", 1],
+      ["broker_terminal_outbox", 0],
     ]);
     assert.equal(result.auditEvent.action, "broker.cleanup.applied");
     assert.equal(result.auditEvent.targetType, "broker");
