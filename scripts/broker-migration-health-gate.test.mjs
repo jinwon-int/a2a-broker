@@ -121,7 +121,7 @@ describe('broker migration health gate', () => {
     const report = runMigrationHealthGate({ dbFile: file, nowMs: Date.parse('2026-05-03T00:05:00.000Z') });
 
     assert.equal(report.ok, true);
-    assert.equal(report.checks.length, 6);
+    assert.equal(report.checks.length, 8);
     assert.match(report.checks.find((check) => check.check === 'worker hot-table quarantine')?.detail ?? '', /normalized capabilities/);
   });
 
