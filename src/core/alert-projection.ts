@@ -11,6 +11,7 @@
  */
 import type {
   TaskDiagnosticReport,
+  TaskError,
   TaskTombstone,
   WorkerRecord,
 } from "./types.js";
@@ -71,6 +72,9 @@ export interface AlertScanResult {
   /** Quick counts by kind. */
   countsByKind: Record<AlertKind, number>;
 }
+
+const ALERT_ERROR_MESSAGE_MAX_CHARS = 1_000;
+const ALERT_ERROR_SUMMARY_MAX_CHARS = 240;
 
 // ---------------------------------------------------------------------------
 // Alert projection — pure function
@@ -239,9 +243,9 @@ function projectTerminalAlert(
       });
     case "failed":
       return makeAlert("task_failed", "info", report, now, {
-        summary: `Task ${report.taskId} failed: ${tombstone.error?.message ?? "unknown error"}`,
+        summary: `Task ${report.taskId} failed: ${compactAlertErrorSummary(tombstone.error)}`,
         durationMs: tombstone.durationMs,
-        extra: { error: tombstone.error },
+        extra: { error: compactAlertError(tombstone.error) },
       });
     case "canceled":
       return makeAlert("task_canceled", "info", report, now, {
@@ -250,6 +254,39 @@ function projectTerminalAlert(
       });
     default:
       return null;
+  }
+}
+
+function compactAlertErrorSummary(error: TaskError | undefined): string {
+  return truncateForAlert(error?.message ?? "unknown error", ALERT_ERROR_SUMMARY_MAX_CHARS);
+}
+
+function compactAlertError(error: TaskError | undefined): Record<string, unknown> | undefined {
+  if (!error) {
+    return undefined;
+  }
+
+  const message = truncateForAlert(error.message, ALERT_ERROR_MESSAGE_MAX_CHARS);
+  return {
+    ...(error.code ? { code: error.code } : {}),
+    message,
+    ...(error.message.length > message.length ? { messageTruncated: true } : {}),
+    ...(error.details ? { detailsOmitted: true, detailsBytes: safeJsonByteLength(error.details) } : {}),
+  };
+}
+
+function truncateForAlert(value: string, maxChars: number): string {
+  if (value.length <= maxChars) {
+    return value;
+  }
+  return `${value.slice(0, Math.max(0, maxChars - 1))}…`;
+}
+
+function safeJsonByteLength(value: unknown): number | undefined {
+  try {
+    return Buffer.byteLength(JSON.stringify(value));
+  } catch {
+    return undefined;
   }
 }
 
