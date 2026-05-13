@@ -916,7 +916,8 @@ export type CleanupCandidateClass =
   | "stale_worker"
   | "malformed_task"
   | "terminal_outbox_backlog"
-  | "historical_terminal_task";
+  | "historical_terminal_task"
+  | "orphaned_claim";
 
 /** Risk classification for cleanup candidates. */
 export type CleanupRiskClass = "safe" | "caution" | "high_risk";

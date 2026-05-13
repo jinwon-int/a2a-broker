@@ -3398,6 +3398,153 @@ test("discoverCleanupCandidates respects custom thresholds", () => {
   assert.equal(planCustom.summary.stale_worker, 1);
 });
 
+test("discoverCleanupCandidates detects orphaned_claim for claimed task on stale worker", () => {
+  const broker = new InMemoryA2ABroker();
+
+  broker.registerWorker({
+    nodeId: "orphan-worker",
+    role: "operator",
+    capabilities: { canAnalyze: true, canBackfill: false, canPatchWorkspace: false, canPromoteLive: false, workspaceIds: ["default"], environments: ["research"] },
+  });
+
+  const task = broker.createTask({
+    intent: "analyze",
+    requester: { id: "hub", kind: "node", role: "hub" },
+    target: { id: "orphan-worker", kind: "node", role: "operator" },
+    payload: {},
+  });
+  broker.claimTask(task.id, "orphan-worker");
+  assert.equal(broker.getTask(task.id)!.status, "claimed");
+
+  // Fast-forward time to make the worker stale
+  const farFutureMs = Date.now() + 600_000;
+  const plan = broker.discoverCleanupCandidates({
+    staleWorkerAfterMs: 300_000,
+    nowMs: farFutureMs,
+  });
+
+  assert.equal(plan.summary.orphaned_claim, 1);
+  const orphanItem = plan.candidates.find((c) => c.class === "orphaned_claim");
+  assert.ok(orphanItem);
+  assert.equal(orphanItem.entityId, task.id);
+  assert.equal(orphanItem.metadata?.status, "claimed");
+  assert.equal(orphanItem.metadata?.staleWorkerId, "orphan-worker");
+  assert.equal(orphanItem.risk, "caution");
+  assert.ok(orphanItem.reason.includes("orphan-worker"));
+});
+
+test("discoverCleanupCandidates detects orphaned_claim for running task on stale worker (high_risk)", () => {
+  const broker = new InMemoryA2ABroker();
+
+  broker.registerWorker({
+    nodeId: "orphan-runner",
+    role: "operator",
+    capabilities: { canAnalyze: true, canBackfill: false, canPatchWorkspace: false, canPromoteLive: false, workspaceIds: ["default"], environments: ["research"] },
+  });
+
+  const task = broker.createTask({
+    intent: "analyze",
+    requester: { id: "hub", kind: "node", role: "hub" },
+    target: { id: "orphan-runner", kind: "node", role: "operator" },
+    payload: {},
+  });
+  broker.claimTask(task.id, "orphan-runner");
+  // The broker goes claimed->running on start with a heartbeat
+  broker.startTask(task.id, "orphan-runner");
+  assert.equal(broker.getTask(task.id)!.status, "running");
+
+  const farFutureMs = Date.now() + 600_000;
+  const plan = broker.discoverCleanupCandidates({
+    staleWorkerAfterMs: 300_000,
+    nowMs: farFutureMs,
+  });
+
+  assert.equal(plan.summary.orphaned_claim, 1);
+  const orphanItem = plan.candidates.find((c) => c.class === "orphaned_claim");
+  assert.ok(orphanItem);
+  assert.equal(orphanItem.entityId, task.id);
+  assert.equal(orphanItem.metadata?.status, "running");
+  assert.equal(orphanItem.metadata?.staleWorkerId, "orphan-runner");
+  // Running task on stale worker is high risk (potential data loss)
+  assert.equal(orphanItem.risk, "high_risk");
+});
+
+test("discoverCleanupCandidates does not flag orphaned_claim when worker is healthy", () => {
+  const broker = new InMemoryA2ABroker();
+
+  broker.registerWorker({
+    nodeId: "healthy-w",
+    role: "operator",
+    capabilities: { canAnalyze: true, canBackfill: false, canPatchWorkspace: false, canPromoteLive: false, workspaceIds: ["default"], environments: ["research"] },
+  });
+
+  const task = broker.createTask({
+    intent: "analyze",
+    requester: { id: "hub", kind: "node", role: "hub" },
+    target: { id: "healthy-w", kind: "node", role: "operator" },
+    payload: {},
+  });
+  broker.claimTask(task.id, "healthy-w");
+
+  // No time travel — worker is still fresh
+  const plan = broker.discoverCleanupCandidates();
+  assert.equal(plan.summary.orphaned_claim, 0);
+});
+
+test("discoverCleanupCandidates does not flag orphaned_claim for queued tasks", () => {
+  const broker = new InMemoryA2ABroker();
+
+  broker.registerWorker({
+    nodeId: "queued-worker",
+    role: "operator",
+    capabilities: { canAnalyze: true, canBackfill: false, canPatchWorkspace: false, canPromoteLive: false, workspaceIds: ["default"], environments: ["research"] },
+  });
+
+  broker.createTask({
+    intent: "analyze",
+    requester: { id: "hub", kind: "node", role: "hub" },
+    target: { id: "queued-worker", kind: "node", role: "operator" },
+    payload: {},
+  });
+
+  const farFutureMs = Date.now() + 600_000;
+  const plan = broker.discoverCleanupCandidates({
+    staleWorkerAfterMs: 300_000,
+    nowMs: farFutureMs,
+  });
+
+  // Worker is stale, but queued tasks are not orphaned claims
+  assert.equal(plan.summary.stale_worker, 1);
+  assert.equal(plan.summary.orphaned_claim, 0);
+});
+
+test("discoverCleanupCandidates orphaned_claim risk notes are present when detected", () => {
+  const broker = new InMemoryA2ABroker();
+
+  broker.registerWorker({
+    nodeId: "risk-worker",
+    role: "operator",
+    capabilities: { canAnalyze: true, canBackfill: false, canPatchWorkspace: false, canPromoteLive: false, workspaceIds: ["default"], environments: ["research"] },
+  });
+
+  const task = broker.createTask({
+    intent: "analyze",
+    requester: { id: "hub", kind: "node", role: "hub" },
+    target: { id: "risk-worker", kind: "node", role: "operator" },
+    payload: {},
+  });
+  broker.claimTask(task.id, "risk-worker");
+
+  const farFutureMs = Date.now() + 600_000;
+  const plan = broker.discoverCleanupCandidates({
+    staleWorkerAfterMs: 300_000,
+    nowMs: farFutureMs,
+  });
+
+  assert.equal(plan.summary.orphaned_claim, 1);
+  assert.ok(plan.riskNotes.some((note) => note.includes("Orphaned claims")));
+});
+
 test("discoverCleanupCandidates stable ids are deterministic", () => {
   const broker = new InMemoryA2ABroker();
 
