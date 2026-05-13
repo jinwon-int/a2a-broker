@@ -90,7 +90,10 @@ export function buildBrokerCleanupPlan(
 ): BrokerCleanupPlan {
   const nowMs = input.nowMs ?? Date.now();
   const normalized = normalizeCleanupOptions(input, nowMs);
-  const tasks = store.readHotTasks();
+  // Use a bounded read for active-worker discovery; 2000 rows covers typical non-terminal task sets
+  // without unbounded heap materialization. Cleanup planning uses dedicated planHot*Retention methods
+  // that evaluate every row for retention decisions.
+  const tasks = store.readHotTasks({ maxRows: 2000 });
   const activeWorkerIds = new Set(
     tasks
       .filter((task) => !TERMINAL_TASK_STATUSES.has(task.status))
