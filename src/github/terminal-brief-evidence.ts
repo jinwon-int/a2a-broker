@@ -54,6 +54,9 @@ export interface TerminalBriefGitHubEvidenceManifest {
   traceId?: string;
   startStatus?: "claimed" | "running";
   taskBrief?: string;
+  terminalBriefTitle?: string;
+  parentRoundProgress?: number;
+  parentRoundTotal?: number;
   terminalOutboxCursor?: string;
   taskEventId?: number;
   terminalStatus?: TerminalTaskStatus;
@@ -267,6 +270,9 @@ function buildTerminalManifest(event: TerminalTaskOutboxEvent): TerminalBriefGit
     worker: safeText(payload.worker),
     traceId: safeText(payload.traceId),
     taskBrief: safeText(payload.taskBrief),
+    terminalBriefTitle: safeText(payload.terminalBriefTitle),
+    parentRoundProgress: safePositiveInt(payload.parentRoundProgress),
+    parentRoundTotal: safePositiveInt(payload.parentRoundTotal),
     terminalOutboxCursor: event.id,
     taskEventId: event.taskEventId,
     terminalStatus: payload.status,
@@ -324,6 +330,8 @@ function renderCommentBody(
   if (manifest.traceId) lines.push(`trace: ${manifest.traceId}`);
   if (manifest.startStatus) lines.push(`start_status: ${manifest.startStatus}`);
   if (manifest.taskBrief) lines.push(`task_brief: ${manifest.taskBrief}`);
+  if (manifest.terminalBriefTitle) lines.push(`terminal_brief_title: ${manifest.terminalBriefTitle}`);
+  if (manifest.parentRoundProgress && manifest.parentRoundTotal) lines.push(`parent_round_progress: ${manifest.parentRoundProgress}/${manifest.parentRoundTotal}`);
   if (manifest.terminalStatus) lines.push(`terminal_status: ${manifest.terminalStatus}`);
   if (manifest.terminalOutboxCursor) lines.push(`terminal_outbox_cursor: ${manifest.terminalOutboxCursor}`);
   if (manifest.receiptStatus) lines.push(`receipt_status: ${manifest.receiptStatus}`);
@@ -427,6 +435,12 @@ function safeText(value: unknown): string | undefined {
   if (typeof value !== "string") return undefined;
   const redacted = redactCommentText(value).trim().replace(/\s+/g, " ");
   return redacted.length > 0 ? redacted.slice(0, 500) : undefined;
+}
+
+function safePositiveInt(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isInteger(value) && value > 0 && Number.isFinite(value)
+    ? value
+    : undefined;
 }
 
 function redactCommentText(value: string): string {
