@@ -38,6 +38,7 @@ function projection(overrides: Partial<Parameters<InMemoryA2ABroker["ingestCross
     brokerOfRecordId: "parent-broker",
     childTaskId: "child-task-1",
     parentRoundTotal: "5",
+    parentRoundOrder: "1",
     status: "succeeded" as const,
     summary: "child completed safely",
     taskBrief: "minimal safe patch",
@@ -141,6 +142,7 @@ test("cross-broker Terminal Brief projection carries parent round denominator in
     brokerOfRecordId: "parent-broker",
     childWorkerId: "dungae",
     parentRoundTotal: "7",
+    parentRoundOrder: "5",
   }));
   assert.equal(knownTotal.accepted, true);
   assert.equal(knownTotal.record.parentRoundTotal, 7);
@@ -151,6 +153,7 @@ test("cross-broker Terminal Brief projection carries parent round denominator in
     childTaskId: "child-task-2",
     childWorkerId: "sogyo",
     parentRoundTotal: "3",
+    parentRoundOrder: "2",
     completedAt: "2026-05-13T01:05:00.000Z",
     emittedAt: "2026-05-13T01:05:01.000Z",
   }));
@@ -162,8 +165,8 @@ test("cross-broker Terminal Brief projection carries parent round denominator in
   assert.equal(terminalEvents[0]?.payload.run, "round-parent");
   assert.equal(terminalEvents[0]?.payload.worker, "dungae");
   assert.equal(terminalEvents[0]?.payload.parentRoundTotal, 7);
-  assert.equal(terminalEvents[0]?.payload.parentRoundProgress, 1);
-  assert.equal(terminalEvents[0]?.payload.terminalBriefTitle, "A2A Terminal Brief 완료: dungae(1/7)");
+  assert.equal(terminalEvents[0]?.payload.parentRoundProgress, 5);
+  assert.equal(terminalEvents[0]?.payload.terminalBriefTitle, "A2A Terminal Brief 완료: dungae(5/7)");
   assert.deepEqual(terminalEvents[0]?.payload.crossBrokerHandoff, {
     parentRoundId: "round-parent",
     originBrokerId: "parent-broker",
@@ -185,6 +188,59 @@ test("cross-broker Terminal Brief projection carries parent round denominator in
   assert.equal(terminalEvents[1]?.payload.terminalBriefTitle, "A2A Terminal Brief 완료: sogyo(2/3)");
 });
 
+test("Seoseo-origin parent keeps distinct Gwakga handoff children and explicit order", () => {
+  const parentRoundId = "a2a-r13-terminal-brief-realround-20260514T013556Z";
+  const broker = new InMemoryA2ABroker(undefined, undefined, { brokerId: "seoseo" });
+  createParentRound(broker, parentRoundId);
+
+  const dungae = broker.ingestCrossBrokerTerminalBriefProjection(projection({
+    parentRoundId,
+    originBrokerId: "gwakga",
+    brokerOfRecordId: "seoseo",
+    childTaskId: parentRoundId + "-05-dungae",
+    childWorkerId: "dungae",
+    parentRoundTotal: 7,
+    parentRoundOrder: 5,
+    summary: "dungae completed Gwakga handoff evidence for Seoseo parent",
+  }));
+  const jingun = broker.ingestCrossBrokerTerminalBriefProjection(projection({
+    parentRoundId,
+    originBrokerId: "gwakga",
+    brokerOfRecordId: "seoseo",
+    childTaskId: parentRoundId + "-06-jingun",
+    childWorkerId: "jingun",
+    parentRoundTotal: 7,
+    parentRoundOrder: 6,
+    completedAt: "2026-05-13T01:05:00.000Z",
+    emittedAt: "2026-05-13T01:05:01.000Z",
+  }));
+
+  assert.equal(dungae.accepted, true);
+  assert.equal(jingun.accepted, true);
+
+  const records = broker.listCrossBrokerTerminalBriefProjections({ parentRoundId, originBrokerId: "gwakga" });
+  assert.equal(records.length, 2);
+  assert.deepEqual(records.map((record) => record.childWorkerId), ["dungae", "jingun"]);
+
+  const terminalEvents = broker.getTerminalTaskEventOutbox().subscribe();
+  assert.equal(terminalEvents.length, 2);
+  assert.equal(terminalEvents[0]?.payload.run, parentRoundId);
+  assert.equal(terminalEvents[0]?.payload.worker, "dungae");
+  assert.equal(terminalEvents[0]?.payload.parentRoundProgress, 5);
+  assert.equal(terminalEvents[0]?.payload.parentRoundTotal, 7);
+  assert.equal(terminalEvents[0]?.payload.terminalBriefTitle, "A2A Terminal Brief 완료: dungae(5/7)");
+  assert.deepEqual(terminalEvents[0]?.payload.notificationOwnership, {
+    ownerBrokerId: "seoseo",
+    scope: "parent-broker-only",
+    providerSendPermittedByProjection: false,
+    terminalAckPermittedByProjection: false,
+    reason: "cross-broker projections are parent-broker aggregation evidence only; child/handoff brokers do not notify or ACK",
+  });
+  assert.equal(terminalEvents[1]?.payload.worker, "jingun");
+  assert.equal(terminalEvents[1]?.payload.parentRoundProgress, 6);
+  assert.equal(terminalEvents[1]?.payload.terminalBriefTitle, "A2A Terminal Brief 완료: jingun(6/7)");
+});
+
 test("cross-broker Terminal Brief projection is symmetric for Gwakga-owned parent rounds", () => {
   const parentRoundId = "a2a-r12-gwakga-origin-round";
   const broker = new InMemoryA2ABroker(undefined, undefined, { brokerId: "gwakga" });
@@ -197,6 +253,7 @@ test("cross-broker Terminal Brief projection is symmetric for Gwakga-owned paren
     childTaskId: "seoseo-handoff-child",
     childWorkerId: "dungae",
     parentRoundTotal: 7,
+    parentRoundOrder: 5,
     summary: "Seoseo handoff child completed for the Gwakga aggregate",
   }));
 
@@ -213,8 +270,8 @@ test("cross-broker Terminal Brief projection is symmetric for Gwakga-owned paren
   assert.equal(terminalEvent?.payload.run, parentRoundId);
   assert.equal(terminalEvent?.payload.worker, "dungae");
   assert.equal(terminalEvent?.payload.parentRoundTotal, 7);
-  assert.equal(terminalEvent?.payload.parentRoundProgress, 1);
-  assert.equal(terminalEvent?.payload.terminalBriefTitle, "A2A Terminal Brief 완료: dungae(1/7)");
+  assert.equal(terminalEvent?.payload.parentRoundProgress, 5);
+  assert.equal(terminalEvent?.payload.terminalBriefTitle, "A2A Terminal Brief 완료: dungae(5/7)");
   assert.deepEqual(terminalEvent?.payload.crossBrokerHandoff, {
     parentRoundId,
     originBrokerId: "gwakga",
@@ -316,6 +373,26 @@ test("Terminal Brief dispatch guard rejects projection with non-positive parentR
   assert.equal(result.accepted, false);
   assert.equal(result.ack.code, "missing_dispatch_metadata");
   assert.match(result.ack.reason, /parentRoundTotal/);
+});
+
+test("Terminal Brief dispatch guard rejects projection with missing parentRoundOrder", () => {
+  const broker = new InMemoryA2ABroker(undefined, undefined, { brokerId: "parent-broker" });
+  createParentRound(broker);
+
+  const result = broker.ingestCrossBrokerTerminalBriefProjection(projection({ parentRoundOrder: undefined }));
+  assert.equal(result.accepted, false);
+  assert.equal(result.ack.code, "missing_dispatch_metadata");
+  assert.match(result.ack.reason, /parentRoundOrder/);
+});
+
+test("Terminal Brief dispatch guard rejects projection with parentRoundOrder beyond total", () => {
+  const broker = new InMemoryA2ABroker(undefined, undefined, { brokerId: "parent-broker" });
+  createParentRound(broker);
+
+  const result = broker.ingestCrossBrokerTerminalBriefProjection(projection({ parentRoundTotal: "7", parentRoundOrder: "8" }));
+  assert.equal(result.accepted, false);
+  assert.equal(result.ack.code, "missing_dispatch_metadata");
+  assert.match(result.ack.reason, /parentRoundOrder/);
 });
 
 test("Terminal Brief dispatch guard rejects projection lacking brokerOfRecordId for crossBrokerHandoff", () => {

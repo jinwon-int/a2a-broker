@@ -2,7 +2,7 @@
  * Post-dispatch verifier for cross-broker terminal brief projections (R12/PR #602).
  *
  * Validates dispatch-critical fields — parentRoundId, originBrokerId,
- * parentRoundTotal, crossBrokerHandoff — and provides a time-windowed
+ * parentRoundTotal, parentRoundOrder, crossBrokerHandoff — and provides a time-windowed
  * snapshot/check flow (30–60 s) against parent metadata consistency.
  *
  * No deploy, restart, live canary, ACK, replay, or DB mutation occurs.
@@ -48,6 +48,7 @@ export interface ParentMetadataSnapshot {
   parentRoundId: string;
   originBrokerId: string;
   parentRoundTotal?: number;
+  parentRoundOrder?: number;
   crossBrokerHandoff?: TerminalTaskEventPayload["crossBrokerHandoff"];
   capturedAt: string;
   snapshotWindowMs: number;
@@ -169,18 +170,37 @@ export class PostDispatchVerifier {
       }
     }
 
-    // parentRoundTotal (optional but when present must be a positive int)
-    if (request.parentRoundTotal !== undefined && request.parentRoundTotal !== null) {
-      const total = normalizePositiveInt(request.parentRoundTotal);
-      if (total === undefined) {
-        fields.push({
-          field: "parentRoundTotal",
-          status: "mismatched",
-          expected: "positive integer or numeric string",
-          actual: request.parentRoundTotal,
-          detail: "parentRoundTotal must be a positive integer when provided",
-        });
-      }
+    // parentRoundTotal and parentRoundOrder are required so compact titles
+    // preserve the operator-planned numerator/denominator instead of relying
+    // on arrival order.
+    const total = normalizePositiveInt(request.parentRoundTotal);
+    if (total === undefined) {
+      fields.push({
+        field: "parentRoundTotal",
+        status: request.parentRoundTotal === undefined || request.parentRoundTotal === null ? "missing" : "mismatched",
+        expected: "positive integer or numeric string",
+        actual: request.parentRoundTotal,
+        detail: "parentRoundTotal is required and must be a positive integer",
+      });
+    }
+
+    const order = normalizePositiveInt(request.parentRoundOrder);
+    if (order === undefined) {
+      fields.push({
+        field: "parentRoundOrder",
+        status: request.parentRoundOrder === undefined || request.parentRoundOrder === null ? "missing" : "mismatched",
+        expected: "positive integer or numeric string",
+        actual: request.parentRoundOrder,
+        detail: "parentRoundOrder is required and must be a positive integer",
+      });
+    } else if (total !== undefined && order > total) {
+      fields.push({
+        field: "parentRoundOrder",
+        status: "mismatched",
+        expected: "less than or equal to " + total,
+        actual: order,
+        detail: "parentRoundOrder must not exceed parentRoundTotal",
+      });
     }
 
     // brokerOfRecordId vs receiver
@@ -297,6 +317,7 @@ export class PostDispatchVerifier {
     parentRoundId: string,
     originBrokerId: string,
     parentRoundTotal?: number,
+    parentRoundOrder?: number,
     crossBrokerHandoff?: TerminalTaskEventPayload["crossBrokerHandoff"],
   ): ParentMetadataSnapshot {
     const capturedAt = this.opts.now().toISOString();
@@ -304,6 +325,7 @@ export class PostDispatchVerifier {
       parentRoundId,
       originBrokerId,
       parentRoundTotal,
+      parentRoundOrder,
       crossBrokerHandoff: crossBrokerHandoff ? { ...crossBrokerHandoff } : undefined,
       capturedAt,
       snapshotWindowMs: this.opts.maxSnapshotWindowMs,
@@ -327,6 +349,7 @@ export class PostDispatchVerifier {
       parentRoundId?: string;
       originBrokerId?: string;
       parentRoundTotal?: number;
+      parentRoundOrder?: number;
     },
   ): SnapshotCheckResult {
     const now = this.opts.now();
@@ -408,6 +431,16 @@ export class PostDispatchVerifier {
       });
     }
 
+    if (expected.parentRoundOrder !== undefined && snapshot.parentRoundOrder !== expected.parentRoundOrder) {
+      fields.push({
+        field: "parentRoundOrder",
+        status: "mismatched",
+        expected: expected.parentRoundOrder,
+        actual: snapshot.parentRoundOrder,
+        detail: "parentRoundOrder in snapshot does not match expected value",
+      });
+    }
+
     const verdict: SnapshotVerdict = fields.length === 0 ? "consistent" : "inconsistent";
 
     return {
@@ -437,6 +470,7 @@ export class PostDispatchVerifier {
       request.parentRoundId,
       request.originBrokerId,
       normalizePositiveInt(request.parentRoundTotal) ?? expectedParentTotal,
+      normalizePositiveInt(request.parentRoundOrder),
     );
     const payload: TerminalTaskEventPayload = {
       taskId: request.childTaskId ?? `cross-broker:${request.parentRoundId}:${request.originBrokerId}`,
@@ -444,6 +478,8 @@ export class PostDispatchVerifier {
       createdAt: request.completedAt,
       updatedAt: request.completedAt,
       completedAt: request.completedAt,
+      ...(normalizePositiveInt(request.parentRoundTotal) ? { parentRoundTotal: normalizePositiveInt(request.parentRoundTotal) } : {}),
+      ...(normalizePositiveInt(request.parentRoundOrder) ? { parentRoundProgress: normalizePositiveInt(request.parentRoundOrder) } : {}),
       crossBrokerHandoff: {
         parentRoundId: request.parentRoundId,
         originBrokerId: request.brokerOfRecordId ?? "unknown-parent-broker",

@@ -292,6 +292,7 @@ export class TerminalTaskEventOutbox {
       updatedAt: projection.completedAt,
       completedAt: projection.completedAt,
       ...(projection.parentRoundTotal ? { parentRoundTotal: projection.parentRoundTotal } : {}),
+      ...(projection.parentRoundOrder ? { parentRoundProgress: projection.parentRoundOrder } : {}),
       crossBrokerHandoff: {
         parentRoundId: projection.parentRoundId,
         originBrokerId: parentBrokerId,
@@ -893,6 +894,12 @@ function applyRoundProgressMetadata(
 ): void {
   const runKey = payload.run;
   if (!runKey) return;
+  const explicitProgress = payload.parentRoundProgress;
+  if (explicitProgress && payload.parentRoundTotal) {
+    roundProgress.set(runKey, Math.max(roundProgress.get(runKey) ?? 0, explicitProgress));
+    return;
+  }
+
   const next = (roundProgress.get(runKey) ?? 0) + 1;
   roundProgress.set(runKey, next);
   if (!payload.parentRoundTotal) return;
