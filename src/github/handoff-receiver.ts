@@ -31,6 +31,10 @@ export interface GwakgaSeoseoHandoffManifest {
   evidence: string[];
   /** Optional structured-manifest-only target. `/a2a assign <worker>` remains preferred. */
   targetWorker?: string;
+  /** Parent round identifier for Terminal Brief aggregation. */
+  parentRoundId?: string;
+  /** Total worker/task count expected for the parent round (denominator). */
+  parentRoundTotal?: number | string;
 }
 
 export interface HandoffReceiverOptions {
@@ -88,6 +92,8 @@ const MANIFEST_KEYS = new Set([
   "targetWorkerId",
   "targetNodeId",
   "worker",
+  "parentRoundId",
+  "parentRoundTotal",
 ]);
 
 export class GwakgaSeoseoHandoffReceiver {
@@ -238,6 +244,8 @@ export class GwakgaSeoseoHandoffReceiver {
         ...(input.commentId !== undefined ? { githubCommentId: input.commentId } : {}),
         ...(input.commentUrl ? { githubCommentUrl: input.commentUrl } : {}),
         githubCommandIndex: index,
+        ...(manifest.parentRoundId ? { parentRoundId: manifest.parentRoundId } : {}),
+        ...(manifest.parentRoundTotal ? { parentRoundTotal: manifest.parentRoundTotal } : {}),
       },
     };
     return this.broker.createTask(request);
@@ -263,6 +271,8 @@ export function renderHandoffEvidenceComment(result: Pick<HandoffReceiveResult, 
     lines.push(`targetTeam: ${redactHandoffText(manifest.targetTeam ?? "")}`);
     lines.push(`idempotencyKey: ${redactHandoffText(manifest.idempotencyKey ?? "")}`);
     if (manifest.sourceTaskId) lines.push(`sourceTaskId: ${redactHandoffText(manifest.sourceTaskId)}`);
+    if (manifest.parentRoundId) lines.push(`parentRoundId: ${redactHandoffText(manifest.parentRoundId)}`);
+    if (manifest.parentRoundTotal !== undefined && manifest.parentRoundTotal !== null) lines.push(`parentRoundTotal: ${String(manifest.parentRoundTotal)}`);
   }
   lines.push("targetTasks:");
   for (const entry of result.evidence) {
@@ -329,6 +339,8 @@ function parseManifestBlock(block: string): GwakgaSeoseoHandoffManifest | null {
     ...(fields.status ? { status: fields.status } : {}),
     ...(fields.idempotencyKey ? { idempotencyKey: fields.idempotencyKey } : {}),
     ...(fields.targetWorker ? { targetWorker: fields.targetWorker } : {}),
+    ...(fields.parentRoundId ? { parentRoundId: fields.parentRoundId } : {}),
+    ...(fields.parentRoundTotal ? { parentRoundTotal: fields.parentRoundTotal } : {}),
     evidence,
   };
 }
