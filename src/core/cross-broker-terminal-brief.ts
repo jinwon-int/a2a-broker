@@ -62,8 +62,13 @@ export function validateTerminalBriefForDispatch(
   // parentRoundId -> crossBrokerHandoff.parentRoundId
   // brokerOfRecordId -> crossBrokerHandoff.originBrokerId (parent broker is the origin of the handoff)
   // originBrokerId -> crossBrokerHandoff.handoffBrokerId (child broker is the handoff participant)
-  if (!input.parentRoundId || !input.brokerOfRecordId || !input.originBrokerId) {
-    errors.push("crossBrokerHandoff cannot be constructed: parentRoundId, brokerOfRecordId, and originBrokerId are required");
+  // Note: parentRoundId and originBrokerId are checked above; this block only fires for brokerOfRecordId.
+  if (!input.brokerOfRecordId) {
+    errors.push("brokerOfRecordId is required for crossBrokerHandoff construction in Terminal Brief dispatch");
+  } else if (!input.parentRoundId) {
+    errors.push("parentRoundId is required for crossBrokerHandoff construction");
+  } else if (!input.originBrokerId) {
+    errors.push("originBrokerId is required for crossBrokerHandoff construction");
   }
 
   return { valid: errors.length === 0, errors };

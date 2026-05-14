@@ -133,6 +133,28 @@ ${manifest()}`;
     assert.equal(broker.listTasks().length, 1);
   });
 
+  it("propagates parentRoundId and parentRoundTotal to the created task payload", () => {
+    const broker = new InMemoryA2ABroker(undefined, undefined, { brokerId: "seoseo", teamId: "team1" });
+    registerWorker(broker, "bangtong");
+    const receiver = new GwakgaSeoseoHandoffReceiver({ broker });
+
+    const body = `/a2a assign bangtong --intent propose_patch -- closeout parent round\n${
+      manifest(`parentRoundId: a2a-r13-terminal-brief-realround-20260514T013556Z\nparentRoundTotal: 7\n`)
+    }`;
+
+    const result = receiver.receiveIssueComment(comment(body), ctx("d1"));
+    assert.equal(result.accepted, true);
+
+    const task = broker.getTask(result.targetTaskIds[0]!);
+    assert.ok(task);
+    assert.equal(task.payload["parentRoundId"], "a2a-r13-terminal-brief-realround-20260514T013556Z");
+    assert.equal(task.payload["parentRoundTotal"], "7");
+
+    // Verify evidence comment includes parent metadata
+    assert.match(result.evidenceCommentBody ?? "", /parentRoundId: a2a-r13-terminal-brief-realround-20260514T013556Z/);
+    assert.match(result.evidenceCommentBody ?? "", /parentRoundTotal: 7/);
+  });
+
   it("fails closed for an unknown Team1 worker", () => {
     const broker = new InMemoryA2ABroker(undefined, undefined, { brokerId: "seoseo", teamId: "team1" });
     const receiver = new GwakgaSeoseoHandoffReceiver({ broker });
@@ -219,6 +241,19 @@ describe("handoff manifest parsing and evidence rendering", () => {
     assert.equal(parsed?.targetTeam, "team1");
     assert.equal(parsed?.idempotencyKey, "a2a-plane-249-team1-closeout-20260512-gwakga");
     assert.equal(parsed?.evidence.length, 2);
+  });
+
+  it("parses parentRoundId and parentRoundTotal from handoff manifest", () => {
+    const withParent = manifest(`parentRoundId: a2a-r13-terminal-brief-realround-20260514T013556Z\nparentRoundTotal: 7\n`);
+    const parsed = parseGwakgaSeoseoHandoffManifest(withParent);
+    assert.equal(parsed?.parentRoundId, "a2a-r13-terminal-brief-realround-20260514T013556Z");
+    assert.equal(parsed?.parentRoundTotal, "7");
+  });
+
+  it("omits parentRoundId from parsed manifest when absent", () => {
+    const parsed = parseGwakgaSeoseoHandoffManifest(manifest());
+    assert.equal(parsed?.parentRoundId, undefined);
+    assert.equal(parsed?.parentRoundTotal, undefined);
   });
 
   it("renders done/pr-open/blocked evidence statuses", () => {
