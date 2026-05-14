@@ -162,11 +162,16 @@ test("cross-broker Terminal Brief projection carries parent round denominator in
 
   const terminalEvents = broker.getTerminalTaskEventOutbox().subscribe();
   assert.equal(terminalEvents.length, 2);
+  assert.equal(terminalEvents[0]?.payload.parentRoundId, "round-parent");
+  assert.equal(terminalEvents[0]?.payload.originBrokerId, "gwakga");
+  assert.equal(terminalEvents[0]?.payload.brokerOfRecordId, "parent-broker");
   assert.equal(terminalEvents[0]?.payload.run, "round-parent");
   assert.equal(terminalEvents[0]?.payload.worker, "dungae");
   assert.equal(terminalEvents[0]?.payload.parentRoundTotal, 7);
+  assert.equal(terminalEvents[0]?.payload.parentRoundOrder, 5);
   assert.equal(terminalEvents[0]?.payload.parentRoundProgress, 5);
   assert.equal(terminalEvents[0]?.payload.terminalBriefTitle, "A2A Terminal Brief 완료: dungae(5/7)");
+  assert.equal(terminalEvents[0]?.payload.title, "A2A Terminal Brief 완료: dungae(5/7)");
   assert.deepEqual(terminalEvents[0]?.payload.crossBrokerHandoff, {
     parentRoundId: "round-parent",
     originBrokerId: "parent-broker",
