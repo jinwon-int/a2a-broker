@@ -291,4 +291,163 @@ describe("projectHotTableGrowth", () => {
     assert.equal(projection.overallSeverity, "warning");
     assert.ok(projection.warnings.some((w) => w.includes("exceeds warning threshold")));
   });
+
+  it("warningsTruncated is false when warnings fit within default limit", () => {
+    // 5 warnings (3 tables + memory + no-prior) are well under DEFAULT_MAX_WARNINGS (10)
+    const manyWarnings = structuredClone(smallMetrics);
+    manyWarnings.tables.broker_tasks.count = 1500;
+    manyWarnings.tables.broker_tasks.runtimeLoad = {
+      limit: 2000, loadedCount: 1500, skippedCount: 0, activeCount: 5, terminalCount: 1495,
+    };
+    manyWarnings.tables.broker_audit_events.count = 6000;
+    manyWarnings.tables.broker_audit_events.runtimeLoad = {
+      limit: 5000, loadedCount: 5000, skippedCount: 1000,
+    };
+    manyWarnings.tables.broker_terminal_outbox.count = 50;
+    manyWarnings.tables.broker_terminal_outbox.runtimeLoad = {
+      limit: 1000, loadedCount: 50, skippedCount: 0,
+    };
+
+    const projection = projectHotTableGrowth({ current: manyWarnings });
+
+    assert.ok(projection.warnings.length > 0);
+    assert.equal(projection.warningsTruncated, false);
+  });
+
+  it("sets warningsTruncated when maxWarnings is low", () => {
+    // 4 table warnings + memory warning + no-prior = 6 total; maxWarnings=2 → truncated
+    const many: BrokerHotTableLoadMetrics = {
+      tables: {
+        broker_tasks: {
+          count: 1500,
+          maxPayloadBytes: 100_000,
+          runtimeLoad: { limit: 2000, loadedCount: 1500, skippedCount: 0, activeCount: 5, terminalCount: 1495 },
+        },
+        broker_audit_events: {
+          count: 2000,
+          maxPayloadBytes: 2000,
+          runtimeLoad: { limit: 5000, loadedCount: 2000, skippedCount: 0 },
+        },
+        broker_terminal_outbox: {
+          count: 30,
+          maxPayloadBytes: 2000,
+          unackedCount: 5,
+          runtimeLoad: { limit: 1000, loadedCount: 30, skippedCount: 0 },
+        },
+        broker_exchanges: {
+          count: 1200,
+          maxPayloadBytes: 3000,
+          runtimeLoad: { limit: 1000, loadedCount: 1000, skippedCount: 200 },
+        },
+        broker_proposals: {
+          count: 1100,
+          maxPayloadBytes: 2500,
+          runtimeLoad: { limit: 1000, loadedCount: 1000, skippedCount: 100 },
+        },
+      },
+    };
+
+    const projection = projectHotTableGrowth({ current: many, maxWarnings: 2 });
+
+    assert.equal(projection.warnings.length, 2);
+    assert.equal(projection.warningsTruncated, true);
+  });
+
+  it("warningsTruncated is false when maxWarnings equals total warning count", () => {
+    const many: BrokerHotTableLoadMetrics = {
+      tables: {
+        broker_tasks: {
+          count: 1500,
+          maxPayloadBytes: 100_000,
+          runtimeLoad: { limit: 2000, loadedCount: 1500, skippedCount: 0, activeCount: 5, terminalCount: 1495 },
+        },
+        broker_audit_events: {
+          count: 2000,
+          maxPayloadBytes: 2000,
+          runtimeLoad: { limit: 5000, loadedCount: 2000, skippedCount: 0 },
+        },
+        broker_terminal_outbox: {
+          count: 30,
+          maxPayloadBytes: 2000,
+          unackedCount: 5,
+          runtimeLoad: { limit: 1000, loadedCount: 30, skippedCount: 0 },
+        },
+        broker_exchanges: {
+          count: 1200,
+          maxPayloadBytes: 3000,
+          runtimeLoad: { limit: 1000, loadedCount: 1000, skippedCount: 200 },
+        },
+      },
+    };
+    // 4 table warnings + no-prior note = 5 total; maxWarnings=5 → no truncation
+    const projection = projectHotTableGrowth({ current: many, maxWarnings: 5 });
+
+    assert.equal(projection.warnings.length, 5);
+    assert.equal(projection.warningsTruncated, false);
+  });
+
+  it("warningsTruncated is false when there are zero warnings", () => {
+    const empty: BrokerHotTableLoadMetrics = {
+      tables: {
+        broker_tasks: { count: 0, maxPayloadBytes: 0, runtimeLoad: { limit: 2000, loadedCount: 0, skippedCount: 0, activeCount: 0, terminalCount: 0 } },
+        broker_audit_events: { count: 0, maxPayloadBytes: 0, runtimeLoad: { limit: 5000, loadedCount: 0, skippedCount: 0 } },
+        broker_terminal_outbox: { count: 0, maxPayloadBytes: 0, unackedCount: 0, runtimeLoad: { limit: 1000, loadedCount: 0, skippedCount: 0 } },
+      },
+    };
+    // Provide prior so we skip the "no prior" note
+    const projection = projectHotTableGrowth({ current: empty, prior: empty, priorGeneratedAt: "2026-05-12T00:00:00.000Z" });
+
+    assert.equal(projection.warnings.length, 0);
+    assert.equal(projection.warningsTruncated, false);
+  });
+
+  it("includes processMemory and readinessDegradation when processMemory is supplied", () => {
+    const projection = projectHotTableGrowth({
+      current: smallMetrics,
+      processMemory: {
+        rssBytes: 500_000_000,
+        heapTotalBytes: 400_000_000,
+        heapUsedBytes: 350_000_000,
+        heapLimitBytes: 512_000_000,
+      },
+    });
+
+    assert.ok(projection.processMemory, "processMemory should be present");
+    assert.equal(projection.processMemory!.heapUsedRatio, 0.684); // 350/512
+    assert.ok(projection.readinessDegradation, "readinessDegradation should be present");
+    // 68% heap < 80% threshold, so no heap pressure
+    assert.equal(projection.readinessDegradation!.heapPressure, false);
+  });
+
+  it("sets heapPressure when heap usage exceeds 80%", () => {
+    const projection = projectHotTableGrowth({
+      current: smallMetrics,
+      processMemory: {
+        rssBytes: 800_000_000,
+        heapTotalBytes: 750_000_000,
+        heapUsedBytes: 450_000_000,
+        heapLimitBytes: 512_000_000,
+      },
+    });
+
+    // 450/512 ≈ 0.879 → > 0.8, so heapPressure = true
+    assert.equal(projection.readinessDegradation!.heapPressure, true);
+    assert.equal(projection.readinessDegradation!.overallRisky, true);
+  });
+
+  it("includes snapshotMetrics when snapshotMetrics is supplied", () => {
+    const projection = projectHotTableGrowth({
+      current: smallMetrics,
+      snapshotMetrics: {
+        lastSnapshotBytes: 2_500_000,
+        lastPersistDurationMs: 320,
+        lastSnapshotAt: "2026-05-14T12:00:00.000Z",
+      },
+    });
+
+    assert.ok(projection.snapshotMetrics);
+    assert.equal(projection.snapshotMetrics!.lastSnapshotBytes, 2_500_000);
+    assert.equal(projection.snapshotMetrics!.lastPersistDurationMs, 320);
+    assert.equal(projection.snapshotMetrics!.lastSnapshotAt, "2026-05-14T12:00:00.000Z");
+  });
 });
