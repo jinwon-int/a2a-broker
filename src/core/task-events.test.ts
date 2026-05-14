@@ -484,6 +484,72 @@ describe("TerminalTaskEventOutbox", () => {
     assert.equal(events[2]?.payload.parentRoundProgress, undefined);
   });
 
+  it("direct task flow emits bangtong compact Terminal Brief with parentRoundTotal=7, progress=1", () => {
+    const broker = new InMemoryA2ABroker();
+    registerWorker(broker, "bangtong");
+
+    const task = createTask(broker, {
+      id: "bangtong-direct-child",
+      targetNodeId: "bangtong",
+      payload: {
+        parentRoundId: "r13-parent-round",
+        parentRoundTotal: 7,
+      },
+    });
+
+    broker.claimTask(task.id, "bangtong");
+    broker.completeTask(task.id, "bangtong", { summary: "bangtong direct task completed" });
+
+    const events = broker.getTerminalTaskEventOutbox().subscribe();
+    const event = events.find(e => e.payload.taskId === "bangtong-direct-child");
+    assert.ok(event, "bangtong direct task event must exist");
+    assert.equal(event.payload.worker, "bangtong");
+    assert.equal(event.payload.run, "r13-parent-round");
+    assert.equal(event.payload.parentRoundTotal, 7);
+    assert.equal(event.payload.parentRoundProgress, 1);
+    assert.equal(event.payload.terminalBriefTitle, "A2A Terminal Brief 완료: bangtong(1/7)");
+    assert.equal(event.payload.status, "succeeded");
+  });
+
+  it("direct task flow emits bangtong compact Terminal Brief on failed and canceled", () => {
+    const broker = new InMemoryA2ABroker();
+    registerWorker(broker, "bangtong");
+
+    // failed
+    const failedTask = createTask(broker, {
+      id: "bangtong-failed",
+      targetNodeId: "bangtong",
+      payload: { parentRoundId: "r13-failed-round", parentRoundTotal: 7 },
+    });
+    broker.claimTask(failedTask.id, "bangtong");
+    broker.failTask(failedTask.id, "bangtong", { message: "task failed" });
+
+    // canceled
+    const canceledTask = createTask(broker, {
+      id: "bangtong-canceled",
+      targetNodeId: "bangtong",
+      payload: { parentRoundId: "r13-canceled-round", parentRoundTotal: 7 },
+    });
+    broker.claimTask(canceledTask.id, "bangtong");
+    broker.cancelTask(canceledTask.id, { actor: { id: "bangtong", kind: "node", role: "analyst" }, reason: "task canceled" });
+
+    const events = broker.getTerminalTaskEventOutbox().subscribe();
+
+    const failedEvent = events.find(e => e.payload.taskId === "bangtong-failed");
+    assert.ok(failedEvent, "bangtong-failed event must exist");
+    assert.equal(failedEvent.payload.terminalBriefTitle, "A2A Terminal Brief 완료: bangtong(1/7)");
+    assert.equal(failedEvent.payload.status, "failed");
+    assert.equal(failedEvent.payload.parentRoundProgress, 1);
+    assert.equal(failedEvent.payload.parentRoundTotal, 7);
+
+    const canceledEvent = events.find(e => e.payload.taskId === "bangtong-canceled");
+    assert.ok(canceledEvent, "bangtong-canceled event must exist");
+    assert.equal(canceledEvent.payload.terminalBriefTitle, "A2A Terminal Brief 완료: bangtong(1/7)");
+    assert.equal(canceledEvent.payload.status, "canceled");
+    assert.equal(canceledEvent.payload.parentRoundProgress, 1);
+    assert.equal(canceledEvent.payload.parentRoundTotal, 7);
+  });
+
   it("replays terminal outbox events after a stable event id", () => {
     const broker = new InMemoryA2ABroker();
     registerWorker(broker);
