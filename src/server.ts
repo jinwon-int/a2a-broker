@@ -122,6 +122,9 @@ import {
   type TerminalTaskOutboxReceiptUpdateInput,
 } from "./core/terminal-event-outbox.js";
 import type { TaskStatusEvent } from "./core/task-events.js";
+import { GitHubIngestionService } from "./github/ingestion.js";
+import { BoundedPoller } from "./github/bounded-poller.js";
+import { parseGitHubWebhook, validateWebhookHeaders } from "./github/webhook-parser.js";
 
 const DEFAULT_TASK_LIST_LIMIT = 100;
 const MAX_TASK_LIST_LIMIT = 500;
@@ -441,6 +444,12 @@ export interface BrokerServerRuntime {
   stopStaleReaper: () => void;
   /** Current reaper configuration and last-run observations for ops visibility. */
   getStaleReaperStatus: () => BrokerStaleReaperStatus;
+  /** GitHub /a2a assign ingestion service — exposed for diagnostics and direct calls. */
+  githubIngestion: GitHubIngestionService;
+  /** Bounded poller for periodic GitHub event fetch — exposed for diagnostics. */
+  boundedPoller?: BoundedPoller;
+  /** Stop the bounded poller (if started). Safe to call multiple times. */
+  stopPoller: () => void;
   config: {
     host: string;
     port: number;
@@ -786,6 +795,43 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
     staleReaperTimer = setInterval(runStaleReaperSweep, staleReaperIntervalSec * 1000);
     // Reaper should never block process exit; tests and scripts expect clean shutdown.
     staleReaperTimer.unref?.();
+  }
+
+  // GitHub /a2a assign ingestion service — shared across the webhook endpoint and the bounded poller.
+  const githubIngestion = new GitHubIngestionService({
+    broker,
+    defaultIntent: "analyze",
+    requesterId: "github-ingestion",
+  });
+
+  // Bounded poller for periodic GitHub event fetch. Not started by default; the operator
+  // may call `startPoller()` with a `fetchEvents` callback or start it externally.
+  let boundedPoller: BoundedPoller | undefined;
+  let pollerStarted = false;
+
+  /**
+   * Start the bounded poller with the given fetch function.
+   * No-op if already started. Returns the poller instance.
+   */
+  function startPoller(fetchEvents: BoundedPoller["fetchEvents"]): BoundedPoller {
+    if (pollerStarted && boundedPoller) return boundedPoller;
+    boundedPoller = new BoundedPoller({
+      ingestionService: githubIngestion,
+      fetchEvents,
+      label: "github-bounded-poller",
+    });
+    boundedPoller.start();
+    pollerStarted = true;
+    return boundedPoller;
+  }
+
+  /** Stop the bounded poller. Safe to call multiple times. */
+  function stopPoller(): void {
+    if (boundedPoller) {
+      boundedPoller.stop();
+      boundedPoller = undefined;
+    }
+    pollerStarted = false;
   }
 
   const handler: RequestListener<typeof IncomingMessage, typeof ServerResponse> = async (req, res) => {
@@ -1760,6 +1806,60 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
         return sendJson(res, 200, { items: listAuditEventsForReadPath(stateStore, broker, filters) });
       }
 
+      // -----------------------------------------------------------------------
+      // GitHub /a2a assign ingestion endpoint
+      // -----------------------------------------------------------------------
+      if (req.method === "POST" && path === "/github/webhook") {
+        const validationError = validateWebhookHeaders(
+          req.headers["x-github-event"] as string | undefined,
+          req.headers["x-github-delivery"] as string | undefined,
+        );
+        if (validationError) {
+          throw new BrokerError("bad_request", validationError);
+        }
+
+        const body = await readJson<Record<string, unknown>>(req);
+        const parsed = parseGitHubWebhook(
+          req.headers["x-github-event"] as string,
+          req.headers["x-github-delivery"] as string,
+          body,
+        );
+        if (!parsed) {
+          throw new BrokerError("bad_request", "unsupported or malformed webhook payload");
+        }
+
+        const result = githubIngestion.ingest(parsed.event, parsed.ctx);
+        return sendJson(res, result.deduped ? 200 : 201, result);
+      }
+
+      // GitHub webhook ingestion diagnostics
+      if (req.method === "GET" && path === "/github/webhook/health") {
+        const replayStats = githubIngestion.getReplayStats();
+        return sendJson(res, 200, {
+          ok: true,
+          service: "github-ingestion",
+          replayStats,
+        });
+      }
+
+      // GitHub bounded poller diagnostics
+      if (req.method === "GET" && path === "/github/poller/health") {
+        const poller = boundedPoller;
+        if (!poller) {
+          return sendJson(res, 200, {
+            ok: true,
+            service: "github-bounded-poller",
+            status: "not_started",
+          });
+        }
+        return sendJson(res, 200, {
+          ok: true,
+          service: "github-bounded-poller",
+          status: "started",
+          stats: poller.getStats(),
+        });
+      }
+
       throw new BrokerError("not_found", "not found");
     } catch (error) {
       return sendError(res, error);
@@ -1772,6 +1872,7 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
   // path in startBrokerServer.
   server.on("close", () => {
     stopStaleReaper();
+    stopPoller();
     unsubscribeBrokerState();
   });
 
@@ -1782,6 +1883,11 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
     runStaleReaperSweep,
     stopStaleReaper,
     getStaleReaperStatus,
+    githubIngestion,
+    get boundedPoller(): BoundedPoller | undefined {
+      return boundedPoller;
+    },
+    stopPoller,
     config: {
       host,
       port,
@@ -2188,6 +2294,7 @@ export function startBrokerServer(options: BrokerServerOptions = {}): BrokerServ
   const gracefulShutdown = (signal: NodeJS.Signals) => {
     console.log(`[a2a-broker] received ${signal}, stopping stale reaper and closing server`);
     runtime.stopStaleReaper();
+    runtime.stopPoller();
     runtime.server.close(() => process.exit(0));
   };
   process.once("SIGINT", gracefulShutdown);
