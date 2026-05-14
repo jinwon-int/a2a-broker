@@ -239,7 +239,12 @@ test("SqliteBrokerStateStore saves and reloads snapshots with WAL metadata", () 
 
     const reloaded = new SqliteBrokerStateStore(temp.filePath);
     assert.deepEqual(reloaded.load(), snapshot);
-    assert.deepEqual(reloaded.getPersistenceInfo(), {
+    const persistenceInfo = reloaded.getPersistenceInfo();
+    assert.ok(persistenceInfo.lastPersistAt, "lastPersistAt should be reported after saving");
+    assert.equal(persistenceInfo.lastPersistSkippedFullSnapshot, false);
+    delete persistenceInfo.lastPersistAt;
+    delete persistenceInfo.lastPersistSkippedFullSnapshot;
+    assert.deepEqual(persistenceInfo, {
       kind: "sqlite",
       dbFile: temp.filePath,
       stateVersion: CURRENT_BROKER_STATE_VERSION,

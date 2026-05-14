@@ -1206,6 +1206,21 @@ export class SqliteBrokerStateStore implements BrokerStateStore {
   readHotEntityMirrorStatus(): BrokerHotEntityMirrorStatus {
     const tableCounts = this.readHotEntityTableCounts();
     const snapshot = this.readSnapshotRow();
+    const persistDiag = this.readLastPersistDiagnostics();
+    if (snapshot && persistDiag.lastPersistSkippedFullSnapshot) {
+      // In incremental hot-table mode, the canonical snapshot row is intentionally
+      // left at the last full checkpoint. Treat the hot tables as authoritative
+      // for mirror health until the next full snapshot/checkpoint is written.
+      // Drift against an older snapshot would be expected and should not surface
+      // as corruption. Manual drift after a full persist is still detected when
+      // this flag is false.
+      return {
+        ok: true,
+        tableCounts,
+        snapshotCounts: countSnapshotEntities(snapshot),
+        mismatches: [],
+      };
+    }
     if (!snapshot) {
       return {
         ok: Object.values(tableCounts).every((count) => count === 0),
@@ -1810,6 +1825,8 @@ export class SqliteBrokerStateStore implements BrokerStateStore {
     if (hints && hintsHasAnyEntries(hints)) {
       const counts: BrokerHotHintCounts = countHotHintEntries(hints);
       this.writeMetadata("last_hot_hint_counts", JSON.stringify(counts));
+    } else {
+      this.deleteMetadata("last_hot_hint_counts");
     }
   }
 
@@ -2254,6 +2271,10 @@ export class SqliteBrokerStateStore implements BrokerStateStore {
       .prepare("SELECT value FROM broker_metadata WHERE key = ?")
       .get(key) as { value?: string } | undefined;
     return typeof row?.value === "string" ? row.value : undefined;
+  }
+
+  private deleteMetadata(key: string): void {
+    this.db.prepare("DELETE FROM broker_metadata WHERE key = ?").run(key);
   }
 
   private ensureColumn(tableName: string, columnName: string, columnDefinition: string): void {
