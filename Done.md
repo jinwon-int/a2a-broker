@@ -1,55 +1,40 @@
-# Done: R15 Structured Terminal Brief All-Hands Lane
+# Done — Broker hot-table health metrics and R14 #620 reconciliation
 
 ## Summary
 
-Implemented the canonical Terminal Brief metadata schema and fail-closed task creation guards (R15).
+This patch reconciles the still-open R14 hot-table retention PR (#620) against current `main` and adds health metrics to the `HotTableGrowthProjection` for OOM-risk detection in the broker health endpoint.
 
-## Changes
+## Changed Files
 
-### New files
-- **`src/core/terminal-brief-metadata.ts`** — Canonical metadata schema (587 lines):
-  - `TerminalBriefDispatchMetadata` — dispatch identity fields (parentRoundId, originBrokerId, brokerOfRecordId, parentRoundTotal, parentRoundOrder)
-  - `TerminalBriefHandoffMetadata` — cross-broker traceability (parentRoundId, originBrokerId, handoffBrokerId, originTaskId, childWorkerId)
-  - `TerminalBriefNotificationOwnership` — immutable parent-broker-only notification policy
-  - `TerminalBriefProjectionMetadata` — full superset of all projection fields
-  - `validateTerminalBriefMetadata()` — canonical validation with per-field constraint checks
-  - `hasTerminalBriefMetadata()` — fast pre-check for task payloads
-  - `extractDispatchMetadata()` — payload → dispatch metadata extraction with key aliases
-  - `TERMINAL_BRIEF_PAYLOAD_KEYS` — recognised payload key set
-  - `MetadataValidationIssue`, `TerminalBriefMetadataValidationResult` — structured result types
+| File | Change |
+|---|---|
+| `src/core/hot-table-growth.ts` | **+6 exports, +4 interfaces, +4 functions** — warning truncation (`warningsTruncated`, `DEFAULT_MAX_WARNINGS`, `maxWarnings`, `appendBounded`, `countWarnings`, `normalizeMaxWarnings`), health metrics (`processMemory`, `snapshotMetrics`, `readinessDegradation`, `computeReadinessDegradation`), bounded `buildWarnings` |
+| `src/core/hot-table-growth.test.ts` | **+7 test cases** — 4 warning truncation tests, 3 health-metric tests |
+| `src/server.ts` | `truncateMessage()` utility, message truncation at 500 chars in health endpoint, `processMemory` wired from `readRuntimeMemoryUsage()` into `HealthDiagnosticsCache.get()` |
+| `docs/hot-table-retention-prune-runbook.md` | **New** — runbook covering retention policy, cleanup pipeline, health warnings, prune checklist, rollback |
 
-- **`src/core/terminal-brief-metadata.test.ts`** — 41 tests covering:
-  - Schema structural integrity (all interface fields)
-  - Valid metadata acceptance (required & optional fields)
-  - Missing field rejection (parentRoundId, originBrokerId, parentRoundTotal, parentRoundOrder)
-  - Constraint checks (empty, whitespace, zero, negative, order > total)
-  - Cross-broker handoff validation
-  - Helper function behavior (hasTerminalBriefMetadata, extractDispatchMetadata)
+## Test Results
 
-### Modified files
-- **`src/core/broker.ts`** (+27 lines):
-  - Imports `validateTerminalBriefMetadata`, `extractDispatchMetadata`, `hasTerminalBriefMetadata`
-  - Adds `assertTerminalBriefMetadata()` private method — fail-closed guard that validates Terminal Brief dispatch metadata when `parentRoundId` is present in task payload
-  - Guard throws `BrokerError("bad_request", ...)` with joined error messages on validation failure
-  - Tasks without Terminal Brief metadata pass through without validation
+```
+✔ projectHotTableGrowth (24 tests)
+  — 17 existing tests pass unchanged
+  — 4 new warning truncation tests (fits, truncates, exact, zero)
+  — 3 new health metrics tests (processMemory + readinessDegradation, heapPressure, snapshotMetrics)
+```
 
-- **`src/core/cross-broker-terminal-brief.ts`** (+10/-40 lines):
-  - Imports canonical validation types and `validateTerminalBriefMetadata` as `canonicalValidateTerminalBriefMetadata`
-  - `validateTerminalBriefForDispatch()` now delegates to canonical `validateTerminalBriefMetadata()`
-  - Removes ~40 lines of redundant inline validation logic
+## Health Metrics Added
 
-- **`src/core/cross-broker-terminal-brief.test.ts`** (1 line change):
-  - Updated test for missing `brokerOfRecordId`: now expects acceptance (optional field defaults to receiver broker)
+- **`processMemory`**: rssBytes, heapTotalBytes, heapUsedBytes, heapLimitBytes, heapUsedRatio
+- **`snapshotMetrics`**: lastSnapshotBytes, lastPersistDurationMs, lastSnapshotAt
+- **`readinessDegradation`**:
+  - `heapPressure` — heapUsedRatio > 80%
+  - `memoryPressure` — hot-table memory > 50% of heap limit
+  - `hydrationPressure` — any table at critical skipped ratio
+  - `overallRisky` — any pressure flag set
 
-## OpenClaw file check
+## References
 
-Verified no OpenClaw runtime/bootstrap context files (`AGENTS.md`, `SOUL.md`, `USER.md`, `TOOLS.md`, `HEARTBEAT.md`, `IDENTITY.md`, `.openclaw/**`) exist in the repo. `.gitignore` already blocks all patterns.
-
-## Test results
-
-All 202 tests pass across modified modules (0 failures):
-- `broker.test.js` — 163 tests
-- `cross-broker-terminal-brief.test.js` — 123 tests
-- `terminal-event-outbox.test.js` — 32 tests
-- `post-dispatch-verifier.test.js` — 7 tests
-- `terminal-brief-metadata.test.js` — 41 tests
+- **Issue:** https://github.com/jinwon-int/a2a-broker/issues/637
+- **Parent:** https://github.com/jinwon-int/a2a-broker/issues/636
+- **PR #620:** https://github.com/jinwon-int/a2a-broker/pull/620
+- **Issues:** #617, #497, #294

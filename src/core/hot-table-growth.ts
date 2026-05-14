@@ -62,6 +62,42 @@ export interface HotTableGrowthProjection {
   runtimeLoadLimits: BrokerHotTableRuntimeLoadLimits;
   /** Aggregate warnings. */
   warnings: string[];
+  /** Whether the warnings array was truncated because it exceeded `maxWarnings`. */
+  warningsTruncated: boolean;
+  /**
+   * Process memory snapshot at the time of projection.
+   * Present when `processMemory` was supplied in options.
+   */
+  processMemory?: {
+    rssBytes: number;
+    heapTotalBytes: number;
+    heapUsedBytes: number;
+    heapLimitBytes: number;
+    heapUsedRatio: number;
+  };
+  /**
+   * Snapshot persistence metrics.
+   * Present when `snapshotMetrics` was supplied in options.
+   */
+  snapshotMetrics?: {
+    lastSnapshotBytes: number | null;
+    lastPersistDurationMs: number | null;
+    lastSnapshotAt: string | null;
+  };
+  /**
+   * Readiness degradation assessment — flags that the broker may be near
+   * OOM or unable to hydrate critical table rows into live memory.
+   */
+  readinessDegradation?: {
+    /** True when heap usage exceeds 80% of the heap limit. */
+    heapPressure: boolean;
+    /** True when hot-table estimated memory exceeds 50% of available heap. */
+    memoryPressure: boolean;
+    /** True when any table has a critical runtime skipped ratio. */
+    hydrationPressure: boolean;
+    /** True when any pressure flag is set (overall risky indicator). */
+    overallRisky: boolean;
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -87,6 +123,15 @@ export const DEFAULT_SKIPPED_RATIO_WARNING = 0.3;
 /** Default critical: runtime skipped ratio > 0.7. */
 export const DEFAULT_SKIPPED_RATIO_CRITICAL = 0.7;
 
+/** Default maximum number of warnings to include in the projection. */
+export const DEFAULT_MAX_WARNINGS = 10;
+
+/** Default heap pressure ratio: warn when heap used > 80% of limit. */
+export const DEFAULT_HEAP_PRESSURE_RATIO = 0.8;
+
+/** Default memory pressure ratio: warn when hot-table memory > 50% of available heap. */
+export const DEFAULT_MEMORY_PRESSURE_RATIO = 0.5;
+
 export interface HotTableGrowthProjectionOptions {
   /** Current metrics from the broker health endpoint. */
   current: BrokerHotTableLoadMetrics;
@@ -98,6 +143,23 @@ export interface HotTableGrowthProjectionOptions {
   runtimeLoadLimits?: BrokerHotTableRuntimeLoadLimits;
   /** Generated-at timestamp override (for testing). */
   generatedAt?: string;
+  /** Maximum number of warnings to include. Extra warnings are dropped and
+   *  `warningsTruncated` is set to `true`. Default: {@link DEFAULT_MAX_WARNINGS}. */
+  maxWarnings?: number;
+  /** Process memory snapshot (from `process.memoryUsage()` + `v8.getHeapStatistics()`).
+   *  When supplied, enables `processMemory` and `readinessDegradation` on the projection. */
+  processMemory?: {
+    rssBytes: number;
+    heapTotalBytes: number;
+    heapUsedBytes: number;
+    heapLimitBytes: number;
+  };
+  /** Snapshot persistence metrics. When supplied, enables `snapshotMetrics` on the projection. */
+  snapshotMetrics?: {
+    lastSnapshotBytes?: number | null;
+    lastPersistDurationMs?: number | null;
+    lastSnapshotAt?: string | null;
+  };
   /** Custom thresholds. */
   thresholds?: {
     totalWarningRows?: number;
@@ -160,7 +222,33 @@ export function projectHotTableGrowth(
   );
 
   const overallSeverity = computeOverallSeverity(tables, totalEstimatedMemoryBytes, t);
-  const warnings = buildWarnings(tables, totalEstimatedMemoryBytes, hasPrior, t);
+  const maxWarnings = normalizeMaxWarnings(options.maxWarnings);
+  const warnings = buildWarnings(tables, totalEstimatedMemoryBytes, hasPrior, t, maxWarnings);
+
+  const processMemory = options.processMemory
+    ? {
+        rssBytes: options.processMemory.rssBytes,
+        heapTotalBytes: options.processMemory.heapTotalBytes,
+        heapUsedBytes: options.processMemory.heapUsedBytes,
+        heapLimitBytes: options.processMemory.heapLimitBytes,
+        heapUsedRatio:
+          options.processMemory.heapLimitBytes > 0
+            ? Math.round((options.processMemory.heapUsedBytes / options.processMemory.heapLimitBytes) * 1000) / 1000
+            : 0,
+      }
+    : undefined;
+
+  const snapshotMetrics = options.snapshotMetrics
+    ? {
+        lastSnapshotBytes: options.snapshotMetrics.lastSnapshotBytes ?? null,
+        lastPersistDurationMs: options.snapshotMetrics.lastPersistDurationMs ?? null,
+        lastSnapshotAt: options.snapshotMetrics.lastSnapshotAt ?? null,
+      }
+    : undefined;
+
+  const readinessDegradation = processMemory
+    ? computeReadinessDegradation(tables, totalEstimatedMemoryBytes, processMemory)
+    : undefined;
 
   return {
     kind: "broker.hot-table-growth.projection",
@@ -176,6 +264,10 @@ export function projectHotTableGrowth(
       terminalOutboxEvents: 0,
     },
     warnings,
+    warningsTruncated: warnings.length < countWarnings(tables, totalEstimatedMemoryBytes, hasPrior, t),
+    ...(processMemory !== undefined ? { processMemory } : {}),
+    ...(snapshotMetrics !== undefined ? { snapshotMetrics } : {}),
+    ...(readinessDegradation !== undefined ? { readinessDegradation } : {}),
   };
 }
 
@@ -288,28 +380,86 @@ function buildWarnings(
   totalMemory: number,
   hasPrior: boolean,
   t: ReturnType<typeof defaultThresholds>,
+  maxWarnings = DEFAULT_MAX_WARNINGS,
 ): string[] {
   const warnings: string[] = [];
 
   for (const table of tables) {
     if (table.severity === "critical") {
-      warnings.push(`CRITICAL: ${table.summary}`);
+      appendBounded(warnings, `CRITICAL: ${table.summary}`, maxWarnings);
     } else if (table.severity === "warning") {
-      warnings.push(`WARNING: ${table.summary}`);
+      appendBounded(warnings, `WARNING: ${table.summary}`, maxWarnings);
     }
   }
 
-  if (totalMemory >= t.memoryWarningBytes) {
+  if (totalMemory >= t.memoryWarningBytes && warnings.length < maxWarnings) {
     warnings.push(
       `Total hot-table memory ~${formatBytes(totalMemory)} exceeds warning threshold ${formatBytes(t.memoryWarningBytes)}`,
     );
   }
 
-  if (!hasPrior) {
+  if (!hasPrior && warnings.length < maxWarnings) {
     warnings.push("No prior snapshot available; growth rate could not be computed. Run again after an interval for differential analysis.");
   }
 
   return warnings;
+}
+
+/**
+ * Count the total number of warnings that would be emitted without truncation.
+ */
+function countWarnings(
+  tables: HotTableGrowthTableProjection[],
+  totalMemory: number,
+  hasPrior: boolean,
+  t: ReturnType<typeof defaultThresholds>,
+): number {
+  let count = 0;
+  for (const table of tables) {
+    if (table.severity === "critical" || table.severity === "warning") {
+      count++;
+    }
+  }
+  if (totalMemory >= t.memoryWarningBytes) count++;
+  if (!hasPrior) count++;
+  return count;
+}
+
+/** Push `item` onto `arr` if the array is shorter than `max`. */
+function appendBounded<T>(arr: T[], item: T, max: number): void {
+  if (arr.length < max) {
+    arr.push(item);
+  }
+}
+
+function normalizeMaxWarnings(value: number | undefined): number {
+  if (typeof value === "number" && Number.isFinite(value) && value >= 1) {
+    return Math.floor(value);
+  }
+  return DEFAULT_MAX_WARNINGS;
+}
+
+function computeReadinessDegradation(
+  tables: HotTableGrowthTableProjection[],
+  totalEstimatedMemoryBytes: number,
+  processMemory: { heapUsedBytes: number; heapLimitBytes: number; heapUsedRatio: number },
+): {
+  heapPressure: boolean;
+  memoryPressure: boolean;
+  hydrationPressure: boolean;
+  overallRisky: boolean;
+} {
+  const heapPressure = processMemory.heapUsedRatio > DEFAULT_HEAP_PRESSURE_RATIO;
+  const memoryPressure =
+    processMemory.heapLimitBytes > 0 &&
+    totalEstimatedMemoryBytes / processMemory.heapLimitBytes > DEFAULT_MEMORY_PRESSURE_RATIO;
+  const hydrationPressure = tables.some((t) => t.severity === "critical" && t.runtimeSkipped > 0);
+  return {
+    heapPressure,
+    memoryPressure,
+    hydrationPressure,
+    overallRisky: heapPressure || memoryPressure || hydrationPressure,
+  };
 }
 
 function formatBytes(bytes: number): string {
