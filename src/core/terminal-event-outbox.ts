@@ -36,6 +36,12 @@ export type TerminalTaskStatus = Extract<TaskStatus, "succeeded" | "failed" | "c
 export interface TerminalTaskEventPayload {
   taskId: string;
   status: TerminalTaskStatus;
+  /** Canonical Terminal Brief parent round id. Mirrors `run` for legacy consumers. */
+  parentRoundId?: string;
+  /** Broker that produced the Terminal Brief projection. */
+  originBrokerId?: string;
+  /** Broker of record that owns operator notification/ACK. */
+  brokerOfRecordId?: string;
   /** Operator-safe round/run key for grouping worker terminal notifications. */
   run?: string;
   /** Transport trace id when the assignment came through an A2A exchange. */
@@ -82,8 +88,12 @@ export interface TerminalTaskEventPayload {
    * default title.
    */
   parentRoundTotal?: number;
+  /** 1-based worker/task order within the parent round. Mirrors `parentRoundProgress`. */
+  parentRoundOrder?: number;
   /** Compact operator title for parent-round Terminal Brief notifications. */
   terminalBriefTitle?: string;
+  /** Compatibility alias consumed by older Terminal Brief renderers. */
+  title?: string;
 }
 
 export interface TerminalTaskOutboxEvent {
@@ -238,6 +248,7 @@ export class TerminalTaskEventOutbox {
     const payload = buildTerminalTaskPayload(task);
     applyRoundProgressMetadata(payload, this.roundProgress);
     applyTerminalBriefTitle(payload);
+    applyTerminalBriefCompatibilityAliases(payload);
     const event: TerminalTaskOutboxEvent = {
       id,
       kind: "task.terminal",
@@ -282,6 +293,9 @@ export class TerminalTaskEventOutbox {
     const payload: TerminalTaskEventPayload = {
       taskId: syntheticTaskId,
       status: projection.status,
+      parentRoundId: projection.parentRoundId,
+      originBrokerId: projection.originBrokerId,
+      ...(projection.brokerOfRecordId ? { brokerOfRecordId: projection.brokerOfRecordId } : {}),
       run: projection.parentRoundId,
       taskDescription: `Cross-broker Terminal Brief from ${projection.originBrokerId}`,
       worker: projection.childWorkerId ?? projection.originBrokerId,
@@ -292,7 +306,7 @@ export class TerminalTaskEventOutbox {
       updatedAt: projection.completedAt,
       completedAt: projection.completedAt,
       ...(projection.parentRoundTotal ? { parentRoundTotal: projection.parentRoundTotal } : {}),
-      ...(projection.parentRoundOrder ? { parentRoundProgress: projection.parentRoundOrder } : {}),
+      ...(projection.parentRoundOrder ? { parentRoundProgress: projection.parentRoundOrder, parentRoundOrder: projection.parentRoundOrder } : {}),
       crossBrokerHandoff: {
         parentRoundId: projection.parentRoundId,
         originBrokerId: parentBrokerId,
@@ -310,6 +324,7 @@ export class TerminalTaskEventOutbox {
     };
     applyRoundProgressMetadata(payload, this.roundProgress);
     applyTerminalBriefTitle(payload);
+    applyTerminalBriefCompatibilityAliases(payload);
     const event: TerminalTaskOutboxEvent = {
       id,
       kind: "task.terminal",
@@ -557,6 +572,10 @@ function isReceiptConfirmed(event: TerminalTaskOutboxEvent): boolean {
 function buildTerminalTaskPayload(task: TaskRecord): TerminalTaskEventPayload {
   const output = isRecord(task.result?.output) ? task.result.output : {};
   const githubOutput = isRecord(output["github"]) ? output["github"] : {};
+  const payloadTerminalBrief = isRecord(task.payload["terminalBrief"]) ? task.payload["terminalBrief"] : {};
+  const payloadMetadata = isRecord(task.payload["metadata"]) ? task.payload["metadata"] : {};
+  const outputTerminalBrief = isRecord(output["terminalBrief"]) ? output["terminalBrief"] : {};
+  const outputMetadata = isRecord(output["metadata"]) ? output["metadata"] : {};
   const payload: TerminalTaskEventPayload = {
     taskId: task.id,
     status: task.status as TerminalTaskStatus,
@@ -565,27 +584,75 @@ function buildTerminalTaskPayload(task: TaskRecord): TerminalTaskEventPayload {
   };
   const run = firstSafeText(
     task.payload["parentRoundId"],
+    payloadTerminalBrief["parentRoundId"],
+    payloadMetadata["parentRoundId"],
     task.payload["run"],
     task.payload["runId"],
     task.payload["round"],
     task.payload["roundId"],
     output["parentRoundId"],
+    outputTerminalBrief["parentRoundId"],
+    outputMetadata["parentRoundId"],
     output["run"],
     output["runId"],
     output["round"],
     output["roundId"],
   );
-  if (run) payload.run = run;
+  if (run) {
+    payload.run = run;
+    payload.parentRoundId = run;
+  }
+  const originBrokerId = firstSafeText(
+    task.payload["originBrokerId"],
+    payloadTerminalBrief["originBrokerId"],
+    payloadMetadata["originBrokerId"],
+    output["originBrokerId"],
+    outputTerminalBrief["originBrokerId"],
+    outputMetadata["originBrokerId"],
+  );
+  if (originBrokerId) payload.originBrokerId = originBrokerId;
+  const brokerOfRecordId = firstSafeText(
+    task.payload["brokerOfRecordId"],
+    payloadTerminalBrief["brokerOfRecordId"],
+    payloadMetadata["brokerOfRecordId"],
+    output["brokerOfRecordId"],
+    outputTerminalBrief["brokerOfRecordId"],
+    outputMetadata["brokerOfRecordId"],
+    task.brokerOfRecord,
+  );
+  if (brokerOfRecordId) payload.brokerOfRecordId = brokerOfRecordId;
   const parentRoundTotal = firstSafePositiveInt(
     task.payload["roundTotal"],
     task.payload["parentRoundTotal"],
+    payloadTerminalBrief["parentRoundTotal"],
+    payloadMetadata["parentRoundTotal"],
     task.payload["expectedWorkers"],
     task.payload["taskCount"],
     output["roundTotal"],
     output["parentRoundTotal"],
+    outputTerminalBrief["parentRoundTotal"],
+    outputMetadata["parentRoundTotal"],
     output["expectedWorkers"],
   );
   if (parentRoundTotal) payload.parentRoundTotal = parentRoundTotal;
+  const parentRoundOrder = firstSafePositiveInt(
+    task.payload["parentRoundOrder"],
+    task.payload["parentRoundIndex"],
+    payloadTerminalBrief["parentRoundOrder"],
+    payloadTerminalBrief["parentRoundIndex"],
+    payloadMetadata["parentRoundOrder"],
+    payloadMetadata["parentRoundIndex"],
+    output["parentRoundOrder"],
+    output["parentRoundIndex"],
+    outputTerminalBrief["parentRoundOrder"],
+    outputTerminalBrief["parentRoundIndex"],
+    outputMetadata["parentRoundOrder"],
+    outputMetadata["parentRoundIndex"],
+  );
+  if (parentRoundOrder) {
+    payload.parentRoundOrder = parentRoundOrder;
+    payload.parentRoundProgress = parentRoundOrder;
+  }
   const traceId = firstSafeText(task.via?.traceId, task.payload["traceId"], output["traceId"]);
   if (traceId) payload.traceId = traceId;
   const taskDescription = buildTaskDescription(task, output);
@@ -909,6 +976,12 @@ function applyRoundProgressMetadata(
 function applyTerminalBriefTitle(payload: TerminalTaskEventPayload): void {
   const title = buildTerminalBriefTitle(payload);
   if (title) payload.terminalBriefTitle = title;
+}
+
+function applyTerminalBriefCompatibilityAliases(payload: TerminalTaskEventPayload): void {
+  if (payload.run && !payload.parentRoundId) payload.parentRoundId = payload.run;
+  if (payload.parentRoundProgress && !payload.parentRoundOrder) payload.parentRoundOrder = payload.parentRoundProgress;
+  if (payload.terminalBriefTitle && !payload.title) payload.title = payload.terminalBriefTitle;
 }
 
 function buildTerminalBriefTitle(payload: TerminalTaskEventPayload): string | undefined {
