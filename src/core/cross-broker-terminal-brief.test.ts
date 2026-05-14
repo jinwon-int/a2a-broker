@@ -405,23 +405,28 @@ test("Terminal Brief dispatch guard rejects projection lacking brokerOfRecordId 
   assert.match(result.ack.reason, /crossBrokerHandoff/);
 });
 
-test("Terminal Brief dispatch guard accepts valid seoseo-origin projection", () => {
+test("Terminal Brief dispatch guard accepts valid seoseo-origin projection with bangtong compact title", () => {
   const broker = new InMemoryA2ABroker(undefined, undefined, { brokerId: "parent-broker" });
   createParentRound(broker);
 
   const result = broker.ingestCrossBrokerTerminalBriefProjection(projection({
     originBrokerId: "seoseo",
     childWorkerId: "bangtong",
-    parentRoundTotal: "3",
+    parentRoundTotal: "7",
   }));
   assert.equal(result.accepted, true);
   assert.equal(result.replayed, false);
   assert.equal(result.record.originBrokerId, "seoseo");
-  assert.equal(result.record.parentRoundTotal, 3);
+  assert.equal(result.record.parentRoundTotal, 7);
   assert.equal(result.record.childWorkerId, "bangtong");
 
   const events = broker.getTerminalTaskEventOutbox().subscribe();
   assert.equal(events.length, 1);
+  assert.equal(events[0]?.payload.run, "round-parent");
+  assert.equal(events[0]?.payload.worker, "bangtong");
+  assert.equal(events[0]?.payload.parentRoundTotal, 7);
+  assert.equal(events[0]?.payload.parentRoundProgress, 1);
+  assert.equal(events[0]?.payload.terminalBriefTitle, "A2A Terminal Brief 완료: bangtong(1/7)");
   assert.deepEqual(events[0]?.payload.crossBrokerHandoff, {
     parentRoundId: "round-parent",
     originBrokerId: "parent-broker",
@@ -429,9 +434,16 @@ test("Terminal Brief dispatch guard accepts valid seoseo-origin projection", () 
     originTaskId: "child-task-1",
     childWorkerId: "bangtong",
   });
+  assert.deepEqual(events[0]?.payload.notificationOwnership, {
+    ownerBrokerId: "parent-broker",
+    scope: "parent-broker-only",
+    providerSendPermittedByProjection: false,
+    terminalAckPermittedByProjection: false,
+    reason: "cross-broker projections are parent-broker aggregation evidence only; child/handoff brokers do not notify or ACK",
+  });
 });
 
-test("Terminal Brief dispatch guard accepts valid gwakga-origin projection", () => {
+test("Terminal Brief dispatch guard accepts valid gwakga-origin projection with dungae compact title", () => {
   const broker = new InMemoryA2ABroker(undefined, undefined, { brokerId: "parent-broker" });
   createParentRound(broker);
 
@@ -448,6 +460,11 @@ test("Terminal Brief dispatch guard accepts valid gwakga-origin projection", () 
 
   const events = broker.getTerminalTaskEventOutbox().subscribe();
   assert.equal(events.length, 1);
+  assert.equal(events[0]?.payload.run, "round-parent");
+  assert.equal(events[0]?.payload.worker, "dungae");
+  assert.equal(events[0]?.payload.parentRoundTotal, 10);
+  assert.equal(events[0]?.payload.parentRoundProgress, 1);
+  assert.equal(events[0]?.payload.terminalBriefTitle, "A2A Terminal Brief 완료: dungae(1/10)");
   assert.deepEqual(events[0]?.payload.crossBrokerHandoff, {
     parentRoundId: "round-parent",
     originBrokerId: "parent-broker",
@@ -455,4 +472,104 @@ test("Terminal Brief dispatch guard accepts valid gwakga-origin projection", () 
     originTaskId: "child-task-1",
     childWorkerId: "dungae",
   });
+  assert.deepEqual(events[0]?.payload.notificationOwnership, {
+    ownerBrokerId: "parent-broker",
+    scope: "parent-broker-only",
+    providerSendPermittedByProjection: false,
+    terminalAckPermittedByProjection: false,
+    reason: "cross-broker projections are parent-broker aggregation evidence only; child/handoff brokers do not notify or ACK",
+  });
+});
+
+
+test("bangtong compact Terminal Brief emitted on every terminal status: succeeded", () => {
+  const broker = new InMemoryA2ABroker(undefined, undefined, { brokerId: "parent-broker" });
+  createParentRound(broker);
+
+  const result = broker.ingestCrossBrokerTerminalBriefProjection(projection({
+    originBrokerId: "seoseo",
+    childTaskId: "bangtong-task-succeeded",
+    childWorkerId: "bangtong",
+    parentRoundTotal: "7",
+    status: "succeeded",
+    summary: "bangtong succeeded",
+    completedAt: "2026-05-14T01:01:00.000Z",
+    emittedAt: "2026-05-14T01:01:01.000Z",
+  }));
+  assert.equal(result.accepted, true);
+
+  const events = broker.getTerminalTaskEventOutbox().subscribe();
+  const event = events.find(e => e.payload.taskId === "bangtong-task-succeeded");
+  assert.ok(event, "bangtong succeeded event must exist");
+  assert.equal(event.payload.terminalBriefTitle, "A2A Terminal Brief 완료: bangtong(1/7)");
+  assert.equal(event.payload.status, "succeeded");
+});
+
+test("bangtong compact Terminal Brief emitted on every terminal status: failed", () => {
+  const broker = new InMemoryA2ABroker(undefined, undefined, { brokerId: "parent-broker" });
+  createParentRound(broker);
+
+  const result = broker.ingestCrossBrokerTerminalBriefProjection(projection({
+    originBrokerId: "seoseo",
+    childTaskId: "bangtong-task-failed",
+    childWorkerId: "bangtong",
+    parentRoundTotal: "7",
+    status: "failed",
+    summary: "bangtong failed",
+    completedAt: "2026-05-14T01:02:00.000Z",
+    emittedAt: "2026-05-14T01:02:01.000Z",
+  }));
+  assert.equal(result.accepted, true);
+
+  const events = broker.getTerminalTaskEventOutbox().subscribe();
+  const event = events.find(e => e.payload.taskId === "bangtong-task-failed");
+  assert.ok(event, "bangtong failed event must exist");
+  assert.equal(event.payload.terminalBriefTitle, "A2A Terminal Brief 완료: bangtong(1/7)");
+  assert.equal(event.payload.status, "failed");
+});
+
+test("bangtong compact Terminal Brief emitted on every terminal status: canceled", () => {
+  const broker = new InMemoryA2ABroker(undefined, undefined, { brokerId: "parent-broker" });
+  createParentRound(broker);
+
+  const result = broker.ingestCrossBrokerTerminalBriefProjection(projection({
+    originBrokerId: "seoseo",
+    childTaskId: "bangtong-task-canceled",
+    childWorkerId: "bangtong",
+    parentRoundTotal: "7",
+    status: "canceled",
+    summary: "bangtong canceled",
+    completedAt: "2026-05-14T01:03:00.000Z",
+    emittedAt: "2026-05-14T01:03:01.000Z",
+  }));
+  assert.equal(result.accepted, true);
+
+  const events = broker.getTerminalTaskEventOutbox().subscribe();
+  const event = events.find(e => e.payload.taskId === "bangtong-task-canceled");
+  assert.ok(event, "bangtong canceled event must exist");
+  assert.equal(event.payload.terminalBriefTitle, "A2A Terminal Brief 완료: bangtong(1/7)");
+  assert.equal(event.payload.status, "canceled");
+});
+
+test("bangtong compact Terminal Brief emitted on every terminal status: blocked", () => {
+  const broker = new InMemoryA2ABroker(undefined, undefined, { brokerId: "parent-broker" });
+  createParentRound(broker);
+
+  const result = broker.ingestCrossBrokerTerminalBriefProjection(projection({
+    originBrokerId: "seoseo",
+    childTaskId: "bangtong-task-blocked",
+    childWorkerId: "bangtong",
+    parentRoundTotal: "7",
+    status: "blocked",
+    summary: "bangtong blocked",
+    completedAt: "2026-05-14T01:04:00.000Z",
+    emittedAt: "2026-05-14T01:04:01.000Z",
+  }));
+  assert.equal(result.accepted, true);
+
+  const events = broker.getTerminalTaskEventOutbox().subscribe();
+  const event = events.find(e => e.payload.taskId === "bangtong-task-blocked");
+  assert.ok(event, "bangtong blocked event must exist");
+  assert.equal(event.payload.terminalBriefTitle, "A2A Terminal Brief 완료: bangtong(1/7)");
+  assert.equal(event.payload.status, "blocked");
 });
