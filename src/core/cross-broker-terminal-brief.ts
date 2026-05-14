@@ -14,7 +14,60 @@ export type CrossBrokerTerminalBriefRejectCode =
   | "missing_parent"
   | "wrong_origin"
   | "stale_replay"
-  | "terminal_ack_forbidden";
+  | "terminal_ack_forbidden"
+  | "missing_dispatch_metadata";
+
+export interface TerminalBriefDispatchValidationResult {
+  valid: boolean;
+  errors: string[];
+}
+
+/**
+ * Fields needed for Terminal Brief dispatch metadata validation, extracted so
+ * both request and normalized-projection shapes can be checked without casts.
+ */
+export interface TerminalBriefDispatchValidationInput {
+  parentRoundId?: string;
+  originBrokerId?: string;
+  brokerOfRecordId?: string;
+  parentRoundTotal?: number;
+}
+
+/**
+ * Validate Terminal Brief projection metadata before dispatch.
+ * Requires parentRoundId, originBrokerId, parentRoundTotal, and
+ * crossBrokerHandoff fields to be present and valid.
+ */
+export function validateTerminalBriefForDispatch(
+  input: TerminalBriefDispatchValidationInput,
+  receiverBrokerId?: string,
+): TerminalBriefDispatchValidationResult {
+  const errors: string[] = [];
+
+  if (!input.parentRoundId || input.parentRoundId.trim().length === 0) {
+    errors.push("parentRoundId is required for Terminal Brief dispatch");
+  }
+
+  if (!input.originBrokerId || input.originBrokerId.trim().length === 0) {
+    errors.push("originBrokerId is required for Terminal Brief dispatch");
+  } else if (receiverBrokerId && input.originBrokerId === receiverBrokerId) {
+    errors.push(`originBrokerId "${input.originBrokerId}" must differ from receiving broker "${receiverBrokerId}"`);
+  }
+
+  if (input.parentRoundTotal === undefined || input.parentRoundTotal === null || input.parentRoundTotal <= 0) {
+    errors.push("parentRoundTotal is required and must be a positive integer for Terminal Brief dispatch");
+  }
+
+  // crossBrokerHandoff construction requires parentRoundId, brokerOfRecordId, and originBrokerId.
+  // parentRoundId -> crossBrokerHandoff.parentRoundId
+  // brokerOfRecordId -> crossBrokerHandoff.originBrokerId (parent broker is the origin of the handoff)
+  // originBrokerId -> crossBrokerHandoff.handoffBrokerId (child broker is the handoff participant)
+  if (!input.parentRoundId || !input.brokerOfRecordId || !input.originBrokerId) {
+    errors.push("crossBrokerHandoff cannot be constructed: parentRoundId, brokerOfRecordId, and originBrokerId are required");
+  }
+
+  return { valid: errors.length === 0, errors };
+}
 
 export interface CrossBrokerTerminalBriefProjectionRequest {
   /** Parent round/task id owned by the receiving broker-of-record. */
@@ -130,6 +183,22 @@ export class CrossBrokerTerminalBriefProjectionStore {
     const normalized = normalizeRequest(request);
     if (!normalized) {
       return reject("bad_request", "cross-broker Terminal Brief projection requires parentRoundId, originBrokerId, terminal status, and completedAt", now);
+    }
+
+    // Dispatch metadata preflight: require parentRoundId, originBrokerId,
+    // parentRoundTotal, and crossBrokerHandoff fields before storage and enqueue.
+    // This closes the gap where a projection would be stored but never dispatchable.
+    const preflight = validateTerminalBriefForDispatch(
+      {
+        parentRoundId: normalized.parentRoundId,
+        originBrokerId: normalized.originBrokerId,
+        brokerOfRecordId: normalized.brokerOfRecordId,
+        parentRoundTotal: normalized.parentRoundTotal,
+      },
+      normalizeToken(this.options.brokerId),
+    );
+    if (!preflight.valid) {
+      return reject("missing_dispatch_metadata", `Terminal Brief dispatch metadata validation failed: ${preflight.errors.join("; ")}`, now);
     }
     if (request.terminalAck === true) {
       return reject("terminal_ack_forbidden", "cross-broker Terminal Brief projection is aggregate evidence only and cannot ACK a Terminal Brief", now);
