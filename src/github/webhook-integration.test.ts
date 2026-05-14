@@ -24,7 +24,6 @@ async function startTestServer(options: Partial<BrokerServerOptions> = {}) {
     port: 0,
     publicBaseUrl: "https://broker.test/",
     stateStore: createInMemoryStateStore(),
-    retentionPolicy: { maxEntries: 0, description: "no-op" },
     staleReaperEnabled: false,
     ...options,
   });
@@ -45,7 +44,7 @@ test("POST /github/webhook rejects missing headers", async () => {
   try {
     const res = await fetch(`${base}/github/webhook`, { method: "POST" });
     assert.equal(res.status, 400);
-    const body = await res.json() as { error?: string };
+    const body = await res.json() as { error?: { message?: string } };
     assert.ok(body.error?.message?.includes("Missing X-GitHub-Event"), `unexpected error: ${JSON.stringify(body.error)}`);
   } finally {
     runtime.server.close();
@@ -66,7 +65,7 @@ test("POST /github/webhook rejects unsupported event type", async () => {
       body: JSON.stringify({ ref: "main" }),
     });
     assert.equal(res.status, 400);
-    const body = await res.json() as { error?: string };
+    const body = await res.json() as { error?: { message?: string } };
     assert.ok(body.error?.message?.includes("Unsupported"), `unexpected error: ${JSON.stringify(body.error)}`);
   } finally {
     runtime.server.close();
