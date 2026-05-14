@@ -456,6 +456,117 @@ describe("PostDispatchVerifier: snapshot/check flow", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Persisted terminal event verifier
+// ---------------------------------------------------------------------------
+
+describe("PostDispatchVerifier: persisted terminal event snapshots", () => {
+  it("verifies survived persisted fields and checks them inside the 30-60s window", () => {
+    const tick = clockProvider();
+    const v = new PostDispatchVerifier(undefined, { now: tick.now });
+    const payload = {
+      taskId: "gwakga-child-05",
+      status: "succeeded" as const,
+      run: "seoseo-parent-round",
+      worker: "dungae",
+      parentRoundTotal: 7,
+      parentRoundProgress: 5,
+      createdAt: "2026-05-13T01:00:00.000Z",
+      updatedAt: "2026-05-13T01:00:00.000Z",
+      completedAt: "2026-05-13T01:00:00.000Z",
+      crossBrokerHandoff: {
+        parentRoundId: "seoseo-parent-round",
+        originBrokerId: "seoseo",
+        handoffBrokerId: "gwakga",
+        originTaskId: "gwakga-child-05",
+        childWorkerId: "dungae",
+      },
+    };
+
+    const verified = v.verifyPersistedTerminalBriefEvent(payload, {
+      parentRoundId: "seoseo-parent-round",
+      originBrokerId: "seoseo",
+      handoffBrokerId: "gwakga",
+      childWorkerId: "dungae",
+      parentRoundTotal: 7,
+      parentRoundIndex: 5,
+    });
+    assert.equal(verified.passed, true);
+
+    v.snapshotPersistedTerminalBriefEvent(payload);
+    tick.advanceMs(35_000);
+    const checked = v.checkSnapshot("seoseo-parent-round", {
+      originBrokerId: "seoseo",
+      handoffBrokerId: "gwakga",
+      childWorkerId: "dungae",
+      parentRoundTotal: 7,
+      parentRoundIndex: 5,
+      crossBrokerHandoff: payload.crossBrokerHandoff,
+    });
+    assert.equal(checked.verdict, "consistent");
+    assert.equal(checked.snapshot.parentRoundIndex, 5);
+    assert.equal(checked.snapshot.crossBrokerHandoff?.handoffBrokerId, "gwakga");
+  });
+
+  it("fails closed with a diagnostic when persisted routing metadata is missing", () => {
+    const v = new PostDispatchVerifier();
+    const verified = v.verifyPersistedTerminalBriefEvent({
+      taskId: "local-only-terminal",
+      status: "succeeded",
+      createdAt: "2026-05-13T01:00:00.000Z",
+      updatedAt: "2026-05-13T01:00:00.000Z",
+      completedAt: "2026-05-13T01:00:00.000Z",
+    });
+
+    assert.equal(verified.passed, false);
+    assert.match(verified.summary, /Persisted Terminal Brief metadata missing/);
+    assert.deepEqual(
+      verified.fields.map((field) => field.field),
+      ["parentRoundId", "originBrokerId", "parentRoundTotal", "parentRoundIndex", "crossBrokerHandoff"],
+    );
+  });
+
+  it("fans in persisted snapshots for multiple handoff origins under one parent round", () => {
+    const store = new InMemorySnapshotStore();
+    const v = new PostDispatchVerifier(store);
+
+    v.snapshotPersistedTerminalBriefEvent({
+      taskId: "gwakga-child-05",
+      status: "succeeded",
+      run: "seoseo-parent-round",
+      parentRoundTotal: 7,
+      parentRoundProgress: 5,
+      createdAt: "2026-05-13T01:00:00.000Z",
+      updatedAt: "2026-05-13T01:00:00.000Z",
+      crossBrokerHandoff: {
+        parentRoundId: "seoseo-parent-round",
+        originBrokerId: "seoseo",
+        handoffBrokerId: "gwakga",
+        childWorkerId: "dungae",
+      },
+    });
+    v.snapshotPersistedTerminalBriefEvent({
+      taskId: "nosuk-child-06",
+      status: "succeeded",
+      run: "seoseo-parent-round",
+      parentRoundTotal: 7,
+      parentRoundProgress: 6,
+      createdAt: "2026-05-13T01:00:01.000Z",
+      updatedAt: "2026-05-13T01:00:01.000Z",
+      crossBrokerHandoff: {
+        parentRoundId: "seoseo-parent-round",
+        originBrokerId: "seoseo",
+        handoffBrokerId: "nosuk",
+        childWorkerId: "jingun",
+      },
+    });
+
+    assert.equal(store.entries().length, 2);
+    assert.equal(store.get("seoseo-parent-round", { handoffBrokerId: "gwakga" })?.childWorkerId, "dungae");
+    assert.equal(store.get("seoseo-parent-round", { handoffBrokerId: "nosuk" })?.parentRoundIndex, 6);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // verifyDispatchWithSnapshot convenience
 // ---------------------------------------------------------------------------
 
@@ -520,21 +631,24 @@ describe("InMemorySnapshotStore", () => {
     assert.equal(store.get("round-2"), undefined);
   });
 
-  it("overwrites existing snapshot for same parentRoundId", () => {
+  it("overwrites existing snapshot for the same parent/origin/handoff identity", () => {
     const store = new InMemorySnapshotStore();
     store.set({
       parentRoundId: "round-1",
       originBrokerId: "broker-a",
+      handoffBrokerId: "handoff-a",
       capturedAt: "2026-05-13T01:00:00.000Z",
       snapshotWindowMs: 60000,
     });
     store.set({
       parentRoundId: "round-1",
-      originBrokerId: "broker-b",
+      originBrokerId: "broker-a",
+      handoffBrokerId: "handoff-a",
       capturedAt: "2026-05-13T02:00:00.000Z",
       snapshotWindowMs: 60000,
     });
-    assert.equal(store.get("round-1")?.originBrokerId, "broker-b");
+    assert.equal(store.entries().length, 1);
+    assert.equal(store.get("round-1", { originBrokerId: "broker-a", handoffBrokerId: "handoff-a" })?.capturedAt, "2026-05-13T02:00:00.000Z");
   });
 
   it("returns all entries", () => {
