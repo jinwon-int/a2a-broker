@@ -10,7 +10,7 @@
  */
 
 import type { CrossBrokerTerminalBriefProjectionRequest } from "./cross-broker-terminal-brief.js";
-import type { TerminalTaskEventPayload } from "./terminal-event-outbox.js";
+import type { TerminalTaskEventPayload, TerminalTaskOutboxEvent } from "./terminal-event-outbox.js";
 
 // ---------------------------------------------------------------------------
 // Status types
@@ -47,11 +47,23 @@ export interface DispatchVerificationResult {
 export interface ParentMetadataSnapshot {
   parentRoundId: string;
   originBrokerId: string;
+  /** Handoff broker that produced the persisted terminal event, when cross-broker. */
+  handoffBrokerId?: string;
+  /** Worker surfaced in crossBrokerHandoff, when known. */
+  childWorkerId?: string;
   parentRoundTotal?: number;
   parentRoundOrder?: number;
+  /** Alias used by persisted TerminalTaskEventPayload.parentRoundProgress. */
+  parentRoundIndex?: number;
   crossBrokerHandoff?: TerminalTaskEventPayload["crossBrokerHandoff"];
   capturedAt: string;
   snapshotWindowMs: number;
+}
+
+export interface SnapshotLookup {
+  originBrokerId?: string;
+  handoffBrokerId?: string;
+  childWorkerId?: string;
 }
 
 /** Result of checking a stored snapshot against current metadata. */
@@ -68,29 +80,44 @@ export interface SnapshotCheckResult {
 // ---------------------------------------------------------------------------
 
 export interface SnapshotStore {
-  get(parentRoundId: string): ParentMetadataSnapshot | undefined;
+  get(parentRoundId: string, lookup?: SnapshotLookup): ParentMetadataSnapshot | undefined;
   set(snapshot: ParentMetadataSnapshot): void;
-  delete(parentRoundId: string): void;
+  delete(parentRoundId: string, lookup?: SnapshotLookup): void;
   entries(): [string, ParentMetadataSnapshot][];
 }
 
 export class InMemorySnapshotStore implements SnapshotStore {
   private readonly snapshots = new Map<string, ParentMetadataSnapshot>();
 
-  get(parentRoundId: string): ParentMetadataSnapshot | undefined {
-    return this.snapshots.get(parentRoundId);
+  constructor(snapshots: ParentMetadataSnapshot[] = []) {
+    for (const snapshot of snapshots) {
+      this.set(snapshot);
+    }
+  }
+
+  get(parentRoundId: string, lookup: SnapshotLookup = {}): ParentMetadataSnapshot | undefined {
+    const exact = this.snapshots.get(snapshotKey(parentRoundId, lookup));
+    if (exact) return exact;
+    const candidates = [...this.snapshots.values()].filter((snapshot) => snapshot.parentRoundId === parentRoundId);
+    return candidates.find((snapshot) => snapshotMatchesLookup(snapshot, lookup)) ?? candidates[0];
   }
 
   set(snapshot: ParentMetadataSnapshot): void {
-    this.snapshots.set(snapshot.parentRoundId, snapshot);
+    this.snapshots.set(snapshotKey(snapshot.parentRoundId, snapshot), snapshot);
   }
 
-  delete(parentRoundId: string): void {
-    this.snapshots.delete(parentRoundId);
+  delete(parentRoundId: string, lookup: SnapshotLookup = {}): void {
+    if (Object.keys(lookup).length === 0) {
+      for (const [key, snapshot] of this.snapshots.entries()) {
+        if (snapshot.parentRoundId === parentRoundId) this.snapshots.delete(key);
+      }
+      return;
+    }
+    this.snapshots.delete(snapshotKey(parentRoundId, lookup));
   }
 
   entries(): [string, ParentMetadataSnapshot][] {
-    return [...this.snapshots.entries()];
+    return [...this.snapshots.values()].map((snapshot) => [snapshot.parentRoundId, snapshot]);
   }
 }
 
@@ -305,6 +332,75 @@ export class PostDispatchVerifier {
     return fields;
   }
 
+  /**
+   * Verify the metadata that actually survived into a persisted terminal outbox
+   * event/payload. This is stricter than request validation: it blocks when the
+   * persisted record cannot route back to the parent broker because run,
+   * parentRoundTotal/index, or crossBrokerHandoff fields disappeared.
+   */
+  verifyPersistedTerminalBriefEvent(
+    source: TerminalTaskOutboxEvent | TerminalTaskEventPayload,
+    expected: {
+      parentRoundId?: string;
+      originBrokerId?: string;
+      handoffBrokerId?: string;
+      childWorkerId?: string;
+      parentRoundTotal?: number;
+      parentRoundIndex?: number;
+      parentRoundOrder?: number;
+    } = {},
+  ): DispatchVerificationResult {
+    const payload = terminalPayload(source);
+    const fields: FieldResult[] = [];
+    const now = this.opts.now().toISOString();
+    const handoff = payload.crossBrokerHandoff;
+    const actualParentRoundId = payload.run ?? handoff?.parentRoundId;
+    const actualOriginBrokerId = handoff?.originBrokerId;
+    const actualHandoffBrokerId = handoff?.handoffBrokerId;
+    const actualChildWorkerId = handoff?.childWorkerId;
+    const actualParentRoundIndex = payload.parentRoundProgress;
+
+    requirePersistedString(fields, "parentRoundId", actualParentRoundId, expected.parentRoundId);
+    requirePersistedString(fields, "originBrokerId", actualOriginBrokerId, expected.originBrokerId);
+    requirePersistedNumber(fields, "parentRoundTotal", payload.parentRoundTotal, expected.parentRoundTotal);
+    requirePersistedNumber(fields, "parentRoundIndex", actualParentRoundIndex, expected.parentRoundIndex ?? expected.parentRoundOrder);
+
+    if (!handoff) {
+      fields.push({
+        field: "crossBrokerHandoff",
+        status: "missing",
+        expected: "persisted handoff metadata",
+        detail: "persisted terminal event cannot be projected cross-broker without crossBrokerHandoff",
+      });
+    } else {
+      requirePersistedString(fields, "crossBrokerHandoff.parentRoundId", handoff.parentRoundId, expected.parentRoundId);
+      requirePersistedString(fields, "crossBrokerHandoff.originBrokerId", handoff.originBrokerId, expected.originBrokerId);
+      requirePersistedString(fields, "crossBrokerHandoff.handoffBrokerId", actualHandoffBrokerId, expected.handoffBrokerId);
+      requirePersistedString(fields, "crossBrokerHandoff.childWorkerId", actualChildWorkerId, expected.childWorkerId);
+    }
+
+    const passed = fields.length === 0;
+    const summary = passed
+      ? "Persisted Terminal Brief metadata verified successfully"
+      : `Persisted Terminal Brief metadata missing or mismatched: ${fields.map((f) => f.field).join(", ")}`;
+    return { passed, fields, checkedAt: now, summary };
+  }
+
+  /** Capture a post-dispatch snapshot from the persisted outbox payload, not the request body. */
+  snapshotPersistedTerminalBriefEvent(
+    source: TerminalTaskOutboxEvent | TerminalTaskEventPayload,
+  ): ParentMetadataSnapshot {
+    const payload = terminalPayload(source);
+    const handoff = payload.crossBrokerHandoff;
+    return this.snapshotParentMetadata(
+      payload.run ?? handoff?.parentRoundId ?? payload.taskId,
+      handoff?.originBrokerId ?? "missing-origin-broker",
+      payload.parentRoundTotal,
+      payload.parentRoundProgress,
+      handoff,
+    );
+  }
+
   // -------------------------------------------------------------------------
   // Snapshot/check flow (30–60 s window)
   // -------------------------------------------------------------------------
@@ -324,8 +420,10 @@ export class PostDispatchVerifier {
     const snapshot: ParentMetadataSnapshot = {
       parentRoundId,
       originBrokerId,
-      parentRoundTotal,
-      parentRoundOrder,
+      ...(crossBrokerHandoff?.handoffBrokerId ? { handoffBrokerId: crossBrokerHandoff.handoffBrokerId } : {}),
+      ...(crossBrokerHandoff?.childWorkerId ? { childWorkerId: crossBrokerHandoff.childWorkerId } : {}),
+      ...(parentRoundTotal ? { parentRoundTotal } : {}),
+      ...(parentRoundOrder ? { parentRoundOrder, parentRoundIndex: parentRoundOrder } : {}),
       crossBrokerHandoff: crossBrokerHandoff ? { ...crossBrokerHandoff } : undefined,
       capturedAt,
       snapshotWindowMs: this.opts.maxSnapshotWindowMs,
@@ -348,13 +446,21 @@ export class PostDispatchVerifier {
     expected: {
       parentRoundId?: string;
       originBrokerId?: string;
+      handoffBrokerId?: string;
+      childWorkerId?: string;
       parentRoundTotal?: number;
       parentRoundOrder?: number;
+      parentRoundIndex?: number;
+      crossBrokerHandoff?: TerminalTaskEventPayload["crossBrokerHandoff"];
     },
   ): SnapshotCheckResult {
     const now = this.opts.now();
     const checkedAt = now.toISOString();
-    const snapshot = this.store.get(parentRoundId);
+    const snapshot = this.store.get(parentRoundId, {
+      originBrokerId: expected.originBrokerId,
+      handoffBrokerId: expected.handoffBrokerId ?? expected.crossBrokerHandoff?.handoffBrokerId,
+      childWorkerId: expected.childWorkerId ?? expected.crossBrokerHandoff?.childWorkerId,
+    });
 
     if (!snapshot) {
       return {
@@ -380,6 +486,24 @@ export class PostDispatchVerifier {
 
     const elapsedMs = now.getTime() - new Date(snapshot.capturedAt).getTime();
     const fields: FieldResult[] = [];
+
+    if (elapsedMs < this.opts.minSnapshotWindowMs) {
+      return {
+        snapshot,
+        verdict: "inconsistent",
+        checkedAt,
+        elapsedMs,
+        fields: [
+          {
+            field: "snapshot.timing",
+            status: "mismatched",
+            expected: `≥ ${this.opts.minSnapshotWindowMs} ms`,
+            actual: `${elapsedMs} ms`,
+            detail: `Snapshot captured at ${snapshot.capturedAt} is before the ${this.opts.minSnapshotWindowMs} ms minimum check window (elapsed: ${elapsedMs} ms)`,
+          },
+        ],
+      };
+    }
 
     // Check expiry: must be within the configured window
     if (elapsedMs > this.opts.maxSnapshotWindowMs) {
@@ -431,15 +555,24 @@ export class PostDispatchVerifier {
       });
     }
 
-    if (expected.parentRoundOrder !== undefined && snapshot.parentRoundOrder !== expected.parentRoundOrder) {
+    const expectedIndex = expected.parentRoundIndex ?? expected.parentRoundOrder;
+    if (expectedIndex !== undefined && snapshot.parentRoundIndex !== expectedIndex && snapshot.parentRoundOrder !== expectedIndex) {
       fields.push({
-        field: "parentRoundOrder",
+        field: expected.parentRoundIndex !== undefined ? "parentRoundIndex" : "parentRoundOrder",
         status: "mismatched",
-        expected: expected.parentRoundOrder,
-        actual: snapshot.parentRoundOrder,
-        detail: "parentRoundOrder in snapshot does not match expected value",
+        expected: expectedIndex,
+        actual: snapshot.parentRoundIndex ?? snapshot.parentRoundOrder,
+        detail: "parent round index/order in snapshot does not match expected value",
       });
     }
+
+    const expectedHandoff = expected.crossBrokerHandoff;
+    const expectedHandoffBrokerId = expected.handoffBrokerId ?? expectedHandoff?.handoffBrokerId;
+    const expectedChildWorkerId = expected.childWorkerId ?? expectedHandoff?.childWorkerId;
+    compareOptionalString(fields, "crossBrokerHandoff.parentRoundId", snapshot.crossBrokerHandoff?.parentRoundId, expectedHandoff?.parentRoundId);
+    compareOptionalString(fields, "crossBrokerHandoff.originBrokerId", snapshot.crossBrokerHandoff?.originBrokerId, expectedHandoff?.originBrokerId);
+    compareOptionalString(fields, "crossBrokerHandoff.handoffBrokerId", snapshot.crossBrokerHandoff?.handoffBrokerId, expectedHandoffBrokerId);
+    compareOptionalString(fields, "crossBrokerHandoff.childWorkerId", snapshot.crossBrokerHandoff?.childWorkerId, expectedChildWorkerId);
 
     const verdict: SnapshotVerdict = fields.length === 0 ? "consistent" : "inconsistent";
 
@@ -466,11 +599,19 @@ export class PostDispatchVerifier {
     handoffFields: FieldResult[];
   } {
     const dispatchResult = this.verifyDispatch(request, receiverBrokerId);
+    const requestHandoff: TerminalTaskEventPayload["crossBrokerHandoff"] = {
+      parentRoundId: request.parentRoundId,
+      originBrokerId: request.brokerOfRecordId ?? "unknown-parent-broker",
+      handoffBrokerId: request.originBrokerId,
+      ...(request.childTaskId ? { originTaskId: request.childTaskId } : {}),
+      ...(request.childWorkerId ?? request.workerId ? { childWorkerId: request.childWorkerId ?? request.workerId } : {}),
+    };
     const snapshot = this.snapshotParentMetadata(
       request.parentRoundId,
       request.originBrokerId,
       normalizePositiveInt(request.parentRoundTotal) ?? expectedParentTotal,
       normalizePositiveInt(request.parentRoundOrder),
+      requestHandoff,
     );
     const payload: TerminalTaskEventPayload = {
       taskId: request.childTaskId ?? `cross-broker:${request.parentRoundId}:${request.originBrokerId}`,
@@ -480,13 +621,7 @@ export class PostDispatchVerifier {
       completedAt: request.completedAt,
       ...(normalizePositiveInt(request.parentRoundTotal) ? { parentRoundTotal: normalizePositiveInt(request.parentRoundTotal) } : {}),
       ...(normalizePositiveInt(request.parentRoundOrder) ? { parentRoundProgress: normalizePositiveInt(request.parentRoundOrder) } : {}),
-      crossBrokerHandoff: {
-        parentRoundId: request.parentRoundId,
-        originBrokerId: request.brokerOfRecordId ?? "unknown-parent-broker",
-        handoffBrokerId: request.originBrokerId,
-        ...(request.childTaskId ? { originTaskId: request.childTaskId } : {}),
-        ...(request.childWorkerId ?? request.workerId ? { childWorkerId: request.childWorkerId ?? request.workerId } : {}),
-      },
+      crossBrokerHandoff: requestHandoff,
       notificationOwnership: {
         ownerBrokerId: request.brokerOfRecordId ?? "unknown-parent-broker",
         scope: "parent-broker-only",
@@ -563,4 +698,80 @@ function normalizePositiveInt(value: unknown): number | undefined {
     if (Number.isSafeInteger(parsed) && parsed > 0) return parsed;
   }
   return undefined;
+}
+
+function terminalPayload(source: TerminalTaskOutboxEvent | TerminalTaskEventPayload): TerminalTaskEventPayload {
+  return "payload" in source ? source.payload : source;
+}
+
+function requirePersistedString(fields: FieldResult[], field: string, actual: unknown, expected?: string): void {
+  if (typeof actual !== "string" || actual.trim().length === 0) {
+    fields.push({
+      field,
+      status: "missing",
+      expected: expected ?? "non-empty persisted string",
+      actual,
+      detail: `${field} did not survive in the persisted Terminal Brief snapshot`,
+    });
+    return;
+  }
+  if (expected !== undefined && actual !== expected) {
+    fields.push({
+      field,
+      status: "mismatched",
+      expected,
+      actual,
+      detail: `${field} in the persisted Terminal Brief snapshot does not match expected routing metadata`,
+    });
+  }
+}
+
+function requirePersistedNumber(fields: FieldResult[], field: string, actual: unknown, expected?: number): void {
+  if (typeof actual !== "number" || !Number.isSafeInteger(actual) || actual <= 0) {
+    fields.push({
+      field,
+      status: "missing",
+      expected: expected ?? "positive persisted integer",
+      actual,
+      detail: `${field} did not survive in the persisted Terminal Brief snapshot`,
+    });
+    return;
+  }
+  if (expected !== undefined && actual !== expected) {
+    fields.push({
+      field,
+      status: "mismatched",
+      expected,
+      actual,
+      detail: `${field} in the persisted Terminal Brief snapshot does not match expected routing metadata`,
+    });
+  }
+}
+
+function compareOptionalString(fields: FieldResult[], field: string, actual: unknown, expected?: string): void {
+  if (expected === undefined) return;
+  if (actual !== expected) {
+    fields.push({
+      field,
+      status: actual === undefined || actual === null || actual === "" ? "missing" : "mismatched",
+      expected,
+      actual,
+      detail: `${field} in snapshot does not match expected value`,
+    });
+  }
+}
+
+function snapshotKey(parentRoundId: string, lookup: SnapshotLookup): string {
+  return [
+    parentRoundId,
+    lookup.originBrokerId ?? "*",
+    lookup.handoffBrokerId ?? "*",
+    lookup.childWorkerId ?? "*",
+  ].join("::");
+}
+
+function snapshotMatchesLookup(snapshot: ParentMetadataSnapshot, lookup: SnapshotLookup): boolean {
+  return (lookup.originBrokerId === undefined || snapshot.originBrokerId === lookup.originBrokerId)
+    && (lookup.handoffBrokerId === undefined || snapshot.handoffBrokerId === lookup.handoffBrokerId || snapshot.crossBrokerHandoff?.handoffBrokerId === lookup.handoffBrokerId)
+    && (lookup.childWorkerId === undefined || snapshot.childWorkerId === lookup.childWorkerId || snapshot.crossBrokerHandoff?.childWorkerId === lookup.childWorkerId);
 }
