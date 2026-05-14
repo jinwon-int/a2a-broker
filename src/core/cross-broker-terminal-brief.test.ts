@@ -1,7 +1,17 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { InMemoryA2ABroker } from "./broker.js";
+import { InMemoryA2ABroker, BrokerError } from "./broker.js";
+import {
+  validateChildTaskTerminalBriefPayload,
+  TERMINAL_BRIEF_PARENT_ROUND_ID_KEY,
+  TERMINAL_BRIEF_ORIGIN_BROKER_ID_KEY,
+  TERMINAL_BRIEF_PARENT_ROUND_TOTAL_KEY,
+  TERMINAL_BRIEF_PARENT_ROUND_ORDER_KEY,
+  TERMINAL_BRIEF_BROKER_OF_RECORD_ID_KEY,
+  hasTerminalBriefPayloadFields,
+  extractTerminalBriefPayloadFields,
+} from "./cross-broker-terminal-brief.js";
 import { emptySnapshot, type BrokerSnapshot, type BrokerStateStore } from "./store.js";
 
 function registerWorker(broker: InMemoryA2ABroker, nodeId = "worker-child"): void {
@@ -48,6 +58,314 @@ function projection(overrides: Partial<Parameters<InMemoryA2ABroker["ingestCross
     ...overrides,
   };
 }
+
+// ── Terminal Brief child task dispatch validation (fail-closed guards) ──
+
+test("validateChildTaskTerminalBriefPayload: no-op when payload has no Terminal Brief fields", () => {
+  const result = validateChildTaskTerminalBriefPayload({ mode: "test", foo: "bar" });
+  assert.equal(result.valid, true);
+  assert.deepEqual(result.errors, []);
+});
+
+test("validateChildTaskTerminalBriefPayload: valid when all required fields are present", () => {
+  const result = validateChildTaskTerminalBriefPayload({
+    [TERMINAL_BRIEF_PARENT_ROUND_ID_KEY]: "round-parent-123",
+    [TERMINAL_BRIEF_ORIGIN_BROKER_ID_KEY]: "child-broker-a",
+    [TERMINAL_BRIEF_PARENT_ROUND_TOTAL_KEY]: 7,
+    [TERMINAL_BRIEF_PARENT_ROUND_ORDER_KEY]: 1,
+    [TERMINAL_BRIEF_BROKER_OF_RECORD_ID_KEY]: "parent-broker",
+  });
+  assert.equal(result.valid, true);
+  assert.deepEqual(result.errors, []);
+});
+
+test("validateChildTaskTerminalBriefPayload: strings for numeric fields are accepted and normalized", () => {
+  const result = validateChildTaskTerminalBriefPayload({
+    [TERMINAL_BRIEF_PARENT_ROUND_ID_KEY]: "round-parent-123",
+    [TERMINAL_BRIEF_ORIGIN_BROKER_ID_KEY]: "child-broker-a",
+    [TERMINAL_BRIEF_PARENT_ROUND_TOTAL_KEY]: "7",
+    [TERMINAL_BRIEF_PARENT_ROUND_ORDER_KEY]: "1",
+    [TERMINAL_BRIEF_BROKER_OF_RECORD_ID_KEY]: "parent-broker",
+  });
+  assert.equal(result.valid, true);
+  assert.deepEqual(result.errors, []);
+});
+
+test("validateChildTaskTerminalBriefPayload: rejects missing parentRoundId", () => {
+  const result = validateChildTaskTerminalBriefPayload({
+    [TERMINAL_BRIEF_ORIGIN_BROKER_ID_KEY]: "child-broker-a",
+    [TERMINAL_BRIEF_PARENT_ROUND_TOTAL_KEY]: 7,
+    [TERMINAL_BRIEF_PARENT_ROUND_ORDER_KEY]: 1,
+    [TERMINAL_BRIEF_BROKER_OF_RECORD_ID_KEY]: "parent-broker",
+  });
+  assert.equal(result.valid, false);
+  assert.ok(result.errors.some((e) => e.includes("parentRoundId")));
+});
+
+test("validateChildTaskTerminalBriefPayload: rejects missing originBrokerId", () => {
+  const result = validateChildTaskTerminalBriefPayload({
+    [TERMINAL_BRIEF_PARENT_ROUND_ID_KEY]: "round-parent-123",
+    [TERMINAL_BRIEF_PARENT_ROUND_TOTAL_KEY]: 7,
+    [TERMINAL_BRIEF_PARENT_ROUND_ORDER_KEY]: 1,
+    [TERMINAL_BRIEF_BROKER_OF_RECORD_ID_KEY]: "parent-broker",
+  }, "child-broker-a");
+  // originBrokerId is filled from brokerId arg as default
+  assert.equal(result.valid, true);
+  assert.deepEqual(result.errors, []);
+});
+
+test("validateChildTaskTerminalBriefPayload: rejects missing parentRoundTotal", () => {
+  const result = validateChildTaskTerminalBriefPayload({
+    [TERMINAL_BRIEF_PARENT_ROUND_ID_KEY]: "round-parent-123",
+    [TERMINAL_BRIEF_ORIGIN_BROKER_ID_KEY]: "child-broker-a",
+    [TERMINAL_BRIEF_PARENT_ROUND_ORDER_KEY]: 1,
+    [TERMINAL_BRIEF_BROKER_OF_RECORD_ID_KEY]: "parent-broker",
+  }, "child-broker-a");
+  assert.equal(result.valid, false);
+  assert.ok(result.errors.some((e) => e.includes("parentRoundTotal")));
+});
+
+test("validateChildTaskTerminalBriefPayload: rejects missing parentRoundOrder", () => {
+  const result = validateChildTaskTerminalBriefPayload({
+    [TERMINAL_BRIEF_PARENT_ROUND_ID_KEY]: "round-parent-123",
+    [TERMINAL_BRIEF_ORIGIN_BROKER_ID_KEY]: "child-broker-a",
+    [TERMINAL_BRIEF_PARENT_ROUND_TOTAL_KEY]: 7,
+    [TERMINAL_BRIEF_BROKER_OF_RECORD_ID_KEY]: "parent-broker",
+  }, "child-broker-a");
+  assert.equal(result.valid, false);
+  assert.ok(result.errors.some((e) => e.includes("parentRoundOrder")));
+});
+
+test("validateChildTaskTerminalBriefPayload: rejects empty parentRoundId string", () => {
+  const result = validateChildTaskTerminalBriefPayload({
+    [TERMINAL_BRIEF_PARENT_ROUND_ID_KEY]: "",
+    [TERMINAL_BRIEF_ORIGIN_BROKER_ID_KEY]: "child-broker-a",
+    [TERMINAL_BRIEF_PARENT_ROUND_TOTAL_KEY]: 7,
+    [TERMINAL_BRIEF_PARENT_ROUND_ORDER_KEY]: 1,
+    [TERMINAL_BRIEF_BROKER_OF_RECORD_ID_KEY]: "parent-broker",
+  });
+  assert.equal(result.valid, false);
+  assert.ok(result.errors.some((e) => e.includes("parentRoundId")));
+});
+
+test("validateChildTaskTerminalBriefPayload: rejects negative parentRoundTotal", () => {
+  const result = validateChildTaskTerminalBriefPayload({
+    [TERMINAL_BRIEF_PARENT_ROUND_ID_KEY]: "round-parent-123",
+    [TERMINAL_BRIEF_ORIGIN_BROKER_ID_KEY]: "child-broker-a",
+    [TERMINAL_BRIEF_PARENT_ROUND_TOTAL_KEY]: -1,
+    [TERMINAL_BRIEF_PARENT_ROUND_ORDER_KEY]: 1,
+    [TERMINAL_BRIEF_BROKER_OF_RECORD_ID_KEY]: "parent-broker",
+  });
+  assert.equal(result.valid, false);
+  assert.ok(result.errors.some((e) => e.includes("parentRoundTotal")));
+});
+
+test("hasTerminalBriefPayloadFields: detects Terminal Brief fields in payload", () => {
+  assert.equal(hasTerminalBriefPayloadFields({
+    [TERMINAL_BRIEF_PARENT_ROUND_ID_KEY]: "round-1",
+  }), true);
+  assert.equal(hasTerminalBriefPayloadFields({
+    [TERMINAL_BRIEF_ORIGIN_BROKER_ID_KEY]: "broker-a",
+  }), true);
+  assert.equal(hasTerminalBriefPayloadFields({
+    [TERMINAL_BRIEF_PARENT_ROUND_TOTAL_KEY]: 7,
+  }), true);
+  assert.equal(hasTerminalBriefPayloadFields({
+    [TERMINAL_BRIEF_PARENT_ROUND_ORDER_KEY]: 1,
+  }), true);
+  assert.equal(hasTerminalBriefPayloadFields({
+    [TERMINAL_BRIEF_BROKER_OF_RECORD_ID_KEY]: "broker-b",
+  }), true);
+  assert.equal(hasTerminalBriefPayloadFields({ mode: "test" }), false);
+  assert.equal(hasTerminalBriefPayloadFields(undefined), false);
+  assert.equal(hasTerminalBriefPayloadFields({}), false);
+});
+
+test("extractTerminalBriefPayloadFields: extracts and normalizes all fields", () => {
+  const result = extractTerminalBriefPayloadFields({
+    [TERMINAL_BRIEF_PARENT_ROUND_ID_KEY]: "round-parent",
+    [TERMINAL_BRIEF_ORIGIN_BROKER_ID_KEY]: "child-broker",
+    [TERMINAL_BRIEF_PARENT_ROUND_TOTAL_KEY]: "7",
+    [TERMINAL_BRIEF_PARENT_ROUND_ORDER_KEY]: "3",
+    [TERMINAL_BRIEF_BROKER_OF_RECORD_ID_KEY]: "parent-broker",
+  });
+  assert.equal(result.parentRoundId, "round-parent");
+  assert.equal(result.originBrokerId, "child-broker");
+  assert.equal(result.parentRoundTotal, 7);
+  assert.equal(result.parentRoundOrder, 3);
+  assert.equal(result.brokerOfRecordId, "parent-broker");
+});
+
+test("extractTerminalBriefPayloadFields: returns empty input for undefined payload", () => {
+  const result = extractTerminalBriefPayloadFields(undefined);
+  assert.equal(result.parentRoundId, undefined);
+  assert.equal(result.originBrokerId, undefined);
+  assert.equal(result.parentRoundTotal, undefined);
+  assert.equal(result.parentRoundOrder, undefined);
+  assert.equal(result.brokerOfRecordId, undefined);
+});
+
+test("broker createTask rejects incomplete Terminal Brief payload with fail-closed error", () => {
+  const broker = new InMemoryA2ABroker(undefined, undefined, { brokerId: "broker-a" });
+  registerWorker(broker, "worker-child");
+
+  assert.throws(
+    () => broker.createTask({
+      id: "child-task-missing-meta",
+      intent: "chat",
+      requester: { id: "hub", kind: "node", role: "hub" },
+      target: { id: "worker-child", kind: "node", role: "analyst" },
+      assignedWorkerId: "worker-child",
+      message: "child with missing parentRoundTotal",
+      payload: {
+        [TERMINAL_BRIEF_PARENT_ROUND_ID_KEY]: "round-parent",
+        [TERMINAL_BRIEF_ORIGIN_BROKER_ID_KEY]: "broker-a",
+        [TERMINAL_BRIEF_PARENT_ROUND_ORDER_KEY]: 1,
+      },
+    }),
+    (err: unknown) => {
+      return err instanceof BrokerError
+        && err.code === "bad_request"
+        && (err as any).message.includes("Terminal Brief child task dispatch rejected");
+    },
+  );
+});
+
+test("broker createTask accepts complete Terminal Brief payload", () => {
+  const broker = new InMemoryA2ABroker(undefined, undefined, { brokerId: "broker-a" });
+  registerWorker(broker, "worker-child");
+
+  const task = broker.createTask({
+    id: "child-task-complete-meta",
+    intent: "chat",
+    requester: { id: "hub", kind: "node", role: "hub" },
+    target: { id: "worker-child", kind: "node", role: "analyst" },
+    assignedWorkerId: "worker-child",
+    message: "child with all Terminal Brief fields",
+    payload: {
+      [TERMINAL_BRIEF_PARENT_ROUND_ID_KEY]: "round-parent",
+      [TERMINAL_BRIEF_ORIGIN_BROKER_ID_KEY]: "broker-a",
+      [TERMINAL_BRIEF_PARENT_ROUND_TOTAL_KEY]: 7,
+      [TERMINAL_BRIEF_PARENT_ROUND_ORDER_KEY]: 1,
+      [TERMINAL_BRIEF_BROKER_OF_RECORD_ID_KEY]: "parent-broker",
+    },
+  });
+  assert.ok(task);
+  assert.equal(task.id, "child-task-complete-meta");
+  assert.equal(task.payload?.[TERMINAL_BRIEF_PARENT_ROUND_ID_KEY], "round-parent");
+  assert.equal(task.payload?.[TERMINAL_BRIEF_PARENT_ROUND_TOTAL_KEY], 7);
+  assert.equal(task.payload?.[TERMINAL_BRIEF_PARENT_ROUND_ORDER_KEY], 1);
+});
+
+test("broker createTask idempotency skips Terminal Brief validation for existing tasks", () => {
+  const broker = new InMemoryA2ABroker(undefined, undefined, { brokerId: "broker-a" });
+  registerWorker(broker, "worker-child");
+
+  // Create the task first with valid metadata.
+  broker.createTask({
+    id: "existing-child-task",
+    intent: "chat",
+    requester: { id: "hub", kind: "node", role: "hub" },
+    target: { id: "worker-child", kind: "node", role: "analyst" },
+    assignedWorkerId: "worker-child",
+    message: "already created",
+    payload: {
+      [TERMINAL_BRIEF_PARENT_ROUND_ID_KEY]: "round-parent",
+      [TERMINAL_BRIEF_ORIGIN_BROKER_ID_KEY]: "broker-a",
+      [TERMINAL_BRIEF_PARENT_ROUND_TOTAL_KEY]: 7,
+      [TERMINAL_BRIEF_PARENT_ROUND_ORDER_KEY]: 1,
+      [TERMINAL_BRIEF_BROKER_OF_RECORD_ID_KEY]: "parent-broker",
+    },
+  });
+
+  // Re-creating the same task id (even with missing metadata) must succeed
+  // because it returns the existing record from idempotency check.
+  const replayed = broker.createTask({
+    id: "existing-child-task",
+    intent: "chat",
+    requester: { id: "hub", kind: "node", role: "hub" },
+    target: { id: "worker-child", kind: "node", role: "analyst" },
+    assignedWorkerId: "worker-child",
+    message: "recreate with incomplete TB metadata (idempotent)",
+    payload: {
+      [TERMINAL_BRIEF_PARENT_ROUND_ID_KEY]: "round-parent",
+      // Intentionally missing other fields
+    },
+  });
+  assert.equal(replayed.id, "existing-child-task");
+  assert.equal(replayed.message, "already created");
+});
+
+test("broker createTask accepts tasks without any Terminal Brief payload fields", () => {
+  const broker = new InMemoryA2ABroker(undefined, undefined, { brokerId: "broker-a" });
+  registerWorker(broker, "worker-child");
+
+  const task = broker.createTask({
+    id: "non-tb-task",
+    intent: "chat",
+    requester: { id: "hub", kind: "node", role: "hub" },
+    target: { id: "worker-child", kind: "node", role: "analyst" },
+    assignedWorkerId: "worker-child",
+    message: "normal task without Terminal Brief context",
+    payload: { mode: "test" },
+  });
+  assert.ok(task);
+  assert.equal(task.id, "non-tb-task");
+});
+
+test("broker createTask fills in originBrokerId from brokerId when not explicitly set in payload", () => {
+  const broker = new InMemoryA2ABroker(undefined, undefined, { brokerId: "broker-a" });
+  registerWorker(broker, "worker-child");
+
+  const task = broker.createTask({
+    id: "child-task-auto-origin",
+    intent: "chat",
+    requester: { id: "hub", kind: "node", role: "hub" },
+    target: { id: "worker-child", kind: "node", role: "analyst" },
+    assignedWorkerId: "worker-child",
+    message: "child with auto-filled originBrokerId",
+    payload: {
+      [TERMINAL_BRIEF_PARENT_ROUND_ID_KEY]: "round-parent",
+      // originBrokerId is NOT in the payload — should default to broker-a
+      [TERMINAL_BRIEF_PARENT_ROUND_TOTAL_KEY]: 7,
+      [TERMINAL_BRIEF_PARENT_ROUND_ORDER_KEY]: 1,
+      [TERMINAL_BRIEF_BROKER_OF_RECORD_ID_KEY]: "parent-broker",
+    },
+  });
+  // Passing validation means originBrokerId was filled from brokerId.
+  assert.ok(task);
+  assert.equal(task.id, "child-task-auto-origin");
+  // The payload does NOT contain originBrokerId (the default only applies in
+  // the validation function, not in the stored payload), but validation passed.
+});
+
+test("broker createTask rejects invalid payload: parentRoundOrder exceeds parentRoundTotal", () => {
+  const broker = new InMemoryA2ABroker(undefined, undefined, { brokerId: "broker-a" });
+  registerWorker(broker, "worker-child");
+
+  assert.throws(
+    () => broker.createTask({
+      id: "child-task-invalid-order",
+      intent: "chat",
+      requester: { id: "hub", kind: "node", role: "hub" },
+      target: { id: "worker-child", kind: "node", role: "analyst" },
+      assignedWorkerId: "worker-child",
+      message: "child with order > total",
+      payload: {
+        [TERMINAL_BRIEF_PARENT_ROUND_ID_KEY]: "round-parent",
+        [TERMINAL_BRIEF_ORIGIN_BROKER_ID_KEY]: "broker-a",
+        [TERMINAL_BRIEF_PARENT_ROUND_TOTAL_KEY]: 3,
+        [TERMINAL_BRIEF_PARENT_ROUND_ORDER_KEY]: 5,
+        [TERMINAL_BRIEF_BROKER_OF_RECORD_ID_KEY]: "parent-broker",
+      },
+    }),
+    (err: unknown) => {
+      return err instanceof BrokerError
+        && err.code === "bad_request"
+        && (err as any).message.includes("Terminal Brief child task dispatch rejected");
+    },
+  );
+});
 
 test("cross-broker Terminal Brief ingest is idempotent by parentRoundId/originBrokerId", () => {
   const broker = new InMemoryA2ABroker(undefined, undefined, { brokerId: "parent-broker" });

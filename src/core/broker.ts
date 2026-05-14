@@ -26,6 +26,7 @@ import {
 import { ConferenceRoomManager } from "./conference-room.js";
 import {
   CrossBrokerTerminalBriefProjectionStore,
+  validateChildTaskTerminalBriefPayload,
   type CrossBrokerTerminalBriefProjection,
   type CrossBrokerTerminalBriefProjectionFilters,
   type CrossBrokerTerminalBriefProjectionRequest,
@@ -1169,12 +1170,27 @@ export class InMemoryA2ABroker {
     const normalizedRequest = normalizeGitHubPatchTaskRequest(request);
     this.assertTaskPayload(normalizedRequest);
 
-    // Idempotent create: if a task with the requested id already exists, return it as-is.
+    // Fail closed: Terminal Brief child tasks must carry complete dispatch
+    // metadata (parentRoundId, originBrokerId, parentRoundTotal, parentRoundOrder)
+    // or the creation is rejected. Idempotent re-creations of already-existing
+    // tasks skip this check because the existing task was accepted earlier.
     if (normalizedRequest.id) {
       const existing = this.getTask(normalizedRequest.id);
       if (existing) {
+        // Idempotent re-create: skip Terminal Brief validation since the
+        // task was already accepted.
         return existing;
       }
+    }
+    const tbValidation = validateChildTaskTerminalBriefPayload(
+      normalizedRequest.payload,
+      this.brokerId,
+    );
+    if (!tbValidation.valid) {
+      throw new BrokerError(
+        "bad_request",
+        `Terminal Brief child task dispatch rejected: ${tbValidation.errors.join("; ")}`,
+      );
     }
 
     if (normalizedRequest.exchangeId) {

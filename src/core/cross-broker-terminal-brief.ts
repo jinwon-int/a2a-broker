@@ -81,6 +81,128 @@ export function validateTerminalBriefForDispatch(
   return { valid: errors.length === 0, errors };
 }
 
+/**
+ * Task-payload key for Terminal Brief parent round ID.
+ * Set on child tasks created as part of a Terminal Brief round.
+ */
+export const TERMINAL_BRIEF_PARENT_ROUND_ID_KEY = "parentRoundId";
+
+/**
+ * Task-payload key for Terminal Brief origin broker ID.
+ * Identifies the broker that created/owns the child task.
+ */
+export const TERMINAL_BRIEF_ORIGIN_BROKER_ID_KEY = "originBrokerId";
+
+/**
+ * Task-payload key for Terminal Brief parent round total (denominator).
+ * The expected number of child workers/tasks in this parent round.
+ */
+export const TERMINAL_BRIEF_PARENT_ROUND_TOTAL_KEY = "parentRoundTotal";
+
+/**
+ * Task-payload key for Terminal Brief parent round order (numerator).
+ * 1-based position of this child task within the parent round.
+ */
+export const TERMINAL_BRIEF_PARENT_ROUND_ORDER_KEY = "parentRoundOrder";
+
+/**
+ * Task-payload key for Terminal Brief broker-of-record ID.
+ * The parent broker that owns the Terminal Brief round.
+ */
+export const TERMINAL_BRIEF_BROKER_OF_RECORD_ID_KEY = "brokerOfRecordId";
+
+/** All recognized Terminal Brief payload keys — if any are present, the full set must be valid. */
+const TERMINAL_BRIEF_PAYLOAD_KEYS = new Set([
+  TERMINAL_BRIEF_PARENT_ROUND_ID_KEY,
+  TERMINAL_BRIEF_ORIGIN_BROKER_ID_KEY,
+  TERMINAL_BRIEF_PARENT_ROUND_TOTAL_KEY,
+  TERMINAL_BRIEF_PARENT_ROUND_ORDER_KEY,
+  TERMINAL_BRIEF_BROKER_OF_RECORD_ID_KEY,
+]);
+
+/**
+ * Check whether a task payload carries any Terminal Brief dispatch metadata.
+ * When true, the consumer should call {@link validateChildTaskTerminalBriefPayload}
+ * to ensure the full set of required fields is present.
+ */
+export function hasTerminalBriefPayloadFields(payload?: Record<string, unknown>): boolean {
+  if (!payload) return false;
+  return TERMINAL_BRIEF_PAYLOAD_KEYS.size > 0 &&
+    [...TERMINAL_BRIEF_PAYLOAD_KEYS].some((key) => payload[key] !== undefined && payload[key] !== null);
+}
+
+/**
+ * Extract Terminal Brief dispatch fields from a task payload, normalizing types
+ * for validation.
+ */
+export function extractTerminalBriefPayloadFields(
+  payload?: Record<string, unknown>,
+): TerminalBriefDispatchValidationInput {
+  const input: TerminalBriefDispatchValidationInput = {};
+  if (!payload) return input;
+
+  const rawParentRoundId = payload[TERMINAL_BRIEF_PARENT_ROUND_ID_KEY];
+  if (typeof rawParentRoundId === "string") input.parentRoundId = rawParentRoundId;
+
+  const rawOriginBrokerId = payload[TERMINAL_BRIEF_ORIGIN_BROKER_ID_KEY];
+  if (typeof rawOriginBrokerId === "string") input.originBrokerId = rawOriginBrokerId;
+
+  const rawBrokerOfRecordId = payload[TERMINAL_BRIEF_BROKER_OF_RECORD_ID_KEY];
+  if (typeof rawBrokerOfRecordId === "string") input.brokerOfRecordId = rawBrokerOfRecordId;
+
+  const rawTotal = payload[TERMINAL_BRIEF_PARENT_ROUND_TOTAL_KEY];
+  if (typeof rawTotal === "number" && Number.isInteger(rawTotal) && rawTotal > 0) {
+    input.parentRoundTotal = rawTotal;
+  } else if (typeof rawTotal === "string") {
+    const parsed = Number(rawTotal);
+    if (Number.isSafeInteger(parsed) && parsed > 0) input.parentRoundTotal = parsed;
+  }
+
+  const rawOrder = payload[TERMINAL_BRIEF_PARENT_ROUND_ORDER_KEY];
+  if (typeof rawOrder === "number" && Number.isInteger(rawOrder) && rawOrder > 0) {
+    input.parentRoundOrder = rawOrder;
+  } else if (typeof rawOrder === "string") {
+    const parsed = Number(rawOrder);
+    if (Number.isSafeInteger(parsed) && parsed > 0) input.parentRoundOrder = parsed;
+  }
+
+  return input;
+}
+
+/**
+ * Validate Terminal Brief dispatch metadata on a child task payload.
+ *
+ * When the payload carries any Terminal Brief key, all required fields
+ * (parentRoundId, originBrokerId, parentRoundTotal, parentRoundOrder)
+ * must be present and valid.
+ *
+ * Returns `{ valid: true, errors: [] }` when no Terminal Brief fields are
+ * present (the task is not a Terminal Brief child) OR all fields are valid.
+ * Returns `{ valid: false, errors: [...] }` when partial/invalid metadata
+ * is detected.
+ *
+ * @param payload - The task payload (CreateTaskRequest.payload).
+ * @param brokerId - Optional current broker id. When provided and no
+ *   originBrokerId is set, the current broker id is used as the default.
+ */
+export function validateChildTaskTerminalBriefPayload(
+  payload: Record<string, unknown> | undefined,
+  brokerId?: string,
+): TerminalBriefDispatchValidationResult {
+  // No Terminal Brief fields → not a Terminal Brief child task; skip validation.
+  if (!hasTerminalBriefPayloadFields(payload)) return { valid: true, errors: [] };
+
+  const input = extractTerminalBriefPayloadFields(payload);
+
+  // Fill in originBrokerId from the current broker when not explicitly set.
+  if (!input.originBrokerId && brokerId) {
+    input.originBrokerId = brokerId;
+  }
+
+  // Reuse the existing projection-level validation logic.
+  // receiverBrokerId is not needed here since we only validate field completeness.
+  return validateTerminalBriefForDispatch(input);
+}
 export interface CrossBrokerTerminalBriefProjectionRequest {
   /** Parent round/task id owned by the receiving broker-of-record. */
   parentRoundId: string;
