@@ -180,6 +180,52 @@ test("cross-broker Terminal Brief projection carries parent round denominator in
   assert.equal(terminalEvents[1]?.payload.parentRoundProgress, undefined);
 });
 
+test("cross-broker Terminal Brief projection is symmetric for Gwakga-owned parent rounds", () => {
+  const parentRoundId = "a2a-r12-gwakga-origin-round";
+  const broker = new InMemoryA2ABroker(undefined, undefined, { brokerId: "gwakga" });
+  createParentRound(broker, parentRoundId);
+
+  const result = broker.ingestCrossBrokerTerminalBriefProjection(projection({
+    parentRoundId,
+    originBrokerId: "seoseo",
+    brokerOfRecordId: "gwakga",
+    childTaskId: "seoseo-handoff-child",
+    childWorkerId: "dungae",
+    parentRoundTotal: 7,
+    summary: "Seoseo handoff child completed for the Gwakga aggregate",
+  }));
+
+  assert.equal(result.accepted, true);
+  assert.equal(result.record.brokerOfRecordId, "gwakga");
+  assert.equal(result.record.originBrokerId, "seoseo");
+  assert.equal(result.ack.terminalAck, false);
+
+  const records = broker.listCrossBrokerTerminalBriefProjections({ parentRoundId, originBrokerId: "seoseo" });
+  assert.equal(records.length, 1);
+  assert.equal(records[0]?.brokerOfRecordId, "gwakga");
+
+  const [terminalEvent] = broker.getTerminalTaskEventOutbox().subscribe();
+  assert.equal(terminalEvent?.payload.run, parentRoundId);
+  assert.equal(terminalEvent?.payload.worker, "dungae");
+  assert.equal(terminalEvent?.payload.parentRoundTotal, 7);
+  assert.equal(terminalEvent?.payload.parentRoundProgress, 1);
+  assert.equal(terminalEvent?.payload.terminalBriefTitle, "A2A Terminal Brief 완료: dungae(1/7)");
+  assert.deepEqual(terminalEvent?.payload.crossBrokerHandoff, {
+    parentRoundId,
+    originBrokerId: "gwakga",
+    handoffBrokerId: "seoseo",
+    originTaskId: "seoseo-handoff-child",
+    childWorkerId: "dungae",
+  });
+  assert.deepEqual(terminalEvent?.payload.notificationOwnership, {
+    ownerBrokerId: "gwakga",
+    scope: "parent-broker-only",
+    providerSendPermittedByProjection: false,
+    terminalAckPermittedByProjection: false,
+    reason: "cross-broker projections are parent-broker aggregation evidence only; child/handoff brokers do not notify or ACK",
+  });
+});
+
 test("cross-broker Terminal Brief projection redacts unsafe content and fails closed for ACKs", () => {
   const broker = new InMemoryA2ABroker(undefined, undefined, { brokerId: "parent-broker" });
   createParentRound(broker);
