@@ -33,6 +33,8 @@ function validRequest(overrides: Partial<CrossBrokerTerminalBriefProjectionReque
     originBrokerId: "child-broker-a",
     brokerOfRecordId: "parent-broker",
     childTaskId: "child-task-1",
+    parentRoundTotal: 7,
+    parentRoundOrder: 1,
     status: "succeeded",
     summary: "child completed safely",
     taskBrief: "minimal safe patch",
@@ -62,15 +64,21 @@ describe("PostDispatchVerifier: valid dispatch", () => {
     assert.equal(result.passed, true);
   });
 
-  it("passes with optional parentRoundTotal as number", () => {
+  it("passes with parentRoundTotal as number", () => {
     const v = new PostDispatchVerifier();
     const result = v.verifyDispatch(validRequest({ parentRoundTotal: 7 }));
     assert.equal(result.passed, true);
   });
 
-  it("passes with optional parentRoundTotal as numeric string", () => {
+  it("passes with parentRoundTotal as numeric string", () => {
     const v = new PostDispatchVerifier();
     const result = v.verifyDispatch(validRequest({ parentRoundTotal: "12" }));
+    assert.equal(result.passed, true);
+  });
+
+  it("passes with parentRoundOrder as numeric string", () => {
+    const v = new PostDispatchVerifier();
+    const result = v.verifyDispatch(validRequest({ parentRoundOrder: "5" }));
     assert.equal(result.passed, true);
   });
 
@@ -147,6 +155,14 @@ describe("PostDispatchVerifier: mismatched fields", () => {
     assert.ok(borField?.detail?.includes("must match the receiving broker"));
   });
 
+  it("fails when parentRoundTotal is missing", () => {
+    const v = new PostDispatchVerifier();
+    const result = v.verifyDispatch(validRequest({ parentRoundTotal: undefined }));
+    assert.equal(result.passed, false);
+    const prtField = result.fields.find((f) => f.field === "parentRoundTotal");
+    assert.equal(prtField?.status, "missing");
+  });
+
   it("fails when parentRoundTotal is zero", () => {
     const v = new PostDispatchVerifier();
     const result = v.verifyDispatch(validRequest({ parentRoundTotal: 0 }));
@@ -166,6 +182,22 @@ describe("PostDispatchVerifier: mismatched fields", () => {
     const v = new PostDispatchVerifier();
     const result = v.verifyDispatch(validRequest({ parentRoundTotal: "abc" }));
     assert.equal(result.passed, false);
+  });
+
+  it("fails when parentRoundOrder is missing", () => {
+    const v = new PostDispatchVerifier();
+    const result = v.verifyDispatch(validRequest({ parentRoundOrder: undefined }));
+    assert.equal(result.passed, false);
+    const orderField = result.fields.find((f) => f.field === "parentRoundOrder");
+    assert.equal(orderField?.status, "missing");
+  });
+
+  it("fails when parentRoundOrder exceeds parentRoundTotal", () => {
+    const v = new PostDispatchVerifier();
+    const result = v.verifyDispatch(validRequest({ parentRoundTotal: 7, parentRoundOrder: 8 }));
+    assert.equal(result.passed, false);
+    const orderField = result.fields.find((f) => f.field === "parentRoundOrder");
+    assert.equal(orderField?.status, "mismatched");
   });
 });
 
@@ -313,13 +345,14 @@ describe("PostDispatchVerifier: snapshot/check flow", () => {
     const tick = clockProvider();
     const v = new PostDispatchVerifier(undefined, { now: tick.now });
 
-    v.snapshotParentMetadata("round-parent", "child-broker-a", 7);
+    v.snapshotParentMetadata("round-parent", "child-broker-a", 7, 1);
     tick.advanceMs(35_000); // 35 s — within the 30–60 s window
 
     const result = v.checkSnapshot("round-parent", {
       parentRoundId: "round-parent",
       originBrokerId: "child-broker-a",
       parentRoundTotal: 7,
+      parentRoundOrder: 1,
     });
     assert.equal(result.verdict, "consistent");
     assert.equal(result.elapsedMs, 35_000);

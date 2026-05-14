@@ -31,6 +31,7 @@ export interface TerminalBriefDispatchValidationInput {
   originBrokerId?: string;
   brokerOfRecordId?: string;
   parentRoundTotal?: number;
+  parentRoundOrder?: number;
 }
 
 /**
@@ -58,12 +59,23 @@ export function validateTerminalBriefForDispatch(
     errors.push("parentRoundTotal is required and must be a positive integer for Terminal Brief dispatch");
   }
 
+  if (input.parentRoundOrder === undefined || input.parentRoundOrder === null || input.parentRoundOrder <= 0) {
+    errors.push("parentRoundOrder is required and must be a positive integer for Terminal Brief dispatch");
+  } else if (input.parentRoundTotal !== undefined && input.parentRoundTotal !== null && input.parentRoundOrder > input.parentRoundTotal) {
+    errors.push("parentRoundOrder must not exceed parentRoundTotal for Terminal Brief dispatch");
+  }
+
   // crossBrokerHandoff construction requires parentRoundId, brokerOfRecordId, and originBrokerId.
   // parentRoundId -> crossBrokerHandoff.parentRoundId
   // brokerOfRecordId -> crossBrokerHandoff.originBrokerId (parent broker is the origin of the handoff)
   // originBrokerId -> crossBrokerHandoff.handoffBrokerId (child broker is the handoff participant)
-  if (!input.parentRoundId || !input.brokerOfRecordId || !input.originBrokerId) {
-    errors.push("crossBrokerHandoff cannot be constructed: parentRoundId, brokerOfRecordId, and originBrokerId are required");
+  // Note: parentRoundId and originBrokerId are checked above; this block only fires for brokerOfRecordId.
+  if (!input.brokerOfRecordId) {
+    errors.push("brokerOfRecordId is required for crossBrokerHandoff construction in Terminal Brief dispatch");
+  } else if (!input.parentRoundId) {
+    errors.push("parentRoundId is required for crossBrokerHandoff construction");
+  } else if (!input.originBrokerId) {
+    errors.push("originBrokerId is required for crossBrokerHandoff construction");
   }
 
   return { valid: errors.length === 0, errors };
@@ -92,6 +104,8 @@ export interface CrossBrokerTerminalBriefProjectionRequest {
   terminalAck?: boolean;
   /** Total worker/task count expected for the parent round (denominator). */
   parentRoundTotal?: number | string;
+  /** 1-based worker/task order within the parent round (title numerator). */
+  parentRoundOrder?: number | string;
 }
 
 export interface CrossBrokerTerminalBriefProjection {
@@ -120,6 +134,8 @@ export interface CrossBrokerTerminalBriefProjection {
   };
   /** Total worker/task count expected for the parent round (denominator). */
   parentRoundTotal?: number;
+  /** 1-based worker/task order within the parent round (title numerator). */
+  parentRoundOrder?: number;
 }
 
 export interface CrossBrokerTerminalBriefProjectionFilters {
@@ -162,9 +178,10 @@ export interface CrossBrokerTerminalBriefProjectionStoreOptions {
 /**
  * Broker-local storage/protocol guard for cross-broker child Terminal Brief projections.
  *
- * The key is intentionally only `(parentRoundId, originBrokerId)`: replaying the same child
- * broker packet converges to one aggregate row, while stale or misaddressed packets fail closed
- * and never become Terminal Brief ACKs.
+ * Records are keyed by parent round, producing broker, and the best available
+ * child identity. This keeps duplicate packets for the same child idempotent
+ * while allowing several Gwakga-executed children to aggregate under the same
+ * Seoseo-origin parent round without overwriting each other.
  */
 export class CrossBrokerTerminalBriefProjectionStore {
   private readonly records = new Map<string, CrossBrokerTerminalBriefProjection>();
@@ -174,7 +191,7 @@ export class CrossBrokerTerminalBriefProjectionStore {
     private readonly options: CrossBrokerTerminalBriefProjectionStoreOptions,
   ) {
     for (const record of records) {
-      this.records.set(recordKey(record.parentRoundId, record.originBrokerId), normalizeRecord(record));
+      this.records.set(recordKey(record), normalizeRecord(record));
     }
   }
 
@@ -194,6 +211,7 @@ export class CrossBrokerTerminalBriefProjectionStore {
         originBrokerId: normalized.originBrokerId,
         brokerOfRecordId: normalized.brokerOfRecordId,
         parentRoundTotal: normalized.parentRoundTotal,
+        parentRoundOrder: normalized.parentRoundOrder,
       },
       normalizeToken(this.options.brokerId),
     );
@@ -220,7 +238,7 @@ export class CrossBrokerTerminalBriefProjectionStore {
       return reject("wrong_origin", `parent round ${normalized.parentRoundId} belongs to broker-of-record ${parentBroker}`, now);
     }
 
-    const key = recordKey(normalized.parentRoundId, normalized.originBrokerId);
+    const key = recordKey(normalized);
     const sourceDigest = digestProjection(normalized);
     const existing = this.records.get(key);
     if (existing?.sourceDigest === sourceDigest) {
@@ -260,7 +278,9 @@ export class CrossBrokerTerminalBriefProjectionStore {
   }
 
   get(parentRoundId: string, originBrokerId: string): CrossBrokerTerminalBriefProjection | undefined {
-    const record = this.records.get(recordKey(parentRoundId, originBrokerId));
+    const record = [...this.records.values()]
+      .filter((candidate) => candidate.parentRoundId === parentRoundId && candidate.originBrokerId === originBrokerId)
+      .sort(compareRecords)[0];
     return record ? structuredClone(record) : undefined;
   }
 
@@ -268,14 +288,14 @@ export class CrossBrokerTerminalBriefProjectionStore {
     return [...this.records.values()]
       .filter((record) => !filters.parentRoundId || record.parentRoundId === filters.parentRoundId)
       .filter((record) => !filters.originBrokerId || record.originBrokerId === filters.originBrokerId)
-      .sort((a, b) => a.parentRoundId.localeCompare(b.parentRoundId) || a.originBrokerId.localeCompare(b.originBrokerId))
+      .sort(compareRecords)
       .map((record) => structuredClone(record));
   }
 
   restore(records: CrossBrokerTerminalBriefProjection[]): void {
     this.records.clear();
     for (const record of records) {
-      this.records.set(recordKey(record.parentRoundId, record.originBrokerId), normalizeRecord(record));
+      this.records.set(recordKey(record), normalizeRecord(record));
     }
   }
 
@@ -299,6 +319,7 @@ function normalizeRequest(request: CrossBrokerTerminalBriefProjectionRequest): O
   const summary = sanitizeText(request.summary, MAX_SUMMARY_CHARS);
   const taskBrief = sanitizeText(request.taskBrief, MAX_BRIEF_CHARS);
   const parentRoundTotal = normalizePositiveInt(request.parentRoundTotal);
+  const parentRoundOrder = normalizePositiveInt(request.parentRoundOrder);
   return {
     parentRoundId,
     originBrokerId,
@@ -313,15 +334,18 @@ function normalizeRequest(request: CrossBrokerTerminalBriefProjectionRequest): O
     completedAt,
     ...(emittedAt ? { emittedAt } : {}),
     ...(parentRoundTotal ? { parentRoundTotal } : {}),
+    ...(parentRoundOrder ? { parentRoundOrder } : {}),
   };
 }
 
 function normalizeRecord(record: CrossBrokerTerminalBriefProjection): CrossBrokerTerminalBriefProjection {
   const parentRoundTotal = normalizePositiveInt(record.parentRoundTotal);
-  const { parentRoundTotal: _parentRoundTotal, ...rest } = record;
+  const parentRoundOrder = normalizePositiveInt(record.parentRoundOrder);
+  const { parentRoundTotal: _parentRoundTotal, parentRoundOrder: _parentRoundOrder, ...rest } = record;
   return {
     ...rest,
     ...(parentRoundTotal ? { parentRoundTotal } : {}),
+    ...(parentRoundOrder ? { parentRoundOrder } : {}),
     ack: {
       decision: record.ack?.decision === "duplicate_replay" ? "duplicate_replay" : "accepted",
       terminalAck: false,
@@ -349,8 +373,20 @@ function digestProjection(record: ReturnType<typeof normalizeRequest> & {}): str
   return `sha256:${createHash("sha256").update(stableStringify(record)).digest("hex")}`;
 }
 
-function recordKey(parentRoundId: string, originBrokerId: string): string {
-  return `${parentRoundId}::${originBrokerId}`;
+function recordKey(record: Pick<CrossBrokerTerminalBriefProjection, "parentRoundId" | "originBrokerId" | "childTaskId" | "childWorkerId" | "parentRoundOrder">): string {
+  const childKey = record.childTaskId
+    ?? (record.childWorkerId ? `worker:${record.childWorkerId}` : undefined)
+    ?? (record.parentRoundOrder ? `order:${record.parentRoundOrder}` : undefined)
+    ?? "broker";
+  return `${record.parentRoundId}::${record.originBrokerId}::${childKey}`;
+}
+
+function compareRecords(a: CrossBrokerTerminalBriefProjection, b: CrossBrokerTerminalBriefProjection): number {
+  return a.parentRoundId.localeCompare(b.parentRoundId)
+    || a.originBrokerId.localeCompare(b.originBrokerId)
+    || ((a.parentRoundOrder ?? Number.MAX_SAFE_INTEGER) - (b.parentRoundOrder ?? Number.MAX_SAFE_INTEGER))
+    || (a.childTaskId ?? "").localeCompare(b.childTaskId ?? "")
+    || (a.childWorkerId ?? "").localeCompare(b.childWorkerId ?? "");
 }
 
 function normalizeToken(value: unknown): string | undefined {
