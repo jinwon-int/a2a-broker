@@ -336,8 +336,13 @@ function normalizePositiveInt(value: unknown): number | undefined {
  * task payloads and outbox event assembly.
  */
 export const TERMINAL_BRIEF_PAYLOAD_KEYS: ReadonlySet<string> = new Set([
+  "teamScope",
+  "initiatingBrokerId",
   "parentRoundId",
   "originBrokerId",
+  "parentBrokerId",
+  "handoffBrokerId",
+  "childBrokerId",
   "brokerOfRecordId",
   "parentRoundTotal",
   "parentRoundOrder",
