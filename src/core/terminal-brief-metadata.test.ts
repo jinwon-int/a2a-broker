@@ -407,8 +407,12 @@ test("validateTerminalBriefMetadata accepts handoff with absent optional fields"
 // hasTerminalBriefMetadata
 // ---------------------------------------------------------------------------
 
-test("hasTerminalBriefMetadata returns true when parentRoundId is set", () => {
-  assert.equal(hasTerminalBriefMetadata({ parentRoundId: "round-1" }), true);
+test("hasTerminalBriefMetadata returns false when only parentRoundId is set", () => {
+  assert.equal(hasTerminalBriefMetadata({ parentRoundId: "round-1" }), false);
+});
+
+ test("hasTerminalBriefMetadata returns true when explicit dispatch ownership is set", () => {
+  assert.equal(hasTerminalBriefMetadata({ parentRoundId: "round-1", originBrokerId: "gwakga" }), true);
 });
 
 test("hasTerminalBriefMetadata returns false when parentRoundId is missing", () => {

@@ -557,16 +557,23 @@ function validateHandoff(
 }
 
 /**
- * Check whether a task payload carries Terminal Brief metadata that needs
- * validation.
+ * Check whether a task payload carries explicit Terminal Brief dispatch
+ * metadata that needs fail-closed validation.
  *
- * This is a fast pre-check used by the fail-closed task creation guard to
- * decide whether canonical validation is needed. A payload "has Terminal Brief
- * metadata" when any one of the canonical terminal brief payload keys has a
- * truthy value.
+ * `parentRoundId` by itself is intentionally not enough: older direct-task and
+ * handoff paths use it only as a grouping/run key for compact progress. The
+ * creation-time guard should activate only when the caller opts into the R15
+ * dispatch contract with ownership/order/title/handoff fields. Projection-time
+ * ingestion remains strict for actual cross-broker Terminal Brief packets.
  */
 export function hasTerminalBriefMetadata(payload: Record<string, unknown>): boolean {
-  return TERMINAL_BRIEF_PAYLOAD_KEYS.has("parentRoundId") && typeof payload["parentRoundId"] === "string" && payload["parentRoundId"].trim().length > 0;
+  return [
+    "originBrokerId",
+    "parentRoundOrder",
+    "parentRoundIndex",
+    "terminalBriefTitle",
+    "terminalBrief",
+  ].some((key) => payload[key] !== undefined && payload[key] !== null && String(payload[key]).trim().length > 0);
 }
 
 /**
@@ -581,7 +588,7 @@ export function extractDispatchMetadata(
     originBrokerId: payload["originBrokerId"],
     brokerOfRecordId: payload["brokerOfRecordId"],
     parentRoundTotal: payload["parentRoundTotal"] ?? payload["roundTotal"] ?? payload["expectedWorkers"] ?? payload["taskCount"],
-    parentRoundOrder: payload["parentRoundOrder"],
+    parentRoundOrder: payload["parentRoundOrder"] ?? payload["parentRoundIndex"],
     crossBrokerHandoff: payload["crossBrokerHandoff"],
   };
 }
