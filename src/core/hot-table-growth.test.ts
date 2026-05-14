@@ -291,4 +291,121 @@ describe("projectHotTableGrowth", () => {
     assert.equal(projection.overallSeverity, "warning");
     assert.ok(projection.warnings.some((w) => w.includes("exceeds warning threshold")));
   });
+
+  it("caps warnings at DEFAULT_MAX_WARNINGS by default", () => {
+    // All 3 tables at warning level + memory warning + no-prior = 5 warnings,
+    // well under the default 10, so nothing is truncated.
+    const manyWarnings = structuredClone(smallMetrics);
+    manyWarnings.tables.broker_tasks.count = 1500;
+    manyWarnings.tables.broker_tasks.runtimeLoad = {
+      limit: 2000, loadedCount: 1500, skippedCount: 0, activeCount: 5, terminalCount: 1495,
+    };
+    manyWarnings.tables.broker_audit_events.count = 6000;
+    manyWarnings.tables.broker_audit_events.runtimeLoad = {
+      limit: 5000, loadedCount: 5000, skippedCount: 1000,
+    };
+    manyWarnings.tables.broker_terminal_outbox.count = 50;
+    manyWarnings.tables.broker_terminal_outbox.runtimeLoad = {
+      limit: 1000, loadedCount: 50, skippedCount: 0,
+    };
+
+    const projection = projectHotTableGrowth({ current: manyWarnings });
+
+    assert.ok(projection.warnings.length > 0);
+    assert.equal(projection.warningsTruncated, false);
+  });
+
+  it("truncates warnings when maxWarnings is low relative to warning count", () => {
+    // Lower maxWarnings to 1, high table counts generate multiple warnings.
+    const many: BrokerHotTableLoadMetrics = {
+      tables: {
+        broker_tasks: {
+          count: 1500,
+          maxPayloadBytes: 100_000,
+          runtimeLoad: { limit: 2000, loadedCount: 1500, skippedCount: 0, activeCount: 5, terminalCount: 1495 },
+        },
+        broker_audit_events: {
+          count: 2000,
+          maxPayloadBytes: 2000,
+          runtimeLoad: { limit: 5000, loadedCount: 2000, skippedCount: 0 },
+        },
+        broker_terminal_outbox: {
+          count: 30,
+          maxPayloadBytes: 2000,
+          unackedCount: 5,
+          runtimeLoad: { limit: 1000, loadedCount: 30, skippedCount: 0 },
+        },
+        broker_exchanges: {
+          count: 1200,
+          maxPayloadBytes: 3000,
+          runtimeLoad: { limit: 1000, loadedCount: 1000, skippedCount: 200 },
+        },
+        broker_proposals: {
+          count: 1100,
+          maxPayloadBytes: 2500,
+          runtimeLoad: { limit: 1000, loadedCount: 1000, skippedCount: 100 },
+        },
+      },
+    };
+
+    const projection = projectHotTableGrowth({ current: many, maxWarnings: 2 });
+
+    assert.equal(projection.warnings.length, 2);
+    assert.equal(projection.warningsTruncated, true);
+  });
+
+  it("does not truncate warnings when maxWarnings equals the count", () => {
+    const many: BrokerHotTableLoadMetrics = {
+      tables: {
+        broker_tasks: {
+          count: 1500,
+          maxPayloadBytes: 100_000,
+          runtimeLoad: { limit: 2000, loadedCount: 1500, skippedCount: 0, activeCount: 5, terminalCount: 1495 },
+        },
+        broker_audit_events: {
+          count: 2000,
+          maxPayloadBytes: 2000,
+          runtimeLoad: { limit: 5000, loadedCount: 2000, skippedCount: 0 },
+        },
+        broker_terminal_outbox: {
+          count: 30,
+          maxPayloadBytes: 2000,
+          unackedCount: 5,
+          runtimeLoad: { limit: 1000, loadedCount: 30, skippedCount: 0 },
+        },
+        broker_exchanges: {
+          count: 1200,
+          maxPayloadBytes: 3000,
+          runtimeLoad: { limit: 1000, loadedCount: 1000, skippedCount: 200 },
+        },
+      },
+    };
+
+    // 4 table warnings + no-prior note = 5 total; maxWarnings=5 → no truncation
+    const projection = projectHotTableGrowth({ current: many, maxWarnings: 5 });
+
+    assert.equal(projection.warnings.length, 5);
+    assert.equal(projection.warningsTruncated, false);
+  });
+
+  it("does not emit empty warnings when there are zero warnings", () => {
+    const empty: BrokerHotTableLoadMetrics = {
+      tables: {
+        broker_tasks: { count: 0, maxPayloadBytes: 0, runtimeLoad: { limit: 2000, loadedCount: 0, skippedCount: 0, activeCount: 0, terminalCount: 0 } },
+        broker_audit_events: { count: 0, maxPayloadBytes: 0, runtimeLoad: { limit: 5000, loadedCount: 0, skippedCount: 0 } },
+        broker_terminal_outbox: { count: 0, maxPayloadBytes: 0, unackedCount: 0, runtimeLoad: { limit: 1000, loadedCount: 0, skippedCount: 0 } },
+      },
+    };
+    // Provide prior so we skip the "no prior" note
+    const projection = projectHotTableGrowth({ current: empty, prior: empty, priorGeneratedAt: "2026-05-12T00:00:00.000Z" });
+
+    assert.equal(projection.warnings.length, 0);
+    assert.equal(projection.warningsTruncated, false);
+  });
+
+  it("warningsTruncated is false when all tables have zero or ok severity", () => {
+    const projection = projectHotTableGrowth({ current: smallMetrics, generatedAt: "2026-05-13T00:00:00.000Z" });
+
+    assert.equal(projection.warningsTruncated, false);
+  });
 });

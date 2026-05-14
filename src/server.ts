@@ -885,10 +885,12 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
 
         if (hotTableGrowth && hotTableGrowth.overallSeverity === "critical") {
           body.ok = false;
-          body.error = `hot-table growth critical: ${hotTableGrowth.warnings.filter((w) => w.startsWith("CRITICAL")).join("; ") || "one or more tables near stability limits"}`;
+          const crit = hotTableGrowth.warnings.filter((w) => w.startsWith("CRITICAL"));
+          body.error = `hot-table growth critical: ${truncateMessage(crit.join("; "), 500) || "one or more tables near stability limits"}`;
         } else if (hotTableGrowth && hotTableGrowth.overallSeverity === "warning") {
           const existing = body.warning ? `${body.warning}; ` : "";
-          body.warning = `${existing}hot-table growth warning: ${hotTableGrowth.warnings.filter((w) => w.startsWith("WARNING")).join("; ") || "growth approaching stability limits"}`;
+          const warns = hotTableGrowth.warnings.filter((w) => w.startsWith("WARNING"));
+          body.warning = `${existing}hot-table growth warning: ${truncateMessage(warns.join("; "), 500) || "growth approaching stability limits"}`;
         }
 
         body.timing = {
@@ -3639,6 +3641,15 @@ function handleOperatorEventStream(
     }, params.heartbeatMs);
     heartbeatTimer.unref?.();
   }
+}
+
+/**
+ * Truncate a message to `maxLen` characters, appending "..." if truncated.
+ * Returns the original message unchanged when it fits within the limit.
+ */
+function truncateMessage(msg: string, maxLen: number): string {
+  if (msg.length <= maxLen) return msg;
+  return `${msg.slice(0, Math.max(0, maxLen - 3))}...`;
 }
 
 function isTerminalSnapshotStatus(status: string): boolean {
