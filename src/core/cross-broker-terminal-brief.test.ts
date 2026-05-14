@@ -395,14 +395,14 @@ test("Terminal Brief dispatch guard rejects projection with parentRoundOrder bey
   assert.match(result.ack.reason, /parentRoundOrder/);
 });
 
-test("Terminal Brief dispatch guard rejects projection lacking brokerOfRecordId for crossBrokerHandoff", () => {
+test("Terminal Brief dispatch guard accepts projection lacking brokerOfRecordId (defaults to receiver broker)", () => {
   const broker = new InMemoryA2ABroker(undefined, undefined, { brokerId: "parent-broker" });
   createParentRound(broker);
 
   const result = broker.ingestCrossBrokerTerminalBriefProjection(projection({ brokerOfRecordId: undefined }));
-  assert.equal(result.accepted, false);
-  assert.equal(result.ack.code, "missing_dispatch_metadata");
-  assert.match(result.ack.reason, /crossBrokerHandoff/);
+  // brokerOfRecordId is optional in the canonical schema; the receiving broker
+  // uses its own configured id as the default.
+  assert.equal(result.accepted, true);
 });
 
 test("Terminal Brief dispatch guard accepts valid seoseo-origin projection with bangtong compact title", () => {
