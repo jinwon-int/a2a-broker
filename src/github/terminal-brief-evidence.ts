@@ -5,7 +5,12 @@ import type {
   TerminalTaskReceiptStatus,
   TerminalTaskStatus,
 } from "../core/terminal-event-outbox.js";
+import {
+  assertNoOpenClawRuntimePaths,
+  findOpenClawRuntimePaths,
+} from "../core/openclaw-runtime-path-guard.js";
 import { redactSensitive } from "./projection.js";
+export { assertNoOpenClawRuntimePaths, findOpenClawRuntimePaths };
 
 export type TerminalBriefGitHubEvidenceMarker = "Start" | "PR" | "Done" | "Block";
 export type TerminalBriefGitHubEvidenceSource = "task-start" | "terminal-task-outbox";
@@ -136,7 +141,6 @@ export interface TerminalBriefGitHubCommentWriteResult {
 const MARKER_PREFIX = "<!-- a2a:terminal-brief-github-evidence";
 const MAX_COMMENT_CHARS = 60_000;
 const TRUNCATION_MARKER = "\n\n…(truncated)";
-const UNSAFE_OPENCLAW_RUNTIME_PATH_RE = /(^|[\s([{"'`])((?:\.openclaw\/[^\s)\]}'"`<>]+)|AGENTS\.md|SOUL\.md|USER\.md|TOOLS\.md|HEARTBEAT\.md|IDENTITY\.md)(?=$|[\s)\]},.'"`<>])/g;
 const URL_RE = /^https?:\/\/[^\s]+$/;
 
 export function projectTerminalBriefGitHubEvidenceComment(
@@ -227,18 +231,6 @@ export async function writeTerminalBriefGitHubEvidenceComment(
   }
 }
 
-export function findOpenClawRuntimePaths(value: unknown): string[] {
-  const found = new Set<string>();
-  visitForUnsafePaths(value, found);
-  return [...found].sort();
-}
-
-export function assertNoOpenClawRuntimePaths(value: unknown): void {
-  const offendingPaths = findOpenClawRuntimePaths(value);
-  if (offendingPaths.length > 0) {
-    throw new Error(`refusing to project OpenClaw runtime/bootstrap paths into GitHub evidence: ${offendingPaths.join(", ")}`);
-  }
-}
 
 function buildManifest(input: TerminalBriefGitHubEvidenceInput): TerminalBriefGitHubEvidenceManifest | null {
   if (input.kind === "start") return buildStartManifest(input);
@@ -470,24 +462,6 @@ function redactCommentText(value: string): string {
     .replace(/\b(?:(?:ghp|gho|ghu|ghs|ghr)_|github_pat_)[-_A-Za-z0-9]+\b/g, "[REDACTED]")
     .replace(/\b(?:sk|xox[abp])-[-_A-Za-z0-9]+\b/g, "[REDACTED]")
     .replace(/\b(token|secret|password|api[_-]?key|authorization|credential)\s*[:=]\s*\S+/gi, "$1=[REDACTED]");
-}
-
-function visitForUnsafePaths(value: unknown, found: Set<string>): void {
-  if (typeof value === "string") {
-    for (const match of value.matchAll(UNSAFE_OPENCLAW_RUNTIME_PATH_RE)) {
-      found.add(match[2]);
-    }
-    return;
-  }
-  if (Array.isArray(value)) {
-    for (const item of value) visitForUnsafePaths(item, found);
-    return;
-  }
-  if (!isRecord(value)) return;
-  for (const [key, raw] of Object.entries(value)) {
-    visitForUnsafePaths(key, found);
-    visitForUnsafePaths(raw, found);
-  }
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

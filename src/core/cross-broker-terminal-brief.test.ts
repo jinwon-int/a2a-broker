@@ -222,3 +222,45 @@ test("cross-broker Terminal Brief projections survive broker snapshot persistenc
   const restored = new InMemoryA2ABroker(undefined, snapshot, { brokerId: "parent-broker" });
   assert.equal(restored.getCrossBrokerTerminalBriefProjection("round-parent", "child-broker-a")?.summary, "child completed safely");
 });
+
+test("cross-broker Terminal Brief origin dispatch rejects OpenClaw runtime paths in summary", () => {
+  const broker = new InMemoryA2ABroker(undefined, undefined, { brokerId: "parent-broker" });
+  createParentRound(broker);
+
+  const result = broker.ingestCrossBrokerTerminalBriefProjection(projection({
+    summary: "workspace context includes USER.md and .openclaw/state.json",
+  }));
+  assert.equal(result.accepted, false);
+  assert.equal(result.ack.decision, "rejected");
+  assert.equal(result.ack.code, "bad_request");
+  assert.equal(result.ack.terminalAck, false);
+  assert.equal(broker.listCrossBrokerTerminalBriefProjections().length, 0);
+});
+
+test("cross-broker Terminal Brief origin dispatch rejects OpenClaw runtime paths in taskBrief", () => {
+  const broker = new InMemoryA2ABroker(undefined, undefined, { brokerId: "parent-broker" });
+  createParentRound(broker);
+
+  const result = broker.ingestCrossBrokerTerminalBriefProjection(projection({
+    taskBrief: "check SOUL.md for context",
+    summary: "neutral title",
+  }));
+  assert.equal(result.accepted, false);
+  assert.equal(result.ack.code, "bad_request");
+  assert.equal(result.ack.terminalAck, false);
+  assert.equal(broker.listCrossBrokerTerminalBriefProjections().length, 0);
+});
+
+test("cross-broker Terminal Brief origin dispatch accepts clean projections without OpenClaw paths", () => {
+  const broker = new InMemoryA2ABroker(undefined, undefined, { brokerId: "parent-broker" });
+  createParentRound(broker);
+
+  const result = broker.ingestCrossBrokerTerminalBriefProjection(projection({
+    summary: "worker processed safely A2A task",
+    taskBrief: "clean minimal patch",
+  }));
+  assert.equal(result.accepted, true);
+  assert.equal(result.ack.decision, "accepted");
+  assert.equal(result.ack.terminalAck, false);
+  assert.equal(broker.listCrossBrokerTerminalBriefProjections().length, 1);
+});

@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 
+import { containsOpenClawRuntimeTextPath } from "./openclaw-runtime-path-guard.js";
 import type { TaskStatus } from "./types.js";
 
 const TERMINAL_STATUSES = new Set<TaskStatus>(["succeeded", "failed", "canceled", "blocked"]);
@@ -226,9 +227,11 @@ function normalizeRequest(request: CrossBrokerTerminalBriefProjectionRequest): O
   const childRunId = normalizeToken(request.childRunId);
   const childWorkerId = normalizeToken(request.childWorkerId ?? request.workerId);
   const emittedAt = normalizeIso(request.emittedAt);
-  const evidenceUrl = normalizeHttpUrl(request.evidenceUrl);
   const summary = sanitizeText(request.summary, MAX_SUMMARY_CHARS);
   const taskBrief = sanitizeText(request.taskBrief, MAX_BRIEF_CHARS);
+  if (summary && containsOpenClawRuntimeTextPath(summary)) return undefined;
+  if (taskBrief && containsOpenClawRuntimeTextPath(taskBrief)) return undefined;
+  const evidenceUrl = normalizeHttpUrl(request.evidenceUrl);
   const parentRoundTotal = normalizePositiveInt(request.parentRoundTotal);
   return {
     parentRoundId,
