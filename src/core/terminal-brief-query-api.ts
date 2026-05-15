@@ -178,8 +178,9 @@ function matches(
   if (filter.acked !== undefined && filter.acked && !event.ack) return false;
   if (filter.unacked !== undefined && filter.unacked && event.ack) return false;
   if (filter.errored !== undefined && filter.errored) {
-    const terminal = ["failed", "timed_out", "stale"];
-    if (!terminal.includes(event.receipt.status)) return false;
+    const erroredReceipts = ["failed", "timed_out", "stale"];
+    const erroredTaskStatuses = ["failed", "canceled", "blocked"];
+    if (!erroredReceipts.includes(event.receipt.status) && !erroredTaskStatuses.includes(p.status)) return false;
   }
   if (filter.taskStatus && p.status !== filter.taskStatus) return false;
   if (filter.ticketRef && p.taskId !== filter.ticketRef) {

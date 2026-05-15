@@ -657,8 +657,26 @@ function buildTerminalTaskPayload(task: TaskRecord): TerminalTaskEventPayload {
   if (traceId) payload.traceId = traceId;
   const taskDescription = buildTaskDescription(task, output);
   if (taskDescription) payload.taskDescription = taskDescription;
-  if (task.claimedBy) payload.worker = task.claimedBy;
-  else if (task.assignedWorkerId) payload.worker = task.assignedWorkerId;
+  const worker = firstSafeText(
+    task.claimedBy,
+    task.assignedWorkerId,
+    task.targetNodeId,
+    task.payload["worker"],
+    task.payload["workerId"],
+    task.payload["assignedWorkerId"],
+    task.payload["targetNodeId"],
+    payloadTerminalBrief["worker"],
+    payloadTerminalBrief["workerId"],
+    payloadMetadata["worker"],
+    payloadMetadata["workerId"],
+    output["worker"],
+    output["workerId"],
+    outputTerminalBrief["worker"],
+    outputTerminalBrief["workerId"],
+    outputMetadata["worker"],
+    outputMetadata["workerId"],
+  );
+  if (worker) payload.worker = worker;
   const repo = task.payload["githubRepo"];
   if (typeof repo === "string" && repo.length > 0) payload.repo = repo;
   const issue = task.payload["githubIssueNumber"];
