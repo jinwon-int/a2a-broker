@@ -40,7 +40,9 @@
  *   `string` (numeric) representations because projection requests may arrive
  *   from diverse broker implementations that serialise numbers differently.
  * - When present, `parentRoundOrder` MUST be ≤ `parentRoundTotal`.
- * - `originBrokerId` MUST differ from the receiving broker's id.
+ * - `originBrokerId` MUST differ from the receiving broker's id for
+ *   cross-broker projections. Local parent rounds on the same broker
+ *   may use `allowLocalOrigin: true` in validation options.
  */
 export interface TerminalBriefDispatchMetadata {
   /**
@@ -446,13 +448,31 @@ export const TERMINAL_BRIEF_PAYLOAD_KEYS: ReadonlySet<string> = new Set([
 // ---------------------------------------------------------------------------
 
 /**
+ * Options for Terminal Brief metadata validation.
+ */
+export interface TerminalBriefValidationOptions {
+  /**
+   * When true, allow `originBrokerId` to equal `receiverBrokerId`.
+   *
+   * This is used for local parent rounds where the origin and receiving
+   * broker are the same (e.g., Team2-local Gwakga rounds carrying local-safe
+   * parent grouping metadata). Cross-broker projections should not set this
+   * flag; they still reject same-broker origin as "wrong_origin".
+   *
+   * @default false
+   */
+  allowLocalOrigin?: boolean;
+}
+
+/**
  * Validate a set of Terminal Brief dispatch metadata fields.
  *
  * This is the canonical validation entry point for all-hands Terminal Brief
  * metadata. It enforces:
  * - Required fields are present and non-empty
  * - Numeric constraints (positive integer, order ≤ total)
- * - Origin/receiver broker distinction
+ * - Origin/receiver broker distinction (unless {@link TerminalBriefValidationOptions.allowLocalOrigin}
+ *   is set to `true`)
  * - Handoff field requirements
  * - Notification ownership defaults
  *
@@ -461,11 +481,13 @@ export const TERMINAL_BRIEF_PAYLOAD_KEYS: ReadonlySet<string> = new Set([
  *   task payload record).
  * @param receiverBrokerId - Optional receiver broker id for origin/receiver
  *   distinction checks.
+ * @param options - Optional validation options.
  * @returns A validation result with per-field issues.
  */
 export function validateTerminalBriefMetadata(
   input: Record<string, unknown>,
   receiverBrokerId?: string,
+  options?: TerminalBriefValidationOptions,
 ): TerminalBriefMetadataValidationResult {
   const issues: MetadataValidationIssue[] = [];
 
@@ -491,7 +513,7 @@ export function validateTerminalBriefMetadata(
       expected: "non-empty string",
       actual: input["originBrokerId"],
     });
-  } else if (receiverBrokerId && originBrokerId === receiverBrokerId) {
+  } else if (!options?.allowLocalOrigin && receiverBrokerId && originBrokerId === receiverBrokerId) {
     issues.push({
       path: "originBrokerId",
       message: `originBrokerId "${originBrokerId}" must differ from the receiving broker "${receiverBrokerId}"`,

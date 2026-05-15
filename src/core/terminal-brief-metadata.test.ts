@@ -330,6 +330,48 @@ test("validateTerminalBriefMetadata fails with receiver mismatch for originBroke
 });
 
 // ---------------------------------------------------------------------------
+// validateTerminalBriefMetadata: allowLocalOrigin tests
+// ---------------------------------------------------------------------------
+
+test("validateTerminalBriefMetadata passes with allowLocalOrigin when origin equals receiver", () => {
+  const result = validateTerminalBriefMetadata({
+    parentRoundId: "round-1",
+    originBrokerId: "gwakga",
+    parentRoundTotal: 7,
+    parentRoundOrder: 3,
+  }, "gwakga", { allowLocalOrigin: true });
+  assert.equal(result.valid, true);
+  const originIssues = result.issues.filter((i) => i.path === "originBrokerId");
+  assert.equal(originIssues.length, 0);
+});
+
+test("validateTerminalBriefMetadata still rejects same-broker origin without allowLocalOrigin", () => {
+  const result = validateTerminalBriefMetadata({
+    parentRoundId: "round-1",
+    originBrokerId: "gwakga",
+    parentRoundTotal: 7,
+    parentRoundOrder: 3,
+  }, "gwakga");
+  assert.equal(result.valid, false);
+  const issues = result.issues.filter((i) => i.path === "originBrokerId");
+  assert.ok(issues.length > 0);
+  assert.ok(issues[0]?.message.includes("must differ"));
+});
+
+test("validateTerminalBriefMetadata passes with allowLocalOrigin when origin differs from receiver", () => {
+  // allowLocalOrigin should not break the normal case where origin differs
+  const result = validateTerminalBriefMetadata({
+    parentRoundId: "round-1",
+    originBrokerId: "child-broker",
+    parentRoundTotal: 5,
+    parentRoundOrder: 2,
+  }, "parent-broker", { allowLocalOrigin: true });
+  assert.equal(result.valid, true);
+  const originIssues = result.issues.filter((i) => i.path === "originBrokerId");
+  assert.equal(originIssues.length, 0);
+});
+
+// ---------------------------------------------------------------------------
 // validateTerminalBriefMetadata: multiple errors
 // ---------------------------------------------------------------------------
 

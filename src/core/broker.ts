@@ -3579,7 +3579,11 @@ export class InMemoryA2ABroker {
     }
 
     const dispatch = extractDispatchMetadata(payload);
-    const result = validateTerminalBriefMetadata(dispatch, this.brokerId);
+    // Creation-time validation allows local origin — this is the common case
+    // for Team2-local parent rounds where originBrokerId === this.brokerId.
+    // Cross-broker origin-receiver distinction is enforced at projection
+    // ingestion time in CrossBrokerTerminalBriefProjectionStore.ingest().
+    const result = validateTerminalBriefMetadata(dispatch, this.brokerId, { allowLocalOrigin: true });
     if (!result.valid) {
       const errors = result.issues
         .filter((i) => i.severity === "error")

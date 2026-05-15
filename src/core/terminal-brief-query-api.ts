@@ -364,10 +364,16 @@ export function summarizeTerminalBriefRounds(
     const total = roundEvents.length;
     const completed = roundEvents.filter((eventToMatch) => eventToMatch.payload.status === "succeeded").length;
     const acked = roundEvents.filter((eventToMatch) => eventToMatch.ack?.status === "receipt_confirmed").length;
+    // Errored/non-canonical worker noise: failed, canceled, blocked, timed_out
+    // events are tracked separately as failedCount so they do not pollute
+    // canonical pending/completed metrics. A round with only errored workers
+    // plus completed workers is considered complete (errored workers are noise).
+    const erroredStatuses = new Set(["failed", "canceled", "blocked"]);
     const failed = roundEvents.filter(
-      (eventToMatch) => eventToMatch.payload.status === "failed" || eventToMatch.payload.status === "canceled",
+      (eventToMatch) => erroredStatuses.has(eventToMatch.payload.status),
     ).length;
-    const pending = total - completed;
+    // pending = only non-errored, non-completed workers remain
+    const pending = total - completed - failed;
 
     summaries.push({
       parentRoundId: roundId,
@@ -376,7 +382,9 @@ export function summarizeTerminalBriefRounds(
       ackedCount: acked,
       failedCount: failed,
       pendingCount: pending,
-      isComplete: pending === 0 && failed === 0,
+      // Round is complete when no canonical (non-errored) workers remain pending.
+      // Errored workers are filtered as noise — they don't block completeness.
+      isComplete: pending === 0,
       allAcked: acked === total,
     });
   }
