@@ -602,7 +602,7 @@ function buildTerminalTaskPayload(task: TaskRecord): TerminalTaskEventPayload {
     payload.run = run;
     payload.parentRoundId = run;
   }
-  const originBrokerId = firstSafeText(
+  let originBrokerId = firstSafeText(
     task.payload["originBrokerId"],
     payloadTerminalBrief["originBrokerId"],
     payloadMetadata["originBrokerId"],
@@ -610,7 +610,6 @@ function buildTerminalTaskPayload(task: TaskRecord): TerminalTaskEventPayload {
     outputTerminalBrief["originBrokerId"],
     outputMetadata["originBrokerId"],
   );
-  if (originBrokerId) payload.originBrokerId = originBrokerId;
   const brokerOfRecordId = firstSafeText(
     task.payload["brokerOfRecordId"],
     payloadTerminalBrief["brokerOfRecordId"],
@@ -621,6 +620,8 @@ function buildTerminalTaskPayload(task: TaskRecord): TerminalTaskEventPayload {
     task.brokerOfRecord,
   );
   if (brokerOfRecordId) payload.brokerOfRecordId = brokerOfRecordId;
+  if (!originBrokerId && run && brokerOfRecordId) originBrokerId = brokerOfRecordId;
+  if (originBrokerId) payload.originBrokerId = originBrokerId;
   const parentRoundTotal = firstSafePositiveInt(
     task.payload["roundTotal"],
     task.payload["parentRoundTotal"],

@@ -49,7 +49,10 @@ export interface TerminalBriefGitHubEvidenceManifest {
   repo: string;
   issueOrPrNumber: number;
   taskId: string;
+  parentRoundId?: string;
   run?: string;
+  originBrokerId?: string;
+  brokerOfRecordId?: string;
   worker?: string;
   traceId?: string;
   startStatus?: "claimed" | "running";
@@ -57,6 +60,14 @@ export interface TerminalBriefGitHubEvidenceManifest {
   terminalBriefTitle?: string;
   parentRoundProgress?: number;
   parentRoundTotal?: number;
+  parentRoundOrder?: number;
+  crossBrokerHandoff?: {
+    parentRoundId: string;
+    originBrokerId: string;
+    handoffBrokerId?: string;
+    originTaskId?: string;
+    childWorkerId?: string;
+  };
   notificationOwnership?: {
     ownerBrokerId: string;
     scope: "parent-broker-only";
@@ -272,13 +283,18 @@ function buildTerminalManifest(event: TerminalTaskOutboxEvent): TerminalBriefGit
     repo: payload.repo,
     issueOrPrNumber: payload.issue,
     taskId: payload.taskId,
+    parentRoundId: safeText(payload.parentRoundId ?? payload.run),
     run: safeText(payload.run),
+    originBrokerId: safeText(payload.originBrokerId),
+    brokerOfRecordId: safeText(payload.brokerOfRecordId),
     worker: safeText(payload.worker),
     traceId: safeText(payload.traceId),
     taskBrief: safeText(payload.taskBrief),
     terminalBriefTitle: safeText(payload.terminalBriefTitle),
     parentRoundProgress: safePositiveInt(payload.parentRoundProgress),
     parentRoundTotal: safePositiveInt(payload.parentRoundTotal),
+    parentRoundOrder: safePositiveInt(payload.parentRoundOrder),
+    crossBrokerHandoff: safeCrossBrokerHandoff(payload.crossBrokerHandoff),
     notificationOwnership: safeNotificationOwnership(payload.notificationOwnership),
     terminalOutboxCursor: event.id,
     taskEventId: event.taskEventId,
@@ -333,12 +349,27 @@ function renderCommentBody(
     `repo: ${manifest.repo}#${manifest.issueOrPrNumber}`,
   ];
   if (manifest.run) lines.push(`run: ${manifest.run}`);
+  if (manifest.parentRoundId && manifest.parentRoundId !== manifest.run) lines.push(`parent_round_id: ${manifest.parentRoundId}`);
+  if (manifest.originBrokerId) lines.push(`origin_broker: ${manifest.originBrokerId}`);
+  if (manifest.brokerOfRecordId) lines.push(`broker_of_record: ${manifest.brokerOfRecordId}`);
   if (manifest.worker) lines.push(`worker: ${manifest.worker}`);
   if (manifest.traceId) lines.push(`trace: ${manifest.traceId}`);
   if (manifest.startStatus) lines.push(`start_status: ${manifest.startStatus}`);
   if (manifest.taskBrief) lines.push(`task_brief: ${manifest.taskBrief}`);
   if (manifest.terminalBriefTitle) lines.push(`terminal_brief_title: ${manifest.terminalBriefTitle}`);
   if (manifest.parentRoundProgress && manifest.parentRoundTotal) lines.push(`parent_round_progress: ${manifest.parentRoundProgress}/${manifest.parentRoundTotal}`);
+  if (manifest.parentRoundOrder) lines.push(`parent_round_order: ${manifest.parentRoundOrder}`);
+  if (manifest.crossBrokerHandoff) {
+    const handoff = manifest.crossBrokerHandoff;
+    const parts = [
+      `parent=${handoff.parentRoundId}`,
+      `origin=${handoff.originBrokerId}`,
+      handoff.handoffBrokerId ? `handoff=${handoff.handoffBrokerId}` : undefined,
+      handoff.originTaskId ? `origin_task=${handoff.originTaskId}` : undefined,
+      handoff.childWorkerId ? `child_worker=${handoff.childWorkerId}` : undefined,
+    ].filter(Boolean);
+    lines.push(`cross_broker_handoff: ${parts.join("; ")}`);
+  }
   if (manifest.notificationOwnership) {
     lines.push(`notification_owner: ${manifest.notificationOwnership.ownerBrokerId} (${manifest.notificationOwnership.scope}; provider_send_by_projection=false; terminal_ack_by_projection=false)`);
   }
@@ -463,6 +494,20 @@ function safeNotificationOwnership(value: unknown): TerminalBriefGitHubEvidenceM
     providerSendPermittedByProjection: false,
     terminalAckPermittedByProjection: false,
   };
+}
+
+function safeCrossBrokerHandoff(value: unknown): TerminalBriefGitHubEvidenceManifest["crossBrokerHandoff"] | undefined {
+  if (!isRecord(value)) return undefined;
+  const parentRoundId = safeText(value.parentRoundId);
+  const originBrokerId = safeText(value.originBrokerId);
+  if (!parentRoundId || !originBrokerId) return undefined;
+  return stripUndefined({
+    parentRoundId,
+    originBrokerId,
+    handoffBrokerId: safeText(value.handoffBrokerId),
+    originTaskId: safeText(value.originTaskId),
+    childWorkerId: safeText(value.childWorkerId),
+  }) as TerminalBriefGitHubEvidenceManifest["crossBrokerHandoff"];
 }
 
 function redactCommentText(value: string): string {
