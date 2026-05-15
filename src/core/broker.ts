@@ -268,7 +268,12 @@ export interface BufferedTaskEvent {
 export type TaskUpdateListener = (update: TaskUpdate) => void;
 export type BrokerStateListener = () => void;
 
-export type BrokerProfilingOperation = "persistState";
+export type BrokerProfilingOperation =
+  | "persistState"
+  | "getDashboard"
+  | "getWorkerCapacitySummary"
+  | "getTaskDiagnostics"
+  | "discoverCleanupCandidates";
 
 export interface BrokerProfilingSample {
   operation: BrokerProfilingOperation;
@@ -1987,6 +1992,24 @@ export class InMemoryA2ABroker {
     };
   }
 
+  /** @internal exposed for profiling test coverage — prefer subscribeToProfiling */
+  getWorkerCapacitySummaryWithProfiling(
+    options?: {
+      nowMs?: number;
+      workerOfflineAfterMs?: number;
+      taskStaleAfterMs?: number;
+    },
+  ): WorkerCapacitySummary {
+    const t0 = Date.now();
+    const result = this.getWorkerCapacitySummary(options);
+    this.emitProfilingSample({
+      operation: "getWorkerCapacitySummary",
+      startedAt: new Date(t0).toISOString(),
+      durationMs: Date.now() - t0,
+    });
+    return result;
+  }
+
   getDashboard(options?: {
     nowMs?: number;
     offlineAfterMs?: number;
@@ -2217,6 +2240,24 @@ export class InMemoryA2ABroker {
       workers,
       observability,
     };
+  }
+
+  /** @internal exposed for profiling test coverage — prefer subscribeToProfiling */
+  getDashboardWithProfiling(options?: {
+    nowMs?: number;
+    offlineAfterMs?: number;
+    recentHistoryLimit?: number;
+    oldestPendingLimit?: number;
+    pendingActionLimit?: number;
+  }): BrokerDashboard {
+    const t0 = Date.now();
+    const result = this.getDashboard(options);
+    this.emitProfilingSample({
+      operation: "getDashboard",
+      startedAt: new Date(t0).toISOString(),
+      durationMs: Date.now() - t0,
+    });
+    return result;
   }
 
   private countBy<T>(items: T[], key: (item: T) => string): Record<string, number> {
@@ -3003,9 +3044,16 @@ export class InMemoryA2ABroker {
     options?: TaskDiagnosticsOptions,
   ): TaskDiagnosticReport {
     const task = this.requireTask(taskId);
-    return this.getTaskDiagnosticsForRecord(task, options, {
+    const t0 = Date.now();
+    const result = this.getTaskDiagnosticsForRecord(task, options, {
       tombstone: this.getTombstone(taskId),
     });
+    this.emitProfilingSample({
+      operation: "getTaskDiagnostics",
+      startedAt: new Date(t0).toISOString(),
+      durationMs: Date.now() - t0,
+    });
+    return result;
   }
 
   /** Compute diagnostics for a task snapshot supplied by a read model/store. */
@@ -3395,6 +3443,24 @@ export class InMemoryA2ABroker {
       candidates,
       riskNotes,
     };
+  }
+
+  /** @internal exposed for profiling test coverage — prefer subscribeToProfiling */
+  discoverCleanupCandidatesWithProfiling(options?: {
+    staleWorkerAfterMs?: number;
+    staleTaskAfterMs?: number;
+    terminalOutboxBacklogAfterMs?: number;
+    historicalTerminalAfterMs?: number;
+    nowMs?: number;
+  }): CleanupDryRunPlan {
+    const t0 = Date.now();
+    const result = this.discoverCleanupCandidates(options);
+    this.emitProfilingSample({
+      operation: "discoverCleanupCandidates",
+      startedAt: new Date(t0).toISOString(),
+      durationMs: Date.now() - t0,
+    });
+    return result;
   }
 
   // --- Tombstones ---

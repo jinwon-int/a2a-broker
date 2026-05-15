@@ -216,6 +216,14 @@ type OperatorSummary = BrokerDashboard & {
     general: RateLimitPressureSnapshot;
     worker: RateLimitPressureSnapshot;
   };
+  runtimeMemory: {
+    rssBytes: number;
+    heapTotalBytes: number;
+    heapUsedBytes: number;
+    heapLimitBytes: number;
+    heapUsedRatio: number;
+    eventLoopDelayMs: number | null;
+  };
   attention: DashboardAttentionSummary;
   operatorSnapshot: OperatorDashboardSnapshot;
   hotEntityDiagnostics?: BrokerHotEntityDiagnostics;
@@ -3243,12 +3251,26 @@ function buildDashboardResponse(input: {
     general: input.rateLimiter.snapshot(),
     worker: input.workerRateLimiter.snapshot(),
   };
+  const runtimeMemory = readRuntimeMemoryUsage();
+  const eventLoopDelayMs = readEventLoopDelayMs();
+  const heapUsedRatio =
+    runtimeMemory.heapLimitBytes > 0
+      ? runtimeMemory.heapUsedBytes / runtimeMemory.heapLimitBytes
+      : 0;
   return {
     ...dashboard,
     version: input.version,
     build: input.build,
     staleReaper,
     requestPressure,
+    runtimeMemory: {
+      rssBytes: runtimeMemory.rssBytes,
+      heapTotalBytes: runtimeMemory.heapTotalBytes,
+      heapUsedBytes: runtimeMemory.heapUsedBytes,
+      heapLimitBytes: runtimeMemory.heapLimitBytes,
+      heapUsedRatio: Math.round(heapUsedRatio * 1000) / 1000,
+      eventLoopDelayMs: eventLoopDelayMs ?? null,
+    },
     attention: buildDashboardAttention({
       dashboard,
       staleReaper,

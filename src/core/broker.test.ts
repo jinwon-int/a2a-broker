@@ -340,6 +340,45 @@ test("broker profiling hooks receive compact persistence samples", () => {
   }
 });
 
+test("broker profiling covers latency-critical operations", () => {
+  const samples: BrokerProfilingSample[] = [];
+  const broker = new InMemoryA2ABroker(undefined, undefined, {
+    profilingListener: (sample) => samples.push(sample),
+  });
+  registerWorker(broker, "worker-profile");
+  const task = broker.createTask({
+    id: "task-diag-profile",
+    intent: "chat",
+    requester: { id: "hub-a", kind: "node", role: "hub" },
+    target: { id: "worker-profile", kind: "node", role: "analyst" },
+    assignedWorkerId: "worker-profile",
+    message: "profile latency-critical paths",
+  });
+  samples.length = 0;
+
+  const unsubscribe = broker.subscribeToProfiling((sample) => samples.push(sample));
+
+  // getWorkerCapacitySummaryWithProfiling
+  broker.getWorkerCapacitySummaryWithProfiling();
+  // getDashboardWithProfiling
+  broker.getDashboardWithProfiling();
+  // getTaskDiagnostics
+  broker.getTaskDiagnostics(task.id);
+  // discoverCleanupCandidatesWithProfiling
+  broker.discoverCleanupCandidatesWithProfiling();
+  unsubscribe();
+
+  const operations = samples.map((s) => s.operation);
+  assert.ok(operations.includes("getWorkerCapacitySummary"), `expected getWorkerCapacitySummary in ${JSON.stringify(operations)}`);
+  assert.ok(operations.includes("getDashboard"), `expected getDashboard in ${JSON.stringify(operations)}`);
+  assert.ok(operations.includes("getTaskDiagnostics"), `expected getTaskDiagnostics in ${JSON.stringify(operations)}`);
+  assert.ok(operations.includes("discoverCleanupCandidates"), `expected discoverCleanupCandidates in ${JSON.stringify(operations)}`);
+  for (const sample of samples) {
+    assert.ok(sample.durationMs >= 0, `durationMs >= 0 for ${sample.operation}`);
+    assert.match(sample.startedAt, /^\d{4}-\d{2}-\d{2}T/, `startedAt format for ${sample.operation}`);
+  }
+});
+
 test("SQLite hot task poll queries avoid temp b-tree sorts", () => {
   const dir = mkdtempSync(join(tmpdir(), "a2a-broker-task-poll-index-"));
   const sqliteFile = join(dir, "state.sqlite");
