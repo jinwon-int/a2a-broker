@@ -10,6 +10,8 @@ import {
   type TerminalBriefProjectionMetadata,
   type TerminalBriefHandoffMetadata,
   type TerminalBriefNotificationOwnership,
+  type TerminalBriefTemplateMetadata,
+  type TerminalBriefTaskFlowLinkage,
 } from "./terminal-brief-metadata.js";
 
 // ---------------------------------------------------------------------------
@@ -490,4 +492,97 @@ test("validation result summary reports error count when invalid", () => {
   const result = validateTerminalBriefMetadata({});
   assert.equal(result.valid, false);
   assert.match(result.summary, /failed/);
+});
+
+// ---------------------------------------------------------------------------
+// Template metadata field tests
+// ---------------------------------------------------------------------------
+
+test("TerminalBriefTemplateMetadata fields are structurally sound", () => {
+  const meta: TerminalBriefTemplateMetadata = {
+    templateId: "terminal-brief/r23-team2-dungae",
+    templateVersion: "1.0.0",
+    taskDefinitionRef: "specs/terminal-brief-r23.md",
+    templateParameters: { lane: "dungae", team: "Team2" },
+  };
+  assert.equal(meta.templateId, "terminal-brief/r23-team2-dungae");
+  assert.equal(meta.templateVersion, "1.0.0");
+  assert.equal(meta.taskDefinitionRef, "specs/terminal-brief-r23.md");
+  assert.equal(meta.templateParameters?.lane, "dungae");
+});
+
+test("TerminalBriefTemplateMetadata allows partial fields", () => {
+  const meta: TerminalBriefTemplateMetadata = {
+    templateId: "terminal-brief/r23-team2-dungae",
+  };
+  assert.equal(meta.templateId, "terminal-brief/r23-team2-dungae");
+  assert.equal(meta.templateVersion, undefined);
+  assert.equal(meta.taskDefinitionRef, undefined);
+  assert.equal(meta.templateParameters, undefined);
+});
+
+test("TerminalBriefTemplateMetadata allows empty template", () => {
+  const meta: TerminalBriefTemplateMetadata = {};
+  assert.equal(meta.templateId, undefined);
+  assert.equal(meta.templateVersion, undefined);
+  assert.equal(meta.taskDefinitionRef, undefined);
+  assert.equal(meta.templateParameters, undefined);
+});
+
+// ---------------------------------------------------------------------------
+// TaskFlow linkage field tests
+// ---------------------------------------------------------------------------
+
+test("TerminalBriefTaskFlowLinkage fields are structurally sound", () => {
+  const linkage: TerminalBriefTaskFlowLinkage = {
+    taskFlowRunId: "a2a-r23-terminal-brief-spec-taskflow-monorepo-20260515T055352Z",
+    taskFlowTaskId: "team2-dungae-state-machine",
+    taskFlowStepId: "implement-state-machine",
+    parentTaskFlowRunId: "a2a-r23-master",
+    stepLabel: "Terminal Brief state machine definition",
+  };
+  assert.equal(linkage.taskFlowRunId, "a2a-r23-terminal-brief-spec-taskflow-monorepo-20260515T055352Z");
+  assert.equal(linkage.taskFlowTaskId, "team2-dungae-state-machine");
+  assert.equal(linkage.taskFlowStepId, "implement-state-machine");
+  assert.equal(linkage.parentTaskFlowRunId, "a2a-r23-master");
+  assert.equal(linkage.stepLabel, "Terminal Brief state machine definition");
+});
+
+test("TerminalBriefTaskFlowLinkage allows partial fields", () => {
+  const linkage: TerminalBriefTaskFlowLinkage = {
+    taskFlowRunId: "run-001",
+  };
+  assert.equal(linkage.taskFlowRunId, "run-001");
+  assert.equal(linkage.taskFlowTaskId, undefined);
+  assert.equal(linkage.taskFlowStepId, undefined);
+  assert.equal(linkage.parentTaskFlowRunId, undefined);
+  assert.equal(linkage.stepLabel, undefined);
+});
+
+test("TerminalBriefTaskFlowLinkage allows empty linkage", () => {
+  const linkage: TerminalBriefTaskFlowLinkage = {};
+  assert.equal(linkage.taskFlowRunId, undefined);
+  assert.equal(linkage.taskFlowTaskId, undefined);
+  assert.equal(linkage.taskFlowStepId, undefined);
+  assert.equal(linkage.parentTaskFlowRunId, undefined);
+  assert.equal(linkage.stepLabel, undefined);
+});
+
+// ---------------------------------------------------------------------------
+// TERMINAL_BRIEF_PAYLOAD_KEYS includes template + TaskFlow keys
+// ---------------------------------------------------------------------------
+
+test("TERMINAL_BRIEF_PAYLOAD_KEYS includes template metadata keys", () => {
+  assert.ok(TERMINAL_BRIEF_PAYLOAD_KEYS.has("templateId"));
+  assert.ok(TERMINAL_BRIEF_PAYLOAD_KEYS.has("templateVersion"));
+  assert.ok(TERMINAL_BRIEF_PAYLOAD_KEYS.has("taskDefinitionRef"));
+  assert.ok(TERMINAL_BRIEF_PAYLOAD_KEYS.has("templateParameters"));
+});
+
+test("TERMINAL_BRIEF_PAYLOAD_KEYS includes TaskFlow linkage keys", () => {
+  assert.ok(TERMINAL_BRIEF_PAYLOAD_KEYS.has("taskFlowRunId"));
+  assert.ok(TERMINAL_BRIEF_PAYLOAD_KEYS.has("taskFlowTaskId"));
+  assert.ok(TERMINAL_BRIEF_PAYLOAD_KEYS.has("taskFlowStepId"));
+  assert.ok(TERMINAL_BRIEF_PAYLOAD_KEYS.has("parentTaskFlowRunId"));
+  assert.ok(TERMINAL_BRIEF_PAYLOAD_KEYS.has("stepLabel"));
 });

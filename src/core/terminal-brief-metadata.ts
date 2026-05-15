@@ -327,6 +327,74 @@ function normalizePositiveInt(value: unknown): number | undefined {
 }
 
 // ---------------------------------------------------------------------------
+// Template metadata types
+// ---------------------------------------------------------------------------
+
+/**
+ * Template metadata for Terminal Brief events. Enables spec-first task
+ * creation from reusable templates and compatibility tracking.
+ */
+export interface TerminalBriefTemplateMetadata {
+  /**
+   * Unique template identifier (e.g. "terminal-brief/r23-team2-dungae").
+   * Used for idempotent task creation and template version tracking.
+   */
+  templateId?: string;
+  /**
+   * Semantic version of the template. Follows semver conventions.
+   * Used for compatibility checks and migration planning.
+   */
+  templateVersion?: string;
+  /**
+   * Reference to the task definition that this template instantiates.
+   * May be a path, URL, or well-known identifier resolved by the broker.
+   */
+  taskDefinitionRef?: string;
+  /**
+   * Arbitrary template parameter values. Keys and value types are defined
+   * per-template in the template registry. All values should be operator-safe.
+   */
+  templateParameters?: Record<string, unknown>;
+}
+
+// ---------------------------------------------------------------------------
+// TaskFlow linkage types
+// ---------------------------------------------------------------------------
+
+/**
+ * Linkage fields connecting a Terminal Brief event to a managed TaskFlow
+ * run. These enable durable workflow tracking across broker restarts and
+ * cross-broker handoffs.
+ */
+export interface TerminalBriefTaskFlowLinkage {
+  /**
+   * Stable identifier for the TaskFlow run that produced this Terminal Brief.
+   * Correlates events across brokers and runs.
+   */
+  taskFlowRunId?: string;
+  /**
+   * Stable identifier for the TaskFlow task within the run that produced
+   * this event. May be a step or stage identifier.
+   */
+  taskFlowTaskId?: string;
+  /**
+   * Optional step/phase identifier within a multi-step task. Allows event
+   * routing to the correct handler in the managed TaskFlow runtime.
+   */
+  taskFlowStepId?: string;
+  /**
+   * Optional reference back to the parent TaskFlow run that triggered this
+   * work. Present when the event is a child of another managed workflow.
+   */
+  parentTaskFlowRunId?: string;
+  /**
+   * Optional human-readable label for the TaskFlow step that produced this
+   * event. Used for operator-facing dashboards and summaries.
+   */
+  stepLabel?: string;
+}
+
+// ---------------------------------------------------------------------------
 // Utility type for constructing subsets of the canonical schema from
 // arbitrary key-value records (e.g. task payloads).
 // ---------------------------------------------------------------------------
@@ -360,6 +428,17 @@ export const TERMINAL_BRIEF_PAYLOAD_KEYS: ReadonlySet<string> = new Set([
   "childWorkerId",
   "traceId",
   "terminalBrief",
+  // Template metadata keys
+  "templateId",
+  "templateVersion",
+  "taskDefinitionRef",
+  "templateParameters",
+  // TaskFlow linkage keys
+  "taskFlowRunId",
+  "taskFlowTaskId",
+  "taskFlowStepId",
+  "parentTaskFlowRunId",
+  "stepLabel",
 ]);
 
 // ---------------------------------------------------------------------------
