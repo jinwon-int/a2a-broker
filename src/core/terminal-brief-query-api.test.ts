@@ -264,7 +264,8 @@ test("summarizeTerminalBriefRounds groups by parentRoundId", () => {
   assert.equal(roundA!.completedCount, 2); // 2 succeeded
   assert.equal(roundA!.ackedCount, 1); // task-1 acked
   assert.equal(roundA!.failedCount, 1); // task-3 failed
-  assert.equal(roundA!.pendingCount, 1); // task-3 is pending (failed, not completed)
+  assert.equal(roundA!.pendingCount, 0); // task-3 is failed — errored/non-canonical workers are filtered from pending
+  assert.equal(roundA!.isComplete, true); // no canonical pending tasks remain
 });
 
 test("summarizeTerminalBriefRounds respects maxRounds", () => {
