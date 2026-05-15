@@ -1,41 +1,33 @@
-# Start — Broker hot-table health metrics and R14 #620 reconciliation
+# Start — Two-broker deploy-safety/revision evidence audit (R22 jingun)
 
-- **Agent:** Team1/bangtong (A2A Stability R20 retry lane)
+- **Agent:** Team2/jingun (A2A deploy-safety R22 round)
 - **Origin coordinator:** Gwakga
 - **Receiving broker:** Seoseo
-- **Issue:** https://github.com/jinwon-int/a2a-broker/issues/637
-- **Parent:** https://github.com/jinwon-int/a2a-broker/issues/636
-- **PR #620 (R14):** Reconciles unmerged hot-table retention PR — adopts warning truncation, runbook doc
-- **Branch:** `a2a-patch-20260514-232005-a2a-stability-r20-retry-20260515T0818Z-1-bangtong`
+- **Issue:** https://github.com/jinwon-int/a2a-broker/issues/619
+- **Parent:** https://github.com/jinwon-int/a2a-broker/issues/497
+- **Roadmap:** https://github.com/jinwon-int/a2a-broker/issues/294
+- **Run:** a2a-r22-broker-lightweight-20260515T015139Z
+- **Branch:** `a2a-patch`
+
+## Focus
+
+Two-broker deploy-safety/revision evidence audit for R22:
+1. **Evidence boundaries** — verify OpenClaw runtime/bootstrap path protection is consistent across release-evidence and terminal-brief-evidence paths
+2. **Stale tracker cleanup** — identify outdated issue references in active code/docs
 
 ## Changes
 
-### Phase 1 — PR #620 reconciliation (warning truncation)
-- `src/core/hot-table-growth.ts`:
-  - Added `warningsTruncated` field to `HotTableGrowthProjection`
-  - Added `DEFAULT_MAX_WARNINGS = 10` constant
-  - Added `maxWarnings` option to `HotTableGrowthProjectionOptions`
-  - Added `appendBounded()`, `countWarnings()`, `normalizeMaxWarnings()` helpers
-  - Updated `buildWarnings()` to cap at `maxWarnings`
-- `src/core/hot-table-growth.test.ts`: 3 test cases for warning truncation (`warningsTruncated fits`, `warningsTruncated when low max`, `warningsTruncated equals total` + `warningsTruncated false on zero`)
-- `src/server.ts`:
-  - Added `truncateMessage()` utility (caps string to maxLen + `...`)
-  - Applied truncation (500 chars) to hot-table critical/warning health messages
-- `docs/hot-table-retention-prune-runbook.md`: New runbook documenting retention policy, cleanup pipeline, health warnings, safe prune checklist, rollback
+### Evidence boundary: OpenClaw bootstrap path guard in release-evidence.ts
 
-### Phase 2 — Health metrics
-- `src/core/hot-table-growth.ts`:
-  - Added `processMemory?` field to `HotTableGrowthProjection` (rssBytes, heapTotalBytes, heapUsedBytes, heapLimitBytes, heapUsedRatio)
-  - Added `snapshotMetrics?` field (lastSnapshotBytes, lastPersistDurationMs, lastSnapshotAt)
-  - Added `readinessDegradation?` field (heapPressure, memoryPressure, hydrationPressure, overallRisky)
-  - Added `processMemory?` and `snapshotMetrics?` inputs to `HotTableGrowthProjectionOptions`
-  - Added `computeReadinessDegradation()`: heap pressure at >80%, memory pressure at >50%, hydration pressure from critical skipped tables
-  - Added `DEFAULT_HEAP_PRESSURE_RATIO`, `DEFAULT_MEMORY_PRESSURE_RATIO` constants
-- `src/core/hot-table-growth.test.ts`: 3 test cases for processMemory/readinessDegradation/snapshotMetrics
-- `src/server.ts`:
-  - Updated `HealthDiagnosticsCache.get()` to accept optional `processMemory` and `snapshotMetrics`
-  - Updated `/health` handler to read `readRuntimeMemoryUsage()` once and pass it as `processMemory` to the cache, avoiding duplicate calls
+`release-evidence.ts` uses `SECRETISH_RE` to sanitize URLs, issue refs, repo names, and tokens before including them in evidence output. This regex caught local path prefixes and secret-like values but did not explicitly reject OpenClaw runtime/bootstrap filenames (AGENTS.md, SOUL.md, USER.md, TOOLS.md, HEARTBEAT.md, IDENTITY.md, .openclaw/**).
 
-## Verification
-- `npm run build` (tsc) — passes
-- `node --test src/core/hot-table-growth.test.ts` — 24/24 tests pass
+`terminal-brief-evidence.ts` already had the comprehensive `UNSAFE_OPENCLAW_RUNTIME_PATH_RE` check that fails closed before projecting to GitHub comments. This round extends the same protection to the release-evidence export path for defense-in-depth.
+
+**Files changed:**
+- `src/core/release-evidence.ts` — Added OpenClaw bootstrap filenames and `.openclaw/` to `SECRETISH_RE`
+- `src/core/release-evidence.test.ts` — Added test case verifying that OpenClaw bootstrap paths in task IDs and outputs are properly redacted from release evidence exports
+
+### Verification
+- `node --test dist/core/release-evidence.test.js` — 4/4 pass (new + 3 existing)
+- `node --test dist/github/terminal-brief-evidence.test.js` — 8/8 pass (regression)
+- `node --test dist/core/libero-validation-matrix.test.js` — 12/12 pass (no-op regression)

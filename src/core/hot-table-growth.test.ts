@@ -2,11 +2,14 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
   projectHotTableGrowth,
+  computeAdaptiveLoadLimits,
   DEFAULT_HOT_TABLE_GROWTH_WARNING_ROWS,
   DEFAULT_SINGLE_TABLE_WARNING_ROWS,
   DEFAULT_SINGLE_TABLE_CRITICAL_ROWS,
+  DEFAULT_HEAP_BUDGET_REDUCTION_FACTOR,
+  DEFAULT_HEAP_BUDGET_MINIMUM_FRACTION,
 } from "./hot-table-growth.js";
-import type { BrokerHotTableLoadMetrics } from "./store.js";
+import type { BrokerHotTableLoadMetrics, BrokerHotTableRuntimeLoadLimits } from "./store.js";
 
 const smallMetrics: BrokerHotTableLoadMetrics = {
   tables: {
@@ -449,5 +452,336 @@ describe("projectHotTableGrowth", () => {
     assert.equal(projection.snapshotMetrics!.lastSnapshotBytes, 2_500_000);
     assert.equal(projection.snapshotMetrics!.lastPersistDurationMs, 320);
     assert.equal(projection.snapshotMetrics!.lastSnapshotAt, "2026-05-14T12:00:00.000Z");
+  });
+
+  it("sets memoryPressure when hot-table memory exceeds 50% of heap limit", () => {
+    const heavy: BrokerHotTableLoadMetrics = {
+      tables: {
+        broker_tasks: {
+          count: 8000,
+          maxPayloadBytes: 50_000,
+          runtimeLoad: { limit: 2000, loadedCount: 2000, skippedCount: 6000, activeCount: 5, terminalCount: 7995 },
+        },
+        broker_audit_events: {
+          count: 500,
+          maxPayloadBytes: 1000,
+          runtimeLoad: { limit: 5000, loadedCount: 500, skippedCount: 0 },
+        },
+        broker_terminal_outbox: {
+          count: 30,
+          maxPayloadBytes: 2000,
+          unackedCount: 5,
+          runtimeLoad: { limit: 1000, loadedCount: 30, skippedCount: 0 },
+        },
+      },
+    };
+    // ~400 MB estimated memory, heap limit = 512 MB → 400/512 ≈ 0.78 > 0.5 → memoryPressure = true
+    const projection = projectHotTableGrowth({
+      current: heavy,
+      processMemory: {
+        rssBytes: 600_000_000,
+        heapTotalBytes: 500_000_000,
+        heapUsedBytes: 400_000_000,
+        heapLimitBytes: 512_000_000,
+      },
+    });
+
+    assert.equal(projection.readinessDegradation!.memoryPressure, true);
+    assert.equal(projection.readinessDegradation!.overallRisky, true);
+  });
+
+  it("sets hydrationPressure when a critical table has skipped runtime rows", () => {
+    const metrics: BrokerHotTableLoadMetrics = scaleMetrics(105);
+    // broker_tasks: 5250 rows, terminal cap 2000 → 3250 skipped, severity "critical" (>= 5000)
+    const projection = projectHotTableGrowth({
+      current: metrics,
+      processMemory: {
+        rssBytes: 300_000_000,
+        heapTotalBytes: 250_000_000,
+        heapUsedBytes: 200_000_000,
+        heapLimitBytes: 512_000_000,
+      },
+    });
+
+    const tasksTable = projection.tables.find((t) => t.table === "broker_tasks")!;
+    assert.equal(tasksTable.severity, "critical");
+    assert.ok(tasksTable.runtimeSkipped > 0);
+    assert.equal(projection.readinessDegradation!.hydrationPressure, true);
+    assert.equal(projection.readinessDegradation!.overallRisky, true);
+  });
+
+  it("sets overallWarning when heap is above 60% but below 80%", () => {
+    // heapUsed: 350 MB, heapLimit: 512 MB → 68% > 60% (warning) but < 80% (not critical)
+    const projection = projectHotTableGrowth({
+      current: smallMetrics,
+      processMemory: {
+        rssBytes: 500_000_000,
+        heapTotalBytes: 400_000_000,
+        heapUsedBytes: 350_000_000,
+        heapLimitBytes: 512_000_000,
+      },
+    });
+
+    assert.equal(projection.readinessDegradation!.heapPressure, false);
+    assert.equal(projection.readinessDegradation!.overallRisky, false);
+    assert.equal(projection.readinessDegradation!.overallWarning, true);
+  });
+
+  it("sets overallWarning when hot-table memory exceeds 35% but not 50% of heap", () => {
+    // estimated memory = ~51 MB, heap limit = 128 MB → 51/128 ≈ 0.40 > 0.35 (warning) but < 0.5 (not critical)
+    const moderate: BrokerHotTableLoadMetrics = {
+      tables: {
+        broker_tasks: {
+          count: 400,
+          maxPayloadBytes: 120_000,
+          runtimeLoad: { limit: 2000, loadedCount: 400, skippedCount: 0, activeCount: 5, terminalCount: 395 },
+        },
+        broker_audit_events: {
+          count: 1000,
+          maxPayloadBytes: 2000,
+          runtimeLoad: { limit: 5000, loadedCount: 1000, skippedCount: 0 },
+        },
+        broker_terminal_outbox: {
+          count: 50,
+          maxPayloadBytes: 3000,
+          unackedCount: 10,
+          runtimeLoad: { limit: 1000, loadedCount: 50, skippedCount: 0 },
+        },
+      },
+    };
+    // ~48 MB + 2 MB + 0.15 MB ≈ 50.15 MB
+    const projection = projectHotTableGrowth({
+      current: moderate,
+      processMemory: {
+        rssBytes: 200_000_000,
+        heapTotalBytes: 150_000_000,
+        heapUsedBytes: 100_000_000,
+        heapLimitBytes: 128_000_000,
+      },
+    });
+
+    const rd = projection.readinessDegradation!;
+    assert.equal(rd.memoryPressure, false);
+    assert.equal(rd.overallRisky, false);
+    assert.equal(rd.overallWarning, true);
+  });
+
+  it("sets overallWarning when a warning-level table has skipped rows", () => {
+    // broker_tasks: 1200 rows × 10 KB = 12 MB → warning-level bytes (> 10 MB)
+    // runtimeLoad: limit=1000, skippedCount=200 → skipped > 0
+    const withWarningSkipped: BrokerHotTableLoadMetrics = {
+      tables: {
+        broker_tasks: {
+          count: 1200,
+          maxPayloadBytes: 10_000,
+          runtimeLoad: { limit: 1000, loadedCount: 1000, skippedCount: 200, activeCount: 5, terminalCount: 1195 },
+        },
+        broker_audit_events: {
+          count: 500,
+          maxPayloadBytes: 1000,
+          runtimeLoad: { limit: 5000, loadedCount: 500, skippedCount: 0 },
+        },
+        broker_terminal_outbox: {
+          count: 30,
+          maxPayloadBytes: 2000,
+          unackedCount: 5,
+          runtimeLoad: { limit: 1000, loadedCount: 30, skippedCount: 0 },
+        },
+      },
+    };
+
+    const projection = projectHotTableGrowth({
+      current: withWarningSkipped,
+      processMemory: {
+        rssBytes: 300_000_000,
+        heapTotalBytes: 250_000_000,
+        heapUsedBytes: 200_000_000,
+        heapLimitBytes: 512_000_000,
+      },
+    });
+
+    // heap 200/512 ≈ 39% < 60% → no heap warning
+    // memory ~12 MB + 0.5 MB + 0.06 MB ≈ 12.6 MB / 512 MB ≈ 2.5% < 35% → no memory warning
+    // but broker_tasks: severity="warning" (12 MB > 10 MB threshold), skippedCount=200 → hydrationWarning=true
+    const rd = projection.readinessDegradation!;
+    assert.equal(rd.heapPressure, false);
+    assert.equal(rd.memoryPressure, false);
+    assert.equal(rd.overallRisky, false);
+    assert.equal(rd.overallWarning, true);
+  });
+
+  it("overallWarning is false when no signals are elevated", () => {
+    const projection = projectHotTableGrowth({
+      current: smallMetrics,
+      processMemory: {
+        rssBytes: 200_000_000,
+        heapTotalBytes: 150_000_000,
+        heapUsedBytes: 100_000_000,
+        heapLimitBytes: 512_000_000,
+      },
+    });
+    // heap 100/512 ≈ 20% < 60%
+    // memory ~53 MB / 512 MB ≈ 10% < 35%
+    // no skipped rows → no hydration warning
+
+    assert.equal(projection.readinessDegradation!.overallWarning, false);
+  });
+});
+
+describe("computeAdaptiveLoadLimits", () => {
+  const defaultLimits: BrokerHotTableRuntimeLoadLimits = {
+    terminalTasks: 2000,
+    auditEvents: 5000,
+    terminalOutboxEvents: 1000,
+  };
+
+  const processMemory = { heapUsedBytes: 350_000_000, heapLimitBytes: 4_000_000_000 };
+
+  it("returns original limits unchanged when heap pressure is low and memory pressure is low", () => {
+    const result = computeAdaptiveLoadLimits(
+      processMemory,
+      2_000_000, // total estimated hot-table memory is 2 MB vs 4 GB heap → 0.05% → no memory pressure
+      defaultLimits,
+    );
+
+    assert.equal(result.guardTriggered, false);
+    assert.equal(result.guardReason, null);
+    assert.equal(result.adaptiveTerminalTaskLimit, 2000);
+    assert.equal(result.adaptiveAuditEventLimit, 5000);
+    assert.equal(result.adaptiveOutboxLimit, 1000);
+    assert.equal(result.reductionFactor, DEFAULT_HEAP_BUDGET_REDUCTION_FACTOR);
+  });
+
+  it("reduces limits when heap pressure exceeds 80% threshold", () => {
+    // 3.6 GB used / 4 GB limit = 90% → heap pressure
+    const result = computeAdaptiveLoadLimits(
+      { heapUsedBytes: 3_600_000_000, heapLimitBytes: 4_000_000_000 },
+      500_000, // small memory, only heap pressure
+      defaultLimits,
+    );
+
+    assert.equal(result.guardTriggered, true);
+    assert.ok(result.guardReason!.includes("heap at 90%"));
+    // reduction factor 2: 2000/2=1000, 5000/2=2500, 1000/2=500
+    assert.equal(result.adaptiveTerminalTaskLimit, 1000);
+    assert.equal(result.adaptiveAuditEventLimit, 2500);
+    assert.equal(result.adaptiveOutboxLimit, 500);
+  });
+
+  it("reduces limits when hot-table memory exceeds 50% of heap limit", () => {
+    // 0 MB heap used / 4 GB limit = 0% → no heap pressure.
+    // 3 GB hot-table memory / 4 GB heap limit = 75% > 50% → memory pressure
+    const result = computeAdaptiveLoadLimits(
+      { heapUsedBytes: 1_000, heapLimitBytes: 4_000_000_000 },
+      3_000_000_000,
+      defaultLimits,
+    );
+
+    assert.equal(result.guardTriggered, true);
+    assert.ok(result.guardReason!.includes("75%"));
+    assert.equal(result.adaptiveTerminalTaskLimit, 1000);
+    assert.equal(result.adaptiveAuditEventLimit, 2500);
+    assert.equal(result.adaptiveOutboxLimit, 500);
+  });
+
+  it("applies minimum fraction floor and never returns zero", () => {
+    // Extreme heap pressure: 99% heap used
+    const result = computeAdaptiveLoadLimits(
+      { heapUsedBytes: 3_960_000_000, heapLimitBytes: 4_000_000_000 },
+      1_000,
+      defaultLimits,
+    );
+
+    // reduction factor 2: 2000/2=1000, minimum fraction 0.25: 2000*0.25=500 → floor is max(1000, 500) = 1000
+    // Still 1000 because the floor of 500 is below the factor'd 1000
+    assert.equal(result.adaptiveTerminalTaskLimit, 1000);
+    assert.equal(result.adaptiveAuditEventLimit, 2500);
+    assert.equal(result.adaptiveOutboxLimit, 500);
+  });
+
+  it("minimum fraction floor prevents starvation for very small limits", () => {
+    const smallLimits: BrokerHotTableRuntimeLoadLimits = {
+      terminalTasks: 1,
+      auditEvents: 2,
+      terminalOutboxEvents: 3,
+    };
+
+    const result = computeAdaptiveLoadLimits(
+      { heapUsedBytes: 3_600_000_000, heapLimitBytes: 4_000_000_000 },
+      0,
+      smallLimits,
+    );
+
+    // reduction factor 2: 1/2=0, floor = max(0, max(1, 1*0.25)) = max(0,1) = 1
+    // 2/2=1, floor = max(1, max(1, 2*0.25)) = max(1,1) = 1
+    // 3/2=1, floor = max(1, max(1, 3*0.25)) = max(1,1) = 1
+    assert.equal(result.adaptiveTerminalTaskLimit, 1);
+    assert.equal(result.adaptiveAuditEventLimit, 1);
+    assert.equal(result.adaptiveOutboxLimit, 1);
+  });
+
+  it("accepts custom reduction factor and minimum fraction", () => {
+    const result = computeAdaptiveLoadLimits(
+      { heapUsedBytes: 3_600_000_000, heapLimitBytes: 4_000_000_000 },
+      0,
+      defaultLimits,
+      { reductionFactor: 4, minimumFraction: 0.1 },
+    );
+
+    // reduction factor 4: 2000/4=500, 5000/4=1250, 1000/4=250
+    // floor = max(1, 2000*0.1) = 200, etc.
+    // floor is always below the factor'd values, so factor wins
+    assert.equal(result.adaptiveTerminalTaskLimit, 500);
+    assert.equal(result.adaptiveAuditEventLimit, 1250);
+    assert.equal(result.adaptiveOutboxLimit, 250);
+    assert.equal(result.reductionFactor, 4);
+  });
+
+  it("does not reduce when heapLimit is zero (edge case)", () => {
+    const result = computeAdaptiveLoadLimits(
+      { heapUsedBytes: 3_600_000_000, heapLimitBytes: 0 },
+      3_000_000_000,
+      defaultLimits,
+    );
+
+    // heapLimit = 0, so both ratios are 0 or NaN → no pressure
+    assert.equal(result.guardTriggered, false);
+    assert.equal(result.adaptiveTerminalTaskLimit, 2000);
+  });
+
+  it("includes adaptiveLoadLimits in readinessDegradation when guard triggers", () => {
+    const projection = projectHotTableGrowth({
+      current: smallMetrics,
+      processMemory: {
+        rssBytes: 4_000_000_000,
+        heapTotalBytes: 3_900_000_000,
+        heapUsedBytes: 3_600_000_000,
+        heapLimitBytes: 4_000_000_000,
+      },
+      runtimeLoadLimits: defaultLimits,
+    });
+
+    assert.ok(projection.readinessDegradation);
+    assert.equal(projection.readinessDegradation!.heapPressure, true);
+    assert.ok(projection.readinessDegradation!.adaptiveLoadLimits);
+    assert.equal(projection.readinessDegradation!.adaptiveLoadLimits!.guardTriggered, true);
+    assert.equal(projection.readinessDegradation!.adaptiveLoadLimits!.adaptiveTerminalTaskLimit, 1000);
+  });
+
+  it("omits adaptiveLoadLimits from readinessDegradation when guard is not triggered", () => {
+    const projection = projectHotTableGrowth({
+      current: smallMetrics,
+      processMemory: {
+        rssBytes: 200_000_000,
+        heapTotalBytes: 180_000_000,
+        heapUsedBytes: 100_000_000,
+        heapLimitBytes: 4_000_000_000,
+      },
+      runtimeLoadLimits: defaultLimits,
+    });
+
+    assert.ok(projection.readinessDegradation);
+    assert.equal(projection.readinessDegradation!.heapPressure, false);
+    assert.equal(projection.readinessDegradation!.adaptiveLoadLimits, undefined);
   });
 });
