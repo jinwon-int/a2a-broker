@@ -511,6 +511,35 @@ describe("TerminalTaskEventOutbox", () => {
     assert.equal(event.payload.status, "succeeded");
   });
 
+  it("parent-local Terminal Brief defaults origin broker to broker-of-record for compact title metadata", () => {
+    const broker = new InMemoryA2ABroker(undefined, undefined, { brokerId: "seoseo" });
+    registerWorker(broker, "bangtong");
+
+    const task = createTask(broker, {
+      id: "parent-local-terminal-brief-child",
+      targetNodeId: "bangtong",
+      payload: {
+        parentRoundId: "seoseo-parent-local-round",
+        parentRoundTotal: 7,
+      },
+    });
+
+    broker.claimTask(task.id, "bangtong");
+    broker.completeTask(task.id, "bangtong", { summary: "parent local child completed" });
+
+    const [event] = broker.getTerminalTaskEventOutbox().subscribe();
+    assert.ok(event);
+    assert.equal(event.payload.parentRoundId, "seoseo-parent-local-round");
+    assert.equal(event.payload.run, "seoseo-parent-local-round");
+    assert.equal(event.payload.originBrokerId, "seoseo");
+    assert.equal(event.payload.brokerOfRecordId, "seoseo");
+    assert.equal(event.payload.parentRoundTotal, 7);
+    assert.equal(event.payload.parentRoundOrder, 1);
+    assert.equal(event.payload.parentRoundProgress, 1);
+    assert.equal(event.payload.terminalBriefTitle, "A2A Terminal Brief 완료: bangtong(1/7)");
+    assert.equal(event.payload.notificationOwnership, undefined);
+  });
+
   it("projects R16 Terminal Brief metadata aliases from payload and result metadata", () => {
     const broker = new InMemoryA2ABroker(undefined, undefined, { brokerId: "seoseo" });
     registerWorker(broker, "jingun");

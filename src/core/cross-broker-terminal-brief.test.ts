@@ -73,6 +73,10 @@ test("cross-broker Terminal Brief ingest is idempotent by parentRoundId/originBr
   assert.equal(terminalEvents[0]?.payload.taskId, "child-task-1");
   assert.equal(terminalEvents[0]?.payload.worker, "child-broker-a");
   assert.equal(terminalEvents[0]?.payload.run, "round-parent");
+  assert.equal(terminalEvents[0]?.payload.parentRoundTotal, 5);
+  assert.equal(terminalEvents[0]?.payload.parentRoundOrder, 1);
+  assert.equal(terminalEvents[0]?.payload.parentRoundProgress, 1);
+  assert.equal(terminalEvents[0]?.payload.terminalBriefTitle, "A2A Terminal Brief 완료: child-broker-a(1/5)");
   assert.equal(terminalEvents[0]?.payload.status, "succeeded");
   assert.equal(terminalEvents[0]?.payload.testSummary, "child completed safely");
   assert.equal(terminalEvents[0]?.payload.doneUrl, "https://github.com/acme/example/issues/1#issuecomment-done");
@@ -81,6 +85,13 @@ test("cross-broker Terminal Brief ingest is idempotent by parentRoundId/originBr
     originBrokerId: "parent-broker",
     handoffBrokerId: "child-broker-a",
     originTaskId: "child-task-1",
+  });
+  assert.deepEqual(terminalEvents[0]?.payload.notificationOwnership, {
+    ownerBrokerId: "parent-broker",
+    scope: "parent-broker-only",
+    providerSendPermittedByProjection: false,
+    terminalAckPermittedByProjection: false,
+    reason: "cross-broker projections are parent-broker aggregation evidence only; child/handoff brokers do not notify or ACK",
   });
   assert.equal(terminalEvents[0]?.ackAudit?.decision, "pending");
   assert.match(terminalEvents[0]?.ackAudit?.reason ?? "", /current-session-visible/);
