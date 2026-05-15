@@ -97,6 +97,14 @@ export interface HotTableGrowthProjection {
     hydrationPressure: boolean;
     /** True when any pressure flag is set (overall risky indicator). */
     overallRisky: boolean;
+    /**
+     * Warning-level precursor to {@link overallRisky}.
+     * True when a pressure signal is elevated but not yet critical
+     * (e.g. heap > 60%, memory > 35% of heap, warning-level skipped rows).
+     * Allows the health endpoint to warn operators before the broker
+     * reaches critical degradation.
+     */
+    overallWarning: boolean;
   };
 }
 
@@ -126,11 +134,20 @@ export const DEFAULT_SKIPPED_RATIO_CRITICAL = 0.7;
 /** Default maximum number of warnings to include in the projection. */
 export const DEFAULT_MAX_WARNINGS = 10;
 
-/** Default heap pressure ratio: warn when heap used > 80% of limit. */
+/** Default heap pressure ratio (critical): heap used > 80% of limit. */
 export const DEFAULT_HEAP_PRESSURE_RATIO = 0.8;
 
-/** Default memory pressure ratio: warn when hot-table memory > 50% of available heap. */
+/** Default heap warning ratio: heap used > 60% of limit. */
+export const DEFAULT_HEAP_WARNING_RATIO = 0.6;
+
+/** Default memory pressure ratio (critical): hot-table memory > 50% of available heap. */
 export const DEFAULT_MEMORY_PRESSURE_RATIO = 0.5;
+
+/** Default memory warning ratio: hot-table memory > 35% of available heap. */
+export const DEFAULT_MEMORY_PRESSURE_WARNING_RATIO = 0.35;
+
+/** Default hydration warning threshold: any table with warning-level skipped ratio (>30%). */
+export const DEFAULT_HYDRATION_SKIPPED_WARNING_RATIO = 0.3;
 
 export interface HotTableGrowthProjectionOptions {
   /** Current metrics from the broker health endpoint. */
@@ -448,17 +465,30 @@ function computeReadinessDegradation(
   memoryPressure: boolean;
   hydrationPressure: boolean;
   overallRisky: boolean;
+  overallWarning: boolean;
 } {
   const heapPressure = processMemory.heapUsedRatio > DEFAULT_HEAP_PRESSURE_RATIO;
   const memoryPressure =
     processMemory.heapLimitBytes > 0 &&
     totalEstimatedMemoryBytes / processMemory.heapLimitBytes > DEFAULT_MEMORY_PRESSURE_RATIO;
   const hydrationPressure = tables.some((t) => t.severity === "critical" && t.runtimeSkipped > 0);
+  const heapWarning = processMemory.heapUsedRatio > DEFAULT_HEAP_WARNING_RATIO;
+  const memoryWarning =
+    processMemory.heapLimitBytes > 0 &&
+    totalEstimatedMemoryBytes / processMemory.heapLimitBytes > DEFAULT_MEMORY_PRESSURE_WARNING_RATIO;
+  const hydrationWarning = tables.some(
+    (t) => t.severity === "warning" && t.runtimeSkipped > 0,
+  ) || hydrationPressure; // also include critical-level hydration
+
+  const risky = heapPressure || memoryPressure || hydrationPressure;
+
   return {
     heapPressure,
     memoryPressure,
     hydrationPressure,
-    overallRisky: heapPressure || memoryPressure || hydrationPressure,
+    overallRisky: risky,
+    overallWarning:
+      heapWarning || memoryWarning || hydrationWarning || risky,
   };
 }
 
