@@ -91,6 +91,25 @@ export interface BrokerPersistenceInfo {
   hotTableRuntimeLoadLimits?: BrokerHotTableRuntimeLoadLimits;
   importedFromJsonFile?: string;
   lastImportAt?: string;
+  /** ISO timestamp of the most recent persist. */
+  lastPersistAt?: string;
+  /** Whether the most recent persist skipped full snapshot serialization (incremental hot-table mode). */
+  lastPersistSkippedFullSnapshot?: boolean;
+  /** Dirty-table hint counts for the most recent persist. */
+  lastHotHintCounts?: BrokerHotHintCounts;
+}
+
+export interface BrokerHotHintCounts {
+  hotExchanges: number;
+  hotExchangeMessages: number;
+  hotProposals: number;
+  hotArtifacts: number;
+  hotValidations: number;
+  hotTasks: number;
+  hotTombstones: number;
+  hotAuditEvents: number;
+  hotWorkers: number;
+  hotTerminalOutboxEvents: number;
 }
 
 export interface BrokerHotEntityDiagnostics {
@@ -1132,7 +1151,7 @@ export class SqliteBrokerStateStore implements BrokerStateStore {
   }
 
   getPersistenceInfo(): BrokerPersistenceInfo {
-    return {
+    const info: BrokerPersistenceInfo = {
       kind: "sqlite",
       dbFile: this.dbFile,
       stateVersion: CURRENT_BROKER_STATE_VERSION,
@@ -1149,6 +1168,11 @@ export class SqliteBrokerStateStore implements BrokerStateStore {
       importedFromJsonFile: this.readMetadata("imported_from_json_file"),
       lastImportAt: this.readMetadata("last_import_at"),
     };
+    const persistDiag = this.readLastPersistDiagnostics();
+    if (persistDiag.lastPersistAt !== undefined) info.lastPersistAt = persistDiag.lastPersistAt;
+    info.lastPersistSkippedFullSnapshot = persistDiag.lastPersistSkippedFullSnapshot;
+    if (persistDiag.lastHotHintCounts !== undefined) info.lastHotHintCounts = persistDiag.lastHotHintCounts;
+    return info;
   }
 
   readHotEntityHintCoverage(): BrokerHotEntityHintCoverage {
@@ -1182,6 +1206,21 @@ export class SqliteBrokerStateStore implements BrokerStateStore {
   readHotEntityMirrorStatus(): BrokerHotEntityMirrorStatus {
     const tableCounts = this.readHotEntityTableCounts();
     const snapshot = this.readSnapshotRow();
+    const persistDiag = this.readLastPersistDiagnostics();
+    if (snapshot && persistDiag.lastPersistSkippedFullSnapshot) {
+      // In incremental hot-table mode, the canonical snapshot row is intentionally
+      // left at the last full checkpoint. Treat the hot tables as authoritative
+      // for mirror health until the next full snapshot/checkpoint is written.
+      // Drift against an older snapshot would be expected and should not surface
+      // as corruption. Manual drift after a full persist is still detected when
+      // this flag is false.
+      return {
+        ok: true,
+        tableCounts,
+        snapshotCounts: countSnapshotEntities(snapshot),
+        mismatches: [],
+      };
+    }
     if (!snapshot) {
       return {
         ok: Object.values(tableCounts).every((count) => count === 0),
@@ -1747,24 +1786,70 @@ export class SqliteBrokerStateStore implements BrokerStateStore {
   private saveSnapshot(snapshot: BrokerSnapshot, hints?: BrokerStateSaveHints): void {
     const updatedAt = new Date().toISOString();
     this.runImmediateTransaction(() => {
-      this.writeSnapshotRow(snapshot, updatedAt, hints);
+      const hasHotHints = hintsHasAnyEntries(hints);
+      this.writeSnapshotRow(snapshot, updatedAt, hints, { skipFullSnapshot: hasHotHints });
       this.writeMetadata("state_version", String(CURRENT_BROKER_STATE_VERSION));
+      this.writePersistDiagnostics(updatedAt, hints, { skipFullSnapshot: hasHotHints });
     });
   }
 
-  private writeSnapshotRow(snapshot: BrokerSnapshot, updatedAt: string, hints?: BrokerStateSaveHints): void {
-    const payload = serializeBrokerSnapshot(snapshot, this.maxBytes);
-    this.db
-      .prepare(
-        `INSERT INTO broker_snapshots (id, version, payload, updated_at)
-         VALUES (1, ?, ?, ?)
-         ON CONFLICT(id) DO UPDATE SET
-           version = excluded.version,
-           payload = excluded.payload,
-           updated_at = excluded.updated_at`,
-      )
-      .run(CURRENT_BROKER_STATE_VERSION, payload, updatedAt);
+  private writeSnapshotRow(
+    snapshot: BrokerSnapshot,
+    updatedAt: string,
+    hints?: BrokerStateSaveHints,
+    options?: { skipFullSnapshot?: boolean },
+  ): void {
+    if (!options?.skipFullSnapshot) {
+      const payload = serializeBrokerSnapshot(snapshot, this.maxBytes);
+      this.db
+        .prepare(
+          `INSERT INTO broker_snapshots (id, version, payload, updated_at)
+           VALUES (1, ?, ?, ?)
+           ON CONFLICT(id) DO UPDATE SET
+             version = excluded.version,
+             payload = excluded.payload,
+             updated_at = excluded.updated_at`,
+        )
+        .run(CURRENT_BROKER_STATE_VERSION, payload, updatedAt);
+    }
     this.writeHotEntityTables(snapshot, hints);
+  }
+
+  private writePersistDiagnostics(
+    updatedAt: string,
+    hints: BrokerStateSaveHints | undefined,
+    options: { skipFullSnapshot: boolean },
+  ): void {
+    this.writeMetadata("last_persist_at", updatedAt);
+    this.writeMetadata("last_persist_skipped_full_snapshot", options.skipFullSnapshot ? "true" : "false");
+    if (hints && hintsHasAnyEntries(hints)) {
+      const counts: BrokerHotHintCounts = countHotHintEntries(hints);
+      this.writeMetadata("last_hot_hint_counts", JSON.stringify(counts));
+    } else {
+      this.deleteMetadata("last_hot_hint_counts");
+    }
+  }
+
+  readLastPersistDiagnostics(): { lastPersistAt: string | undefined; lastPersistSkippedFullSnapshot: boolean; lastHotHintCounts: BrokerHotHintCounts | undefined } {
+    const lastPersistAt = this.readMetadata("last_persist_at") ?? undefined;
+    const skippedRaw = this.readMetadata("last_persist_skipped_full_snapshot");
+    const countsRaw = this.readMetadata("last_hot_hint_counts");
+    let lastHotHintCounts: BrokerHotHintCounts | undefined;
+    if (countsRaw) {
+      try {
+        const parsed = JSON.parse(countsRaw);
+        if (typeof parsed === "object" && parsed !== null) {
+          lastHotHintCounts = parsed as BrokerHotHintCounts;
+        }
+      } catch {
+        // ignore parse failures
+      }
+    }
+    return {
+      lastPersistAt,
+      lastPersistSkippedFullSnapshot: skippedRaw === "true",
+      lastHotHintCounts: lastHotHintCounts,
+    };
   }
 
   private readSnapshotRow(): BrokerSnapshot | undefined {
@@ -2186,6 +2271,10 @@ export class SqliteBrokerStateStore implements BrokerStateStore {
       .prepare("SELECT value FROM broker_metadata WHERE key = ?")
       .get(key) as { value?: string } | undefined;
     return typeof row?.value === "string" ? row.value : undefined;
+  }
+
+  private deleteMetadata(key: string): void {
+    this.db.prepare("DELETE FROM broker_metadata WHERE key = ?").run(key);
   }
 
   private ensureColumn(tableName: string, columnName: string, columnDefinition: string): void {
@@ -2787,4 +2876,35 @@ function readSqlitePayload(row: unknown, tableName: string): string {
     return row.payload;
   }
   throw new Error(`missing payload column from ${tableName}`);
+}
+
+function hintsHasAnyEntries(hints: BrokerStateSaveHints | undefined): boolean {
+  if (!hints) return false;
+  return (
+    (hints.hotExchanges?.length ?? 0) > 0 ||
+    (hints.hotExchangeMessages?.length ?? 0) > 0 ||
+    (hints.hotProposals?.length ?? 0) > 0 ||
+    (hints.hotArtifacts?.length ?? 0) > 0 ||
+    (hints.hotValidations?.length ?? 0) > 0 ||
+    (hints.hotTasks?.length ?? 0) > 0 ||
+    (hints.hotTombstones?.length ?? 0) > 0 ||
+    (hints.hotAuditEvents?.length ?? 0) > 0 ||
+    (hints.hotWorkers?.length ?? 0) > 0 ||
+    (hints.hotTerminalOutboxEvents?.length ?? 0) > 0
+  );
+}
+
+function countHotHintEntries(hints: BrokerStateSaveHints): BrokerHotHintCounts {
+  return {
+    hotExchanges: hints.hotExchanges?.length ?? 0,
+    hotExchangeMessages: hints.hotExchangeMessages?.length ?? 0,
+    hotProposals: hints.hotProposals?.length ?? 0,
+    hotArtifacts: hints.hotArtifacts?.length ?? 0,
+    hotValidations: hints.hotValidations?.length ?? 0,
+    hotTasks: hints.hotTasks?.length ?? 0,
+    hotTombstones: hints.hotTombstones?.length ?? 0,
+    hotAuditEvents: hints.hotAuditEvents?.length ?? 0,
+    hotWorkers: hints.hotWorkers?.length ?? 0,
+    hotTerminalOutboxEvents: hints.hotTerminalOutboxEvents?.length ?? 0,
+  };
 }

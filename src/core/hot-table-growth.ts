@@ -62,6 +62,56 @@ export interface HotTableGrowthProjection {
   runtimeLoadLimits: BrokerHotTableRuntimeLoadLimits;
   /** Aggregate warnings. */
   warnings: string[];
+  /** Whether the warnings array was truncated because it exceeded `maxWarnings`. */
+  warningsTruncated: boolean;
+  /**
+   * Process memory snapshot at the time of projection.
+   * Present when `processMemory` was supplied in options.
+   */
+  processMemory?: {
+    rssBytes: number;
+    heapTotalBytes: number;
+    heapUsedBytes: number;
+    heapLimitBytes: number;
+    heapUsedRatio: number;
+  };
+  /**
+   * Snapshot persistence metrics.
+   * Present when `snapshotMetrics` was supplied in options.
+   */
+  snapshotMetrics?: {
+    lastSnapshotBytes: number | null;
+    lastPersistDurationMs: number | null;
+    lastSnapshotAt: string | null;
+  };
+  /**
+   * Readiness degradation assessment — flags that the broker may be near
+   * OOM or unable to hydrate critical table rows into live memory.
+   */
+  readinessDegradation?: {
+    /** True when heap usage exceeds 80% of the heap limit. */
+    heapPressure: boolean;
+    /** True when hot-table estimated memory exceeds 50% of available heap. */
+    memoryPressure: boolean;
+    /** True when any table has a critical runtime skipped ratio. */
+    hydrationPressure: boolean;
+    /** True when any pressure flag is set (overall risky indicator). */
+    overallRisky: boolean;
+    /**
+     * Warning-level precursor to {@link overallRisky}.
+     * True when a pressure signal is elevated but not yet critical
+     * (e.g. heap > 60%, memory > 35% of heap, warning-level skipped rows).
+     * Allows the health endpoint to warn operators before the broker
+     * reaches critical degradation.
+     */
+    overallWarning: boolean;
+    /**
+     * Adaptive load limits computed by the heap budget guard.
+     * Present when `processMemory` was supplied.
+     * These show what the guard recommends to keep hot-table loads within budget.
+     */
+    adaptiveLoadLimits?: AdaptiveLoadLimits;
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -87,6 +137,38 @@ export const DEFAULT_SKIPPED_RATIO_WARNING = 0.3;
 /** Default critical: runtime skipped ratio > 0.7. */
 export const DEFAULT_SKIPPED_RATIO_CRITICAL = 0.7;
 
+/** Default maximum number of warnings to include in the projection. */
+export const DEFAULT_MAX_WARNINGS = 10;
+
+/** Default heap pressure ratio (critical): heap used > 80% of limit. */
+export const DEFAULT_HEAP_PRESSURE_RATIO = 0.8;
+
+/** Default heap warning ratio: heap used > 60% of limit. */
+export const DEFAULT_HEAP_WARNING_RATIO = 0.6;
+
+/** Default memory pressure ratio (critical): hot-table memory > 50% of available heap. */
+export const DEFAULT_MEMORY_PRESSURE_RATIO = 0.5;
+
+/** Default memory warning ratio: hot-table memory > 35% of available heap. */
+export const DEFAULT_MEMORY_PRESSURE_WARNING_RATIO = 0.35;
+
+/** Default hydration warning threshold: any table with warning-level skipped ratio (>30%). */
+export const DEFAULT_HYDRATION_SKIPPED_WARNING_RATIO = 0.3;
+
+/**
+ * Default heap budget guard: when heap pressure is active, load limits are
+ * reduced below original caps by dividing by this factor.
+ * E.g. 2 → terminal task limit halved.
+ */
+export const DEFAULT_HEAP_BUDGET_REDUCTION_FACTOR = 2;
+
+/**
+ * Default heap budget guard: minimum fraction of the original limit to retain
+ * even under extreme heap pressure. Prevents starvation.
+ * E.g. 0.25 → never reduce below 25% of the original limit.
+ */
+export const DEFAULT_HEAP_BUDGET_MINIMUM_FRACTION = 0.25;
+
 export interface HotTableGrowthProjectionOptions {
   /** Current metrics from the broker health endpoint. */
   current: BrokerHotTableLoadMetrics;
@@ -98,6 +180,34 @@ export interface HotTableGrowthProjectionOptions {
   runtimeLoadLimits?: BrokerHotTableRuntimeLoadLimits;
   /** Generated-at timestamp override (for testing). */
   generatedAt?: string;
+  /** Maximum number of warnings to include. Extra warnings are dropped and
+   *  `warningsTruncated` is set to `true`. Default: {@link DEFAULT_MAX_WARNINGS}. */
+  maxWarnings?: number;
+  /** Process memory snapshot (from `process.memoryUsage()` + `v8.getHeapStatistics()`).
+   *  When supplied, enables `processMemory` and `readinessDegradation` on the projection. */
+  processMemory?: {
+    rssBytes: number;
+    heapTotalBytes: number;
+    heapUsedBytes: number;
+    heapLimitBytes: number;
+  };
+  /** Snapshot persistence metrics. When supplied, enables `snapshotMetrics` on the projection. */
+  snapshotMetrics?: {
+    lastSnapshotBytes?: number | null;
+    lastPersistDurationMs?: number | null;
+    lastSnapshotAt?: string | null;
+  };
+  /**
+   * Heap budget guard configuration. When omitted, defaults are used.
+   * The guard computes adaptive runtime load limits from process memory
+   * state and the configured reduction factor.
+   */
+  heapBudgetGuard?: {
+    /** Reduction factor applied to limits under heap pressure. Default: 2. */
+    reductionFactor?: number;
+    /** Minimum fraction of the original limit to retain. Default: 0.25 (25%). */
+    minimumFraction?: number;
+  };
   /** Custom thresholds. */
   thresholds?: {
     totalWarningRows?: number;
@@ -109,6 +219,112 @@ export interface HotTableGrowthProjectionOptions {
     memoryCriticalBytes?: number;
     skippedRatioWarning?: number;
     skippedRatioCritical?: number;
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Adaptive load limits (heap budget guard)
+// ---------------------------------------------------------------------------
+
+/**
+ * Adaptive load limits computed by the heap budget guard.
+ *
+ * These are recommendations for what the runtime load limits
+ * should be reduced to under heap/memory pressure so that
+ * hot-table hydration stays within the process heap budget.
+ */
+export interface AdaptiveLoadLimits {
+  /** Original terminal task limit before reduction. */
+  originalTerminalTaskLimit: number;
+  /** Recommended terminal task limit after reduction. */
+  adaptiveTerminalTaskLimit: number;
+  /** Original audit event limit before reduction. */
+  originalAuditEventLimit: number;
+  /** Recommended audit event limit after reduction. */
+  adaptiveAuditEventLimit: number;
+  /** Original terminal outbox limit before reduction. */
+  originalOutboxLimit: number;
+  /** Recommended terminal outbox limit after reduction. */
+  adaptiveOutboxLimit: number;
+  /** Whether the guard was triggered (any limit changed). */
+  guardTriggered: boolean;
+  /** Why the guard reduced limits, if triggered. */
+  guardReason: string | null;
+  /** Reduction factor that was applied. */
+  reductionFactor: number;
+}
+
+/**
+ * Compute adaptive runtime load limits from process memory state and
+ * the configured runtime load limits.
+ *
+ * Pure function: same inputs → same outputs, no side effects.
+ *
+ * Design:
+ *   - If heap usage > 80% (heapPressure), divide all hot-table load limits
+ *     by `reductionFactor` (default 2), subject to a minimum fraction of the
+ *     original (default 25%).
+ *   - If heap usage is safe but hot-table memory > 50% of heap limit
+ *     (memoryPressure), apply the same reduction.
+ *   - If neither pressure source is active, return the original limits unchanged
+ *     (guard not triggered).
+ *   - The guard never reduces a limit below `Math.max(1, Math.floor(original * minFraction))`.
+ */
+export function computeAdaptiveLoadLimits(
+  processMemory: {
+    heapUsedBytes: number;
+    heapLimitBytes: number;
+  },
+  totalEstimatedMemoryBytes: number,
+  runtimeLoadLimits: BrokerHotTableRuntimeLoadLimits,
+  options?: {
+    reductionFactor?: number;
+    minimumFraction?: number;
+  },
+): AdaptiveLoadLimits {
+  const reductionFactor = options?.reductionFactor ?? DEFAULT_HEAP_BUDGET_REDUCTION_FACTOR;
+  const minimumFraction = options?.minimumFraction ?? DEFAULT_HEAP_BUDGET_MINIMUM_FRACTION;
+  const heapUsedRatio =
+    processMemory.heapLimitBytes > 0
+      ? processMemory.heapUsedBytes / processMemory.heapLimitBytes
+      : 0;
+
+  const heapPressure = heapUsedRatio > DEFAULT_HEAP_PRESSURE_RATIO;
+  const memoryPressure =
+    processMemory.heapLimitBytes > 0 &&
+    totalEstimatedMemoryBytes / processMemory.heapLimitBytes > DEFAULT_MEMORY_PRESSURE_RATIO;
+
+  const guardTriggered = heapPressure || memoryPressure;
+
+  const reduce = (original: number): number => {
+    if (!guardTriggered || original <= 0) return original;
+    const reduced = Math.floor(original / reductionFactor);
+    const floor = Math.max(1, Math.floor(original * minimumFraction));
+    return Math.max(reduced, floor);
+  };
+
+  const originalTerminalTaskLimit = runtimeLoadLimits.terminalTasks;
+  const originalAuditEventLimit = runtimeLoadLimits.auditEvents;
+  const originalOutboxLimit = runtimeLoadLimits.terminalOutboxEvents;
+
+  const adaptiveTerminalTaskLimit = reduce(originalTerminalTaskLimit);
+  const adaptiveAuditEventLimit = reduce(originalAuditEventLimit);
+  const adaptiveOutboxLimit = reduce(originalOutboxLimit);
+
+  const reasons: string[] = [];
+  if (heapPressure) reasons.push(`heap at ${(heapUsedRatio * 100).toFixed(0)}% (threshold 80%)`);
+  if (memoryPressure) reasons.push(`hot-table memory at ${((totalEstimatedMemoryBytes / processMemory.heapLimitBytes) * 100).toFixed(0)}% of heap (threshold 50%)`);
+
+  return {
+    originalTerminalTaskLimit,
+    adaptiveTerminalTaskLimit,
+    originalAuditEventLimit,
+    adaptiveAuditEventLimit,
+    originalOutboxLimit,
+    adaptiveOutboxLimit,
+    guardTriggered,
+    guardReason: guardTriggered ? `Reduction factor ${reductionFactor}: ${reasons.join("; ")}` : null,
+    reductionFactor,
   };
 }
 
@@ -160,7 +376,43 @@ export function projectHotTableGrowth(
   );
 
   const overallSeverity = computeOverallSeverity(tables, totalEstimatedMemoryBytes, t);
-  const warnings = buildWarnings(tables, totalEstimatedMemoryBytes, hasPrior, t);
+  const maxWarnings = normalizeMaxWarnings(options.maxWarnings);
+  const warnings = buildWarnings(tables, totalEstimatedMemoryBytes, hasPrior, t, maxWarnings);
+
+  const processMemory = options.processMemory
+    ? {
+        rssBytes: options.processMemory.rssBytes,
+        heapTotalBytes: options.processMemory.heapTotalBytes,
+        heapUsedBytes: options.processMemory.heapUsedBytes,
+        heapLimitBytes: options.processMemory.heapLimitBytes,
+        heapUsedRatio:
+          options.processMemory.heapLimitBytes > 0
+            ? Math.round((options.processMemory.heapUsedBytes / options.processMemory.heapLimitBytes) * 1000) / 1000
+            : 0,
+      }
+    : undefined;
+
+  const snapshotMetrics = options.snapshotMetrics
+    ? {
+        lastSnapshotBytes: options.snapshotMetrics.lastSnapshotBytes ?? null,
+        lastPersistDurationMs: options.snapshotMetrics.lastPersistDurationMs ?? null,
+        lastSnapshotAt: options.snapshotMetrics.lastSnapshotAt ?? null,
+      }
+    : undefined;
+
+  const readinessDegradation = processMemory
+    ? computeReadinessDegradation(
+        tables,
+        totalEstimatedMemoryBytes,
+        processMemory,
+        runtimeLoadLimits ?? {
+          terminalTasks: 0,
+          auditEvents: 0,
+          terminalOutboxEvents: 0,
+        },
+        options.heapBudgetGuard,
+      )
+    : undefined;
 
   return {
     kind: "broker.hot-table-growth.projection",
@@ -176,6 +428,10 @@ export function projectHotTableGrowth(
       terminalOutboxEvents: 0,
     },
     warnings,
+    warningsTruncated: warnings.length < countWarnings(tables, totalEstimatedMemoryBytes, hasPrior, t),
+    ...(processMemory !== undefined ? { processMemory } : {}),
+    ...(snapshotMetrics !== undefined ? { snapshotMetrics } : {}),
+    ...(readinessDegradation !== undefined ? { readinessDegradation } : {}),
   };
 }
 
@@ -288,28 +544,110 @@ function buildWarnings(
   totalMemory: number,
   hasPrior: boolean,
   t: ReturnType<typeof defaultThresholds>,
+  maxWarnings = DEFAULT_MAX_WARNINGS,
 ): string[] {
   const warnings: string[] = [];
 
   for (const table of tables) {
     if (table.severity === "critical") {
-      warnings.push(`CRITICAL: ${table.summary}`);
+      appendBounded(warnings, `CRITICAL: ${table.summary}`, maxWarnings);
     } else if (table.severity === "warning") {
-      warnings.push(`WARNING: ${table.summary}`);
+      appendBounded(warnings, `WARNING: ${table.summary}`, maxWarnings);
     }
   }
 
-  if (totalMemory >= t.memoryWarningBytes) {
+  if (totalMemory >= t.memoryWarningBytes && warnings.length < maxWarnings) {
     warnings.push(
       `Total hot-table memory ~${formatBytes(totalMemory)} exceeds warning threshold ${formatBytes(t.memoryWarningBytes)}`,
     );
   }
 
-  if (!hasPrior) {
+  if (!hasPrior && warnings.length < maxWarnings) {
     warnings.push("No prior snapshot available; growth rate could not be computed. Run again after an interval for differential analysis.");
   }
 
   return warnings;
+}
+
+/**
+ * Count the total number of warnings that would be emitted without truncation.
+ */
+function countWarnings(
+  tables: HotTableGrowthTableProjection[],
+  totalMemory: number,
+  hasPrior: boolean,
+  t: ReturnType<typeof defaultThresholds>,
+): number {
+  let count = 0;
+  for (const table of tables) {
+    if (table.severity === "critical" || table.severity === "warning") {
+      count++;
+    }
+  }
+  if (totalMemory >= t.memoryWarningBytes) count++;
+  if (!hasPrior) count++;
+  return count;
+}
+
+/** Push `item` onto `arr` if the array is shorter than `max`. */
+function appendBounded<T>(arr: T[], item: T, max: number): void {
+  if (arr.length < max) {
+    arr.push(item);
+  }
+}
+
+function normalizeMaxWarnings(value: number | undefined): number {
+  if (typeof value === "number" && Number.isFinite(value) && value >= 1) {
+    return Math.floor(value);
+  }
+  return DEFAULT_MAX_WARNINGS;
+}
+
+function computeReadinessDegradation(
+  tables: HotTableGrowthTableProjection[],
+  totalEstimatedMemoryBytes: number,
+  processMemory: { heapUsedBytes: number; heapLimitBytes: number; heapUsedRatio: number },
+  runtimeLoadLimits: BrokerHotTableRuntimeLoadLimits,
+  heapBudgetGuard?: { reductionFactor?: number; minimumFraction?: number },
+): {
+  heapPressure: boolean;
+  memoryPressure: boolean;
+  hydrationPressure: boolean;
+  overallRisky: boolean;
+  overallWarning: boolean;
+  adaptiveLoadLimits?: AdaptiveLoadLimits;
+} {
+  const heapPressure = processMemory.heapUsedRatio > DEFAULT_HEAP_PRESSURE_RATIO;
+  const memoryPressure =
+    processMemory.heapLimitBytes > 0 &&
+    totalEstimatedMemoryBytes / processMemory.heapLimitBytes > DEFAULT_MEMORY_PRESSURE_RATIO;
+  const hydrationPressure = tables.some((t) => t.severity === "critical" && t.runtimeSkipped > 0);
+  const heapWarning = processMemory.heapUsedRatio > DEFAULT_HEAP_WARNING_RATIO;
+  const memoryWarning =
+    processMemory.heapLimitBytes > 0 &&
+    totalEstimatedMemoryBytes / processMemory.heapLimitBytes > DEFAULT_MEMORY_PRESSURE_WARNING_RATIO;
+  const hydrationWarning = tables.some(
+    (t) => t.severity === "warning" && t.runtimeSkipped > 0,
+  ) || hydrationPressure; // also include critical-level hydration
+
+  const risky = heapPressure || memoryPressure || hydrationPressure;
+
+  const adaptiveLoadLimits = computeAdaptiveLoadLimits(
+    { heapUsedBytes: processMemory.heapUsedBytes, heapLimitBytes: processMemory.heapLimitBytes },
+    totalEstimatedMemoryBytes,
+    runtimeLoadLimits,
+    heapBudgetGuard,
+  );
+
+  return {
+    heapPressure,
+    memoryPressure,
+    hydrationPressure,
+    overallRisky: risky,
+    overallWarning:
+      heapWarning || memoryWarning || hydrationWarning || risky,
+    adaptiveLoadLimits: adaptiveLoadLimits.guardTriggered ? adaptiveLoadLimits : undefined,
+  };
 }
 
 function formatBytes(bytes: number): string {

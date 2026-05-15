@@ -511,6 +511,45 @@ describe("TerminalTaskEventOutbox", () => {
     assert.equal(event.payload.status, "succeeded");
   });
 
+  it("projects R16 Terminal Brief metadata aliases from payload and result metadata", () => {
+    const broker = new InMemoryA2ABroker(undefined, undefined, { brokerId: "seoseo" });
+    registerWorker(broker, "jingun");
+
+    const task = createTask(broker, {
+      id: "r16-terminal-brief-metadata",
+      targetNodeId: "jingun",
+      payload: {
+        parentRoundId: "a2a-r16-terminal-brief-round",
+        parentRoundTotal: "7",
+        githubIssueTitle: "preserve structured Terminal Brief metadata",
+      },
+    });
+
+    broker.claimTask(task.id, "jingun");
+    broker.completeTask(task.id, "jingun", {
+      summary: "metadata projection fixed",
+      output: {
+        metadata: {
+          originBrokerId: "gwakga",
+          brokerOfRecordId: "seoseo",
+          parentRoundOrder: "6",
+        },
+      },
+    });
+
+    const [event] = broker.getTerminalTaskEventOutbox().subscribe();
+    assert.ok(event);
+    assert.equal(event.payload.parentRoundId, "a2a-r16-terminal-brief-round");
+    assert.equal(event.payload.run, "a2a-r16-terminal-brief-round");
+    assert.equal(event.payload.originBrokerId, "gwakga");
+    assert.equal(event.payload.brokerOfRecordId, "seoseo");
+    assert.equal(event.payload.parentRoundTotal, 7);
+    assert.equal(event.payload.parentRoundOrder, 6);
+    assert.equal(event.payload.parentRoundProgress, 6);
+    assert.equal(event.payload.terminalBriefTitle, "A2A Terminal Brief 완료: jingun(6/7)");
+    assert.equal(event.payload.title, "A2A Terminal Brief 완료: jingun(6/7)");
+  });
+
   it("direct task flow emits bangtong compact Terminal Brief on failed and canceled", () => {
     const broker = new InMemoryA2ABroker();
     registerWorker(broker, "bangtong");

@@ -31,6 +31,11 @@ import {
   type CrossBrokerTerminalBriefProjectionRequest,
   type CrossBrokerTerminalBriefProjectionResult,
 } from "./cross-broker-terminal-brief.js";
+import {
+  extractDispatchMetadata,
+  hasTerminalBriefMetadata,
+  validateTerminalBriefMetadata,
+} from "./terminal-brief-metadata.js";
 import type { ArtifactRuntimeRepository } from "./artifact-repository.js";
 import type { AuditRuntimeRepository } from "./audit-repository.js";
 import type { ExchangeMessageRuntimeRepository, ExchangeRuntimeRepository } from "./exchange-repository.js";
@@ -3550,6 +3555,37 @@ export class InMemoryA2ABroker {
     }
     if (request.assignedWorkerId && !request.assignedWorkerId.trim()) {
       throw new BrokerError("bad_request", "assignedWorkerId must not be empty");
+    }
+
+    // Fail-closed Terminal Brief metadata validation (R15).
+    // When the task payload carries parentRoundId (or a recognised alias), the
+    // canonical dispatch metadata must be present and internally consistent.
+    // This prevents silently creating tasks that would later fail at projection
+    // ingestion due to missing/inconsistent round metadata.
+    this.assertTerminalBriefMetadata(request.payload);
+  }
+
+  /**
+   * Fail-closed guard: validate Terminal Brief metadata in the task payload
+   * at creation time. Rejects with BrokerError when parentRoundId is present
+   * but dispatch metadata fields (parentRoundTotal, parentRoundOrder, etc.)
+   * are missing or inconsistent.
+   *
+   * Tasks without Terminal Brief metadata pass through without validation.
+   */
+  private assertTerminalBriefMetadata(payload: Record<string, unknown> | undefined): void {
+    if (!payload || !hasTerminalBriefMetadata(payload)) {
+      return;
+    }
+
+    const dispatch = extractDispatchMetadata(payload);
+    const result = validateTerminalBriefMetadata(dispatch, this.brokerId);
+    if (!result.valid) {
+      const errors = result.issues
+        .filter((i) => i.severity === "error")
+        .map((i) => i.message)
+        .join("; ");
+      throw new BrokerError("bad_request", `Terminal Brief metadata validation failed: ${errors}`);
     }
   }
 

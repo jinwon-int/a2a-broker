@@ -239,7 +239,12 @@ test("SqliteBrokerStateStore saves and reloads snapshots with WAL metadata", () 
 
     const reloaded = new SqliteBrokerStateStore(temp.filePath);
     assert.deepEqual(reloaded.load(), snapshot);
-    assert.deepEqual(reloaded.getPersistenceInfo(), {
+    const persistenceInfo = reloaded.getPersistenceInfo();
+    assert.ok(persistenceInfo.lastPersistAt, "lastPersistAt should be reported after saving");
+    assert.equal(persistenceInfo.lastPersistSkippedFullSnapshot, false);
+    delete persistenceInfo.lastPersistAt;
+    delete persistenceInfo.lastPersistSkippedFullSnapshot;
+    assert.deepEqual(persistenceInfo, {
       kind: "sqlite",
       dbFile: temp.filePath,
       stateVersion: CURRENT_BROKER_STATE_VERSION,
@@ -2880,3 +2885,101 @@ test("SqliteBrokerStateStore readHotTerminalOutboxDiagnostics reports unacked st
     temp.cleanup();
   }
 });
+
+test("SqliteBrokerStateStore incremental persist skips full snapshot serialization when hot hints present", () => {
+  const temp = withTempFile("incremental-persist.db");
+  try {
+    const store = new SqliteBrokerStateStore(temp.filePath);
+    const snapshot: BrokerSnapshot = {
+      ...emptySnapshot(),
+      tasks: [makeTask("task-1", "queued", "worker-a"), makeTask("task-2", "running", "worker-b")],
+      auditEvents: [makeAuditEvent("audit-1", "task.created", "task-1"), makeAuditEvent("audit-2", "task.claimed", "task-2")],
+      workers: [makeWorker("worker-a"), makeWorker("worker-b")],
+      terminalOutbox: [makeTerminalOutboxEvent("outbox-1", "task-1", "2026-04-27T00:00:00.000Z"), makeTerminalOutboxEvent("outbox-2", "task-2", "2026-04-27T00:00:00.000Z")],
+    };
+    // Full persist: snapshot row MUST be written
+    store.save(snapshot);
+
+    let info = store.getPersistenceInfo();
+    assert.ok(info.lastPersistAt !== undefined, "lastPersistAt should be set after persist");
+    assert.equal(info.lastPersistSkippedFullSnapshot, false, "full persist should not skip snapshot");
+
+    // Incremental persist: snapshot row should NOT be serialized again; only hot tables written
+    const dirtyTask = { ...snapshot.tasks[0], status: "claimed" as const, claimedAt: "2026-05-01T00:00:00.000Z", updatedAt: "2026-05-01T00:00:00.000Z" };
+    store.save(
+      {
+        ...emptySnapshot(),
+        tasks: [dirtyTask, snapshot.tasks[1]],
+        auditEvents: snapshot.auditEvents,
+        terminalOutbox: snapshot.terminalOutbox,
+      },
+      {
+        hotTasks: [dirtyTask],
+        hotAuditEvents: [snapshot.auditEvents[0]],
+      },
+    );
+
+    info = store.getPersistenceInfo();
+    assert.equal(info.lastPersistSkippedFullSnapshot, true, "incremental persist should skip snapshot");
+    assert.ok(info.lastHotHintCounts !== undefined, "hot hint counts should be recorded");
+    assert.equal(info.lastHotHintCounts!.hotTasks, 1, "should report 1 dirty task hint");
+    assert.equal(info.lastHotHintCounts!.hotAuditEvents, 1, "should report 1 dirty audit hint");
+
+    // Verify hot table has the updated data
+    const hotTasks = store.readHotTasks();
+    const task1 = hotTasks.find((t) => t.id === "task-1");
+    assert.equal(task1?.status, "claimed", "hot table should contain updated task");
+
+    store.close();
+  } finally {
+    temp.cleanup();
+  }
+});
+
+test("SqliteBrokerStateStore getPersistenceInfo returns incremental persist diagnostics", () => {
+  const temp = withTempFile("persist-diag.db");
+  try {
+    const store = new SqliteBrokerStateStore(temp.filePath);
+    const snapshot: BrokerSnapshot = {
+      ...emptySnapshot(),
+      tasks: [makeTask("task-pd-1", "queued", "worker-a"), makeTask("task-pd-2", "running", "worker-b")],
+      auditEvents: [makeAuditEvent("audit-pd-1", "task.created", "task-pd-1")],
+      workers: [makeWorker("worker-a")],
+    };
+    // Full persist
+    store.save(snapshot);
+    let info = store.getPersistenceInfo();
+    assert.ok(info.lastPersistAt !== undefined, "lastPersistAt should be set");
+    assert.equal(info.lastPersistSkippedFullSnapshot, false, "full persist should not skip snapshot");
+    assert.equal(info.lastHotHintCounts, undefined, "no hot hints should mean no hot hint counts");
+
+    // Incremental persist with hints
+    const dirtyTask = { ...snapshot.tasks[0], status: "claimed" as const, claimedAt: "2026-05-01T00:00:00.000Z", updatedAt: "2026-05-01T00:00:00.000Z" };
+    store.save(
+      {
+        ...emptySnapshot(),
+        tasks: [dirtyTask, snapshot.tasks[1]],
+        auditEvents: snapshot.auditEvents,
+        workers: snapshot.workers,
+      },
+      {
+        hotTasks: [dirtyTask],
+        hotWorkers: [snapshot.workers[0]],
+      },
+    );
+
+    info = store.getPersistenceInfo();
+    assert.ok(info.lastPersistAt !== undefined, "lastPersistAt should still be set");
+    assert.equal(info.lastPersistSkippedFullSnapshot, true, "incremental persist should skip snapshot");
+    assert.ok(info.lastHotHintCounts !== undefined, "hot hint counts should be present");
+    assert.equal(info.lastHotHintCounts!.hotTasks, 1, "should report 1 dirty task");
+    assert.equal(info.lastHotHintCounts!.hotWorkers, 1, "should report 1 dirty worker");
+    // No terminal outbox events were dirty
+    assert.equal(info.lastHotHintCounts!.hotTerminalOutboxEvents, 0, "no terminal outbox hints");
+
+    store.close();
+  } finally {
+    temp.cleanup();
+  }
+});
+
