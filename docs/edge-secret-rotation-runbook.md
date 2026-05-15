@@ -33,6 +33,37 @@ and `sogyo`; include `nosuk` unless the operator confirms it is out of service.
 `yukson` is explicitly excluded unless the operator makes a new decision to
 bring it back into the active worker fleet.
 
+## Planning diagnostics, secret-safe only
+
+Use the planning diagnostic before any approved rotation window to enumerate
+where broker/worker edge-secret handling is configured. The diagnostic is
+plan-only: it does not call the broker, rotate secrets, edit config, restart
+services, send provider messages, mutate DB state, ACK terminal records, replay
+outbox records, or perform a release.
+
+It records only variable names, env/drop-in/file locations, and handling rules.
+It must not record secret values, hashes of secret values, raw env output, raw
+file contents, or screenshots containing secret material.
+
+```bash
+# Safe sample / shape check; does not read production files.
+npm run edge_secret_rotation_diagnostics -- --sample --markdown
+
+# If an operator has already captured local redacted snapshots, inspect those
+# files by path. Values are still not emitted by the diagnostic.
+npm run edge_secret_rotation_diagnostics -- \
+  --broker-systemd-cat /tmp/redacted-a2a-broker-systemctl-cat.txt \
+  --worker-systemd-cat /tmp/redacted-openclaw-a2a-worker-systemctl-cat.txt \
+  --broker-env-file /tmp/redacted-broker.env \
+  --worker-env-file /tmp/redacted-worker.env \
+  --markdown
+```
+
+The output should be kept with rotation-planning evidence only when it contains
+`values=<not recorded>` / `values-redacted-and-not-recorded` and the safety gate
+states that no mutation, restart, provider send, DB mutation, terminal ACK,
+replay, release, or secret change was attempted.
+
 ## Preflight evidence, redacted only
 
 Run with tracing disabled and never echo secret variables:
