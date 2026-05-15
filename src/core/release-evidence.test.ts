@@ -108,3 +108,18 @@ test("release evidence export blocks when observed no-live safety flags are set"
   assert.equal(report.gates.ok, false);
   assert.equal(report.gates.observedActions.providerCalled, true);
 });
+
+test("release evidence export redacts OpenClaw runtime/bootstrap paths in task ids and output", () => {
+  const report = buildReleaseEvidenceExport([
+    terminal("AGENTS.md", "succeeded", {
+      doneCommentUrl: "https://github.com/jinwon-int/a2a-broker/issues/479#issuecomment-4415413329",
+      github: {
+        branchUrl: "https://github.com/jinwon-int/a2a-broker/tree/SOUL.md",
+        prUrl: "https://github.com/jinwon-int/a2a-broker/pull/TOOLS.md",
+      },
+    }),
+  ]);
+
+  const serialized = JSON.stringify(report);
+  assert.doesNotMatch(serialized, /AGENTS\.md|SOUL\.md|TOOLS\.md|HEARTBEAT\.md|IDENTITY\.md|\.openclaw/i);
+});
