@@ -57,6 +57,20 @@ systemctl cat openclaw-a2a-worker 2>/dev/null \
   | sed -E 's/(EDGE_SECRET|A2A_EDGE_SECRET|BROKER_EDGE_SECRET|A2A_BROKER_EDGE_SECRET)=.*/\1=<redacted>/g'
 ```
 
+A reusable CI-safe preflight diagnostic is also available at
+`scripts/edge-secret-preflight.mjs`. It scans `.env.example` and optional env
+files (via `--check-env`) for edge-secret variable coverage, validates that
+values are not concrete secrets, and exits with zero/non-zero status.
+
+```bash
+node scripts/edge-secret-preflight.mjs
+node scripts/edge-secret-preflight.mjs --json
+node scripts/edge-secret-preflight.mjs --check-env path/to/env/file
+```
+
+The script never prints, resolves, or transmits secret values. Run it before
+rotation to confirm the config shape is ready.
+
 Do not run broad `env`, `printenv`, `systemctl show -p Environment`, or raw file
 `cat` commands against production env files because they can reveal values.
 

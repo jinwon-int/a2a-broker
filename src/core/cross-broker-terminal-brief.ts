@@ -1,6 +1,14 @@
 import { createHash } from "node:crypto";
 
 import type { TaskStatus } from "./types.js";
+import {
+  validateTerminalBriefMetadata as canonicalValidateTerminalBriefMetadata,
+  extractDispatchMetadata,
+  type TerminalBriefDispatchMetadata,
+  type TerminalBriefHandoffMetadata,
+  type TerminalBriefProjectionMetadata,
+  type TerminalBriefNotificationOwnership,
+} from "./terminal-brief-metadata.js";
 
 const TERMINAL_STATUSES = new Set<TaskStatus>(["succeeded", "failed", "canceled", "blocked"]);
 const MAX_SUMMARY_CHARS = 500;
@@ -38,46 +46,22 @@ export interface TerminalBriefDispatchValidationInput {
  * Validate Terminal Brief projection metadata before dispatch.
  * Requires parentRoundId, originBrokerId, parentRoundTotal, and
  * crossBrokerHandoff fields to be present and valid.
+ *
+ * Delegates to the canonical schema validation from {@link validateTerminalBriefMetadata}
+ * (the canonical all-hands lane schema). The local type
+ * {@link TerminalBriefDispatchValidationInput} remains for backward compatibility.
  */
 export function validateTerminalBriefForDispatch(
   input: TerminalBriefDispatchValidationInput,
   receiverBrokerId?: string,
 ): TerminalBriefDispatchValidationResult {
-  const errors: string[] = [];
-
-  if (!input.parentRoundId || input.parentRoundId.trim().length === 0) {
-    errors.push("parentRoundId is required for Terminal Brief dispatch");
-  }
-
-  if (!input.originBrokerId || input.originBrokerId.trim().length === 0) {
-    errors.push("originBrokerId is required for Terminal Brief dispatch");
-  } else if (receiverBrokerId && input.originBrokerId === receiverBrokerId) {
-    errors.push(`originBrokerId "${input.originBrokerId}" must differ from receiving broker "${receiverBrokerId}"`);
-  }
-
-  if (input.parentRoundTotal === undefined || input.parentRoundTotal === null || input.parentRoundTotal <= 0) {
-    errors.push("parentRoundTotal is required and must be a positive integer for Terminal Brief dispatch");
-  }
-
-  if (input.parentRoundOrder === undefined || input.parentRoundOrder === null || input.parentRoundOrder <= 0) {
-    errors.push("parentRoundOrder is required and must be a positive integer for Terminal Brief dispatch");
-  } else if (input.parentRoundTotal !== undefined && input.parentRoundTotal !== null && input.parentRoundOrder > input.parentRoundTotal) {
-    errors.push("parentRoundOrder must not exceed parentRoundTotal for Terminal Brief dispatch");
-  }
-
-  // crossBrokerHandoff construction requires parentRoundId, brokerOfRecordId, and originBrokerId.
-  // parentRoundId -> crossBrokerHandoff.parentRoundId
-  // brokerOfRecordId -> crossBrokerHandoff.originBrokerId (parent broker is the origin of the handoff)
-  // originBrokerId -> crossBrokerHandoff.handoffBrokerId (child broker is the handoff participant)
-  // Note: parentRoundId and originBrokerId are checked above; this block only fires for brokerOfRecordId.
-  if (!input.brokerOfRecordId) {
-    errors.push("brokerOfRecordId is required for crossBrokerHandoff construction in Terminal Brief dispatch");
-  } else if (!input.parentRoundId) {
-    errors.push("parentRoundId is required for crossBrokerHandoff construction");
-  } else if (!input.originBrokerId) {
-    errors.push("originBrokerId is required for crossBrokerHandoff construction");
-  }
-
+  const canonical = canonicalValidateTerminalBriefMetadata(
+    input as Record<string, unknown>,
+    receiverBrokerId,
+  );
+  const errors = canonical.issues
+    .filter((i) => i.severity === "error")
+    .map((i) => i.message);
   return { valid: errors.length === 0, errors };
 }
 

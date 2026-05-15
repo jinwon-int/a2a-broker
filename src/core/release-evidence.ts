@@ -4,7 +4,7 @@ const TERMINAL_STATUSES = new Set<TaskStatus>(["succeeded", "failed", "canceled"
 const TASK_STATUSES: TaskStatus[] = ["blocked", "queued", "claimed", "running", "succeeded", "failed", "canceled"];
 const GITHUB_URL_RE = /^https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/(?:pull|issues|tree)\/[^\s)\]}>'"]+$/;
 const GITHUB_ISSUE_RE = /^https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/issues\/\d+(?:#issuecomment-\d+)?$/;
-const SECRETISH_RE = /token|secret|chat_id|BROKER_EDGE_SECRET|EDGE_SECRET|\/work\//i;
+const SECRETISH_RE = /token|secret|chat_id|BROKER_EDGE_SECRET|EDGE_SECRET|\/work\/|AGENTS\.md|SOUL\.md|USER\.md|TOOLS\.md|HEARTBEAT\.md|IDENTITY\.md|\.openclaw/i;
 
 export type ReleaseEvidenceKind = "pr" | "done" | "block" | "branch" | "missing" | "none";
 
