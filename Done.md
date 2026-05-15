@@ -1,74 +1,47 @@
-# Done — Two-broker deploy-safety/revision evidence audit (R22 jingun)
+# Done — Open Issue Hygiene And Stability Roadmap Reconciliation
 
-- **Agent:** Team2/jingun (A2A deploy-safety R22 round)
-- **Issue:** https://github.com/jinwon-int/a2a-broker/issues/619
-- **Parent:** https://github.com/jinwon-int/a2a-broker/issues/497
-- **Roadmap:** https://github.com/jinwon-int/a2a-broker/issues/294
-- **Run:** a2a-r22-broker-lightweight-20260515T015139Z
-- **Branch:** `a2a-patch`
-- **PR:** N/A — branch-level evidence packet (no GitHub credentials in runner); verification via tests and code review at commit `23d2bc8 + a2a-patch`
+## Summary
 
-## Changes
+R22 Sogyo issue-hygiene lane classified stale R14/R12 issues and reconciled the #294 stability roadmap after #631 and #634 closed.
 
-### `src/core/release-evidence.ts` — OpenClaw bootstrap path protection
+## Classification Results
 
-Added OpenClaw runtime/bootstrap filenames (`AGENTS.md`, `SOUL.md`, `USER.md`, `TOOLS.md`, `HEARTBEAT.md`, `IDENTITY.md`) and `.openclaw/` to the `SECRETISH_RE` regex that guards all safe-string sanitizers (`safeToken`, `safeGithubUrl`, `safeIssueRef`, `safeRepo`).
+### Stale / Absorbed — Recommend Close
 
-**Before:**
-```js
-const SECRETISH_RE = /token|secret|chat_id|BROKER_EDGE_SECRET|EDGE_SECRET|\/work\//i;
-```
-
-**After:**
-```js
-const SECRETISH_RE = /token|secret|chat_id|BROKER_EDGE_SECRET|EDGE_SECRET|\/work\/|AGENTS\.md|SOUL\.md|USER\.md|TOOLS\.md|HEARTBEAT\.md|IDENTITY\.md|\.openclaw/i;
-```
-
-This provides defense-in-depth alongside the existing `terminal-brief-evidence.ts` `UNSAFE_OPENCLAW_RUNTIME_PATH_RE` guard, ensuring the release evidence export cannot emit OpenClaw bootstrap context paths.
-
-### `src/core/release-evidence.test.ts` — Evidence boundary test
-
-Added test case `release evidence export redacts OpenClaw runtime/bootstrap paths in task ids and output`:
-- Creates a terminal task with `AGENTS.md` as task ID, `SOUL.md` in branch URL, `TOOLS.md` in PR URL
-- Verifies the serialized export contains none of the OpenClaw bootstrap filenames or `.openclaw/`
-
-## Verification
-
-| Test suite | Pass/Tot | Status |
+| Issue | Classification | Evidence |
 |---|---|---|
-| `release-evidence.test.js` | 4/4 | ✅ New test + 3 existing |
-| `terminal-brief-evidence.test.js` | 8/8 | ✅ Regression |
-| `libero-validation-matrix.test.js` | 12/12 | ✅ No-op regression |
-| `hot-table-growth.test.js` | 24/24 | ✅ No-op regression |
+| [#615 — R14 parent round](https://github.com/jinwon-int/a2a-broker/issues/615) | Superseded by R16/R18/R20; child goals resolved later or absorbed into #497 | R16 #631, R20 #641, #634 |
+| [#617 — R14 nosuk hot-table retention](https://github.com/jinwon-int/a2a-broker/issues/617) | Absorbed into current hot-table growth/retention work | `src/core/hot-table-growth.ts`, `BrokerRetentionPolicy`, retention/health docs |
+| [#618 — R14 dungae secret-safe diagnostics](https://github.com/jinwon-int/a2a-broker/issues/618) | Absorbed into edge-secret rotation runbook/tooling | Redacted-only diagnostics and no-secret guardrails |
+| [#619 — R14 jingun two-broker deploy safety](https://github.com/jinwon-int/a2a-broker/issues/619) | Absorbed into two-broker safety/revision docs | Safety regression matrix and Team2 capacity parity docs |
+| [#598 — R12 cross-broker metadata fail-closed](https://github.com/jinwon-int/a2a-broker/issues/598) | Resolved by closed #634 routing contract | Terminal Brief routing implementation and tests |
 
-## Stale Tracker Audit
+### Keep Open
 
-Checked for stale issue/PR references across active source code (`src/`, `scripts/`):
-- `src/core/terminal-brief-routing.ts` references `#634` — this is a file-header comment documenting the originating PR; the code remains current.
-- `src/core/post-dispatch-verifier.ts` references `PR #602` — same, historical header comment.
-- `docs/hot-table-retention-prune-runbook.md` references `#617` — this is a still-relevant runbook.
-- `Start.md`/`Done.md` (this round) — overwritten with R22 evidence; no stale references remain.
+| Issue | Rationale |
+|---|---|
+| [#527 — GitHub read-only validation without patch diffs](https://github.com/jinwon-int/a2a-broker/issues/527) | Verify/propose production routing gap remains. |
+| [#489 — A2AD trading-dialectic forward plan](https://github.com/jinwon-int/a2a-broker/issues/489) | Forward-looking architecture item, separate from #294. |
 
-**Conclusion:** No stale issue references in active code that would create confusion. Header comments referencing prior PRs are standard practice and appropriate.
+## Roadmap Reconciliation
 
-## Risk Assessment
+- #631 and #634 materially advance #294 Phase 2 receipt semantics and Phase 3 live canary gates.
+- #294 should remain open; its phase structure still describes remaining stability work.
+- No production/live/runtime action was performed by this docs-only lane.
 
-| Risk | Level | Mitigation |
-|---|---|---|
-| Regex false positive on legitimate data | Low | OpenClaw bootstrap filenames are distinct pattern; `.openclaw` has a leading dot unlikely in URLs/tokens |
-| Evidence boundary leak of private paths | Reduced | Defense-in-depth: both terminal-brief-evidence and release-evidence now guard OpenClaw paths |
-| The regex doesn't catch `/tmp/openclaw-agent-workspace/` paths | Low | `SECRETISH_RE` is applied to GitHub URLs, issue refs, repo/run tokens — not to free-text descriptions; the terminal-brief-evidence.ts `UNSAFE_OPENCLAW_RUNTIME_PATH_RE` catches these in manifest projection |
+## Changed Files
 
-## Safety Gate Verdict
+| File | Change |
+|---|---|
+| `docs/stability-roadmap-progress-20260515.md` | New reconciliation doc mapping #631/#634 closure to #294 phases, issue classifications, and remaining blockers. |
 
-**Done** — All safety gates respected:
-- ✅ No production deploy/restart
-- ✅ No Gateway/broker/worker restart or reload
-- ✅ No live provider/Telegram canary beyond task notifications
-- ✅ No production DB mutation/prune/migration
-- ✅ No Terminal Brief ACK/replay
-- ✅ No historical outbox replay
-- ✅ No release/tag publish
-- ✅ No secret/visibility change
-- ✅ No history rewrite or force-push
-- ✅ No OpenClaw runtime/bootstrap context files in branch artifacts (verified by `.gitignore` + scan + new code guard)
+## References
+
+- Lane: https://github.com/jinwon-int/a2a-broker/issues/643
+- Parent: https://github.com/jinwon-int/a2a-broker/issues/497
+- Roadmap: https://github.com/jinwon-int/a2a-broker/issues/294
+- Run: `a2a-r22-broker-lightweight-20260515T015139Z`
+
+## Safety
+
+No production deploy/restart, Gateway/broker/worker restart, live provider/Telegram send, terminal ACK, production DB mutation/prune/migration, historical outbox replay, release/tag publish, secret/visibility change, force-push, or broad crossBrokerTerminalRelay live window was performed.
