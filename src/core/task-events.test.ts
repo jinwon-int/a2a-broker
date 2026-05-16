@@ -534,7 +534,6 @@ describe("TerminalTaskEventOutbox", () => {
     assert.equal(event.payload.originBrokerId, "seoseo");
     assert.equal(event.payload.brokerOfRecordId, "seoseo");
     assert.equal(event.payload.parentRoundTotal, 7);
-    assert.equal(event.payload.parentRoundOrder, 1);
     assert.equal(event.payload.parentRoundProgress, 1);
     assert.equal(event.payload.terminalBriefTitle, "A2A Terminal Brief 완료: bangtong(1/7)");
     assert.equal(event.payload.notificationOwnership, undefined);
@@ -574,9 +573,9 @@ describe("TerminalTaskEventOutbox", () => {
     assert.equal(event.payload.brokerOfRecordId, "seoseo");
     assert.equal(event.payload.parentRoundTotal, 7);
     assert.equal(event.payload.parentRoundOrder, 6);
-    assert.equal(event.payload.parentRoundProgress, 6);
-    assert.equal(event.payload.terminalBriefTitle, "A2A Terminal Brief 완료: jingun(6/7)");
-    assert.equal(event.payload.title, "A2A Terminal Brief 완료: jingun(6/7)");
+    assert.equal(event.payload.parentRoundProgress, 1);
+    assert.equal(event.payload.terminalBriefTitle, "A2A Terminal Brief 완료: jingun(1/7)");
+    assert.equal(event.payload.title, "A2A Terminal Brief 완료: jingun(1/7)");
   });
 
   it("direct task flow emits bangtong compact Terminal Brief on failed and canceled", () => {
@@ -605,16 +604,16 @@ describe("TerminalTaskEventOutbox", () => {
 
     const failedEvent = events.find(e => e.payload.taskId === "bangtong-failed");
     assert.ok(failedEvent, "bangtong-failed event must exist");
-    assert.equal(failedEvent.payload.terminalBriefTitle, "A2A Terminal Brief 완료: bangtong(1/7)");
+    assert.equal(failedEvent.payload.terminalBriefTitle, "A2A Terminal Brief 실패: bangtong(0/7)");
     assert.equal(failedEvent.payload.status, "failed");
-    assert.equal(failedEvent.payload.parentRoundProgress, 1);
+    assert.equal(failedEvent.payload.parentRoundProgress, 0);
     assert.equal(failedEvent.payload.parentRoundTotal, 7);
 
     const canceledEvent = events.find(e => e.payload.taskId === "bangtong-canceled");
     assert.ok(canceledEvent, "bangtong-canceled event must exist");
-    assert.equal(canceledEvent.payload.terminalBriefTitle, "A2A Terminal Brief 완료: bangtong(1/7)");
+    assert.equal(canceledEvent.payload.terminalBriefTitle, "A2A Terminal Brief 취소: bangtong(0/7)");
     assert.equal(canceledEvent.payload.status, "canceled");
-    assert.equal(canceledEvent.payload.parentRoundProgress, 1);
+    assert.equal(canceledEvent.payload.parentRoundProgress, 0);
     assert.equal(canceledEvent.payload.parentRoundTotal, 7);
   });
 
@@ -1177,6 +1176,140 @@ describe("TerminalTaskEventOutbox", () => {
 
     assert.equal(blocked.status, "blocked");
     assert.equal(broker.getTerminalTaskEventOutbox().subscribe().length, 0);
+  });
+
+  it("Terminal Brief single-task 1/1 succeeds with 1/1 progress", () => {
+    const broker = new InMemoryA2ABroker();
+    registerWorker(broker, "bangtong");
+
+    const task = createTask(broker, {
+      id: "single-task-single-round",
+      targetNodeId: "bangtong",
+      payload: { parentRoundId: "r-single-1of1", parentRoundTotal: 1 },
+    });
+    broker.claimTask(task.id, "bangtong");
+    broker.completeTask(task.id, "bangtong", { summary: "done" });
+
+    const events = broker.getTerminalTaskEventOutbox().subscribe();
+    const event = events.find(e => e.payload.taskId === "single-task-single-round");
+    assert.ok(event);
+    assert.equal(event.payload.parentRoundProgress, 1);
+    assert.equal(event.payload.parentRoundTotal, 1);
+    assert.equal(event.payload.terminalBriefTitle, "A2A Terminal Brief 완료: bangtong(1/1)");
+    assert.equal(event.payload.status, "succeeded");
+  });
+
+  it("Terminal Brief out-of-order completion uses correct succeeded count", () => {
+    const broker = new InMemoryA2ABroker();
+    registerWorker(broker, "bangtong");
+
+    // Complete task B first, then task A
+    const taskB = createTask(broker, {
+      id: "out-of-order-b",
+      targetNodeId: "bangtong",
+      payload: { parentRoundId: "r-out-of-order", parentRoundTotal: 2 },
+    });
+    broker.claimTask(taskB.id, "bangtong");
+    broker.completeTask(taskB.id, "bangtong", { summary: "task B done first" });
+
+    const taskA = createTask(broker, {
+      id: "out-of-order-a",
+      targetNodeId: "bangtong",
+      payload: { parentRoundId: "r-out-of-order", parentRoundTotal: 2 },
+    });
+    broker.claimTask(taskA.id, "bangtong");
+    broker.completeTask(taskA.id, "bangtong", { summary: "task A done second" });
+
+    const events = broker.getTerminalTaskEventOutbox().subscribe();
+    const eventB = events.find(e => e.payload.taskId === "out-of-order-b");
+    const eventA = events.find(e => e.payload.taskId === "out-of-order-a");
+    assert.ok(eventB);
+    assert.ok(eventA);
+
+    // First completed task gets succeeded count 1
+    assert.equal(eventB.payload.parentRoundProgress, 1);
+    assert.equal(eventB.payload.parentRoundTotal, 2);
+    assert.equal(eventB.payload.terminalBriefTitle, "A2A Terminal Brief 완료: bangtong(1/2)");
+
+    // Second completed task gets succeeded count 2 (both unique children succeeded)
+    assert.equal(eventA.payload.parentRoundProgress, 2);
+    assert.equal(eventA.payload.parentRoundTotal, 2);
+    assert.equal(eventA.payload.terminalBriefTitle, "A2A Terminal Brief 완료: bangtong(2/2)");
+  });
+
+  it("Terminal Brief failed tasks do not increment succeeded count, only succeeded tasks count", () => {
+    const broker = new InMemoryA2ABroker();
+    registerWorker(broker, "bangtong");
+
+    // First task fails
+    const failTask = createTask(broker, {
+      id: "mixed-fail",
+      targetNodeId: "bangtong",
+      payload: { parentRoundId: "r-mixed-round", parentRoundTotal: 3 },
+    });
+    broker.claimTask(failTask.id, "bangtong");
+    broker.failTask(failTask.id, "bangtong", { message: "failed" });
+
+    // Second task succeeds
+    const succeedTask = createTask(broker, {
+      id: "mixed-succeed",
+      targetNodeId: "bangtong",
+      payload: { parentRoundId: "r-mixed-round", parentRoundTotal: 3 },
+    });
+    broker.claimTask(succeedTask.id, "bangtong");
+    broker.completeTask(succeedTask.id, "bangtong", { summary: "succeeded" });
+
+    const events = broker.getTerminalTaskEventOutbox().subscribe();
+
+    const failedEvent = events.find(e => e.payload.taskId === "mixed-fail");
+    assert.ok(failedEvent);
+    assert.equal(failedEvent.payload.status, "failed");
+    // Failed task does NOT increment succeeded count
+    assert.equal(failedEvent.payload.parentRoundProgress, 0);
+    assert.equal(failedEvent.payload.terminalBriefTitle, "A2A Terminal Brief 실패: bangtong(0/3)");
+
+    const succeededEvent = events.find(e => e.payload.taskId === "mixed-succeed");
+    assert.ok(succeededEvent);
+    assert.equal(succeededEvent.payload.status, "succeeded");
+    // Succeeded task gives succeeded count 1 (only this task succeeded)
+    assert.equal(succeededEvent.payload.parentRoundProgress, 1);
+    assert.equal(succeededEvent.payload.terminalBriefTitle, "A2A Terminal Brief 완료: bangtong(1/3)");
+  });
+
+  it("Terminal Brief retry replaces failed task: same canonical child counts once when succeeded", () => {
+    const broker = new InMemoryA2ABroker();
+    registerWorker(broker, "bangtong");
+
+    // Task fails — no succeeded children yet
+    const task = createTask(broker, {
+      id: "retry-child-fixed-id",
+      targetNodeId: "bangtong",
+      payload: { parentRoundId: "r-retry-round", parentRoundTotal: 2 },
+    });
+    broker.claimTask(task.id, "bangtong");
+    broker.failTask(task.id, "bangtong", { message: "first attempt failed" });
+
+    // Retry with new task ID but same round — this is a new canonical child
+    const retry = createTask(broker, {
+      id: "retry-child-retry-attempt",
+      targetNodeId: "bangtong",
+      payload: { parentRoundId: "r-retry-round", parentRoundTotal: 2 },
+    });
+    broker.claimTask(retry.id, "bangtong");
+    broker.completeTask(retry.id, "bangtong", { summary: "retry succeeded" });
+
+    const events = broker.getTerminalTaskEventOutbox().subscribe();
+
+    const failedEvent = events.find(e => e.payload.taskId === "retry-child-fixed-id");
+    assert.ok(failedEvent);
+    assert.equal(failedEvent.payload.parentRoundProgress, 0);
+    assert.equal(failedEvent.payload.terminalBriefTitle, "A2A Terminal Brief 실패: bangtong(0/2)");
+
+    const succeededEvent = events.find(e => e.payload.taskId === "retry-child-retry-attempt");
+    assert.ok(succeededEvent);
+    // Only one succeeded canonical child
+    assert.equal(succeededEvent.payload.parentRoundProgress, 1);
+    assert.equal(succeededEvent.payload.terminalBriefTitle, "A2A Terminal Brief 완료: bangtong(1/2)");
   });
 });
 
