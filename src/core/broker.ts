@@ -45,12 +45,24 @@ import type { TombstoneRuntimeRepository } from "./tombstone-repository.js";
 import type { ValidationRuntimeRepository } from "./validation-repository.js";
 import type { WorkerRuntimeRepository } from "./worker-repository.js";
 import type {
+  WorkerAssignmentRole,
+  WorkerCapabilityCard,
+  WorkerCapabilityCardQuery,
+  WorkerCapabilityCardRepository,
+} from "./worker-capability-card.js";
+import {
+  InMemoryWorkerCapabilityCardRepository,
+  queryWorkerCapabilityCards,
+  createDefaultCapabilityCard,
+} from "./worker-capability-card.js";
+import type {
   ApplyProposalRequest,
   ArtifactRecord,
   AttachArtifactRequest,
   AuditAction,
   AuditEvent,
   AuditListFilters,
+  A2AExchangeIntent,
   A2AWorkerEnvironment,
   A2AExchangeMessageRecord,
   A2AExchangeMessageRequest,
@@ -151,6 +163,8 @@ export interface InMemoryA2ABrokerOptions {
   artifactRepository?: ArtifactRuntimeRepository;
   /** Optional table-native repository for proposal validation results. */
   validationRepository?: ValidationRuntimeRepository;
+  /** Optional repository for worker capability profile storage and retrieval. */
+  capabilityCardRepository?: WorkerCapabilityCardRepository;
   retention?: Partial<BrokerRetentionPolicy>;
   /**
    * Maximum number of times the stale-task reaper (or manual requeue) is allowed to recycle a
@@ -362,6 +376,7 @@ export class InMemoryA2ABroker {
   private readonly proposalRepository?: ProposalRuntimeRepository;
   private readonly artifactRepository?: ArtifactRuntimeRepository;
   private readonly validationRepository?: ValidationRuntimeRepository;
+  private readonly capabilityCards: WorkerCapabilityCardRepository;
   private readonly optionProfilingListener?: BrokerProfilingListener;
   private readonly brokerId?: string;
   private readonly teamId?: string;
@@ -381,6 +396,7 @@ export class InMemoryA2ABroker {
     this.proposalRepository = options.proposalRepository;
     this.artifactRepository = options.artifactRepository;
     this.validationRepository = options.validationRepository;
+    this.capabilityCards = options.capabilityCardRepository ?? new InMemoryWorkerCapabilityCardRepository();
     this.optionProfilingListener = options.profilingListener;
     this.brokerId = normalizeOwnershipString(options.brokerId);
     this.teamId = normalizeOwnershipString(options.teamId);
@@ -924,6 +940,66 @@ export class InMemoryA2ABroker {
       ...worker,
       status: computeWorkerStatus(worker.lastSeenAt, offlineAfterMs),
     };
+  }
+
+  // ---------------------------------------------------------------------------
+  // Worker capability profile storage/listing and assignment consumption (R31)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Persist a capability profile for assignment planning.
+   * Overwrites any previous profile for the same worker.
+   */
+  storeCapabilityProfile(card: WorkerCapabilityCard): void {
+    this.capabilityCards.store(card);
+  }
+
+  /**
+   * Retrieve a stored capability profile by worker id, or null when no profile
+   * has been registered for that worker.
+   */
+  getCapabilityProfile(workerId: string): WorkerCapabilityCard | null {
+    return this.capabilityCards.get(workerId);
+  }
+
+  /**
+   * List all stored capability profiles. Filters by {@link WorkerCapabilityCardQuery}
+   * when provided. Only valid cards pass the filter.
+   */
+  listCapabilityProfiles(query?: WorkerCapabilityCardQuery): WorkerCapabilityCard[] {
+    const cards = this.capabilityCards.list();
+    if (!query || Object.keys(query).length === 0) {
+      return cards;
+    }
+    return queryWorkerCapabilityCards(cards, query);
+  }
+
+  /**
+   * Remove a stored capability profile. No-op when the worker has no profile.
+   */
+  deleteCapabilityProfile(workerId: string): void {
+    this.capabilityCards.delete(workerId);
+  }
+
+  /**
+   * Auto-register a default capability profile from a registered
+   * {@link WorkerView}. Useful when a worker registers and no explicit
+   * capability card has been provided, so assignment planning always has at
+   * least a baseline profile to work with.
+   */
+  registerDefaultCapabilityProfile(
+    worker: WorkerView,
+    defaults?: {
+      teamId?: "team1" | "team2";
+      brokerOfRecord?: string;
+      lane?: "team1" | "team2";
+      assignmentRoles?: WorkerAssignmentRole[];
+      supportedTaskTypes?: A2AExchangeIntent[];
+    },
+  ): WorkerCapabilityCard {
+    const card = createDefaultCapabilityCard(worker, defaults);
+    this.capabilityCards.store(card);
+    return card;
   }
 
   createProposal(request: CreateProposalRequest): ChangeProposal {
