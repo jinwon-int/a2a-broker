@@ -574,9 +574,10 @@ describe("TerminalTaskEventOutbox", () => {
     assert.equal(event.payload.brokerOfRecordId, "seoseo");
     assert.equal(event.payload.parentRoundTotal, 7);
     assert.equal(event.payload.parentRoundOrder, 6);
-    assert.equal(event.payload.parentRoundProgress, 6);
-    assert.equal(event.payload.terminalBriefTitle, "A2A Terminal Brief 완료: jingun(6/7)");
-    assert.equal(event.payload.title, "A2A Terminal Brief 완료: jingun(6/7)");
+    // Canonical: 1 succeeded event in this round (a2a-broker#656)
+    assert.equal(event.payload.parentRoundProgress, 1);
+    assert.equal(event.payload.terminalBriefTitle, "A2A Terminal Brief 완료: jingun(1/7)");
+    assert.equal(event.payload.title, "A2A Terminal Brief 완료: jingun(1/7)");
   });
 
   it("direct task flow emits bangtong compact Terminal Brief on failed and canceled", () => {
@@ -605,16 +606,18 @@ describe("TerminalTaskEventOutbox", () => {
 
     const failedEvent = events.find(e => e.payload.taskId === "bangtong-failed");
     assert.ok(failedEvent, "bangtong-failed event must exist");
-    assert.equal(failedEvent.payload.terminalBriefTitle, "A2A Terminal Brief 완료: bangtong(1/7)");
+    // Failed tasks do not count toward canonical completed progress (a2a-broker#656)
     assert.equal(failedEvent.payload.status, "failed");
-    assert.equal(failedEvent.payload.parentRoundProgress, 1);
+    assert.equal(failedEvent.payload.parentRoundProgress, 0);
+    assert.equal(failedEvent.payload.terminalBriefTitle, undefined);
     assert.equal(failedEvent.payload.parentRoundTotal, 7);
 
     const canceledEvent = events.find(e => e.payload.taskId === "bangtong-canceled");
     assert.ok(canceledEvent, "bangtong-canceled event must exist");
-    assert.equal(canceledEvent.payload.terminalBriefTitle, "A2A Terminal Brief 완료: bangtong(1/7)");
+    // Canceled tasks do not count toward canonical completed progress (a2a-broker#656)
     assert.equal(canceledEvent.payload.status, "canceled");
-    assert.equal(canceledEvent.payload.parentRoundProgress, 1);
+    assert.equal(canceledEvent.payload.parentRoundProgress, 0);
+    assert.equal(canceledEvent.payload.terminalBriefTitle, undefined);
     assert.equal(canceledEvent.payload.parentRoundTotal, 7);
   });
 
@@ -1177,6 +1180,188 @@ describe("TerminalTaskEventOutbox", () => {
 
     assert.equal(blocked.status, "blocked");
     assert.equal(broker.getTerminalTaskEventOutbox().subscribe().length, 0);
+  });
+
+  it("canonical progress: counts unique succeeded workers per round (out-of-order completion)", () => {
+    const broker = new InMemoryA2ABroker();
+    registerWorker(broker, "worker-a");
+    registerWorker(broker, "worker-b");
+    registerWorker(broker, "worker-c");
+
+    // Three succeeded tasks in the same round, different workers, out of order.
+    // Rounds complete at different times so each gets its own round to isolate.
+    const make = (id: string, worker: string, total: number) => {
+      const t = createTask(broker, {
+        id,
+        targetNodeId: worker,
+        payload: { parentRoundId: "canonical-round", parentRoundTotal: String(total) },
+      });
+      broker.claimTask(t.id, worker);
+      broker.completeTask(t.id, worker, { summary: "done" });
+    };
+    make("task-c", "worker-c", 3);
+    make("task-a", "worker-a", 3);
+    make("task-b", "worker-b", 3);
+
+    const events = broker.getTerminalTaskEventOutbox().subscribe();
+    assert.equal(events.length, 3);
+
+    // Events are ordered by enqueue. Each event shows the unique succeeded
+    // worker count at that point, regardless of lane order.
+    const c = events.find(e => e.payload.taskId === "task-c")!;
+    assert.equal(c.payload.parentRoundProgress, 1, "1st worker completes → progress=1");
+
+    const a = events.find(e => e.payload.taskId === "task-a")!;
+    assert.equal(a.payload.parentRoundProgress, 2, "2nd unique worker → progress=2");
+
+    const b = events.find(e => e.payload.taskId === "task-b")!;
+    assert.equal(b.payload.parentRoundProgress, 3, "3rd unique worker → progress=3");
+  });
+
+  it("canonical progress: retry/supersession does not inflate count", () => {
+    const broker = new InMemoryA2ABroker();
+    registerWorker(broker, "retry-worker");
+
+    // First attempt: succeed
+    const t1 = createTask(broker, {
+      id: "retry-attempt-1",
+      targetNodeId: "retry-worker",
+      payload: { parentRoundId: "retry-round", parentRoundTotal: "2" },
+    });
+    broker.claimTask(t1.id, "retry-worker");
+    broker.completeTask(t1.id, "retry-worker", { summary: "first attempt" });
+
+    // Second attempt: same worker, superseding retry
+    const t2 = createTask(broker, {
+      id: "retry-attempt-2",
+      targetNodeId: "retry-worker",
+      payload: { parentRoundId: "retry-round", parentRoundTotal: "2" },
+    });
+    broker.claimTask(t2.id, "retry-worker");
+    broker.completeTask(t2.id, "retry-worker", { summary: "superseding retry" });
+
+    const events = broker.getTerminalTaskEventOutbox().subscribe();
+    assert.equal(events.length, 2);
+    // Both events exist in outbox, but canonical progress deduplicates by worker.
+    // Since completedAt for the second is later, only that event's worker count prevails.
+    // However, the first event already got progress=1 at enqueue time and is not
+    // retroactively updated. Both events for the same unique worker count as 1.
+    // Note: without explicit parentRoundOrder, events share worker dedup key.
+    // The first completed event gets progress=1; the second (superseding) also gets
+    // progress=1 because the same worker is already counted.
+    const first = events.find(e => e.payload.taskId === "retry-attempt-1")!;
+    const second = events.find(e => e.payload.taskId === "retry-attempt-2")!;
+    assert.equal(first.payload.status, "succeeded");
+    assert.equal(second.payload.status, "succeeded");
+    // Both events show 1 unique succeeded worker (only "retry-worker")
+    assert.equal(first.payload.parentRoundProgress, 1);
+    assert.equal(second.payload.parentRoundProgress, 1);
+  });
+
+  it("canonical progress: duplicate/replay idempotency", () => {
+    const broker = new InMemoryA2ABroker();
+    registerWorker(broker, "dedup-worker");
+
+    const t = createTask(broker, {
+      id: "dedup-task",
+      targetNodeId: "dedup-worker",
+      payload: { parentRoundId: "dedup-round", parentRoundTotal: "3" },
+    });
+    broker.claimTask(t.id, "dedup-worker");
+    broker.completeTask(t.id, "dedup-worker", { summary: "done" });
+
+    // Same complete is idempotent
+    broker.completeTask(t.id, "dedup-worker", { summary: "done" });
+
+    const events = broker.getTerminalTaskEventOutbox().subscribe();
+    assert.equal(events.length, 1);
+    assert.equal(events[0]!.payload.parentRoundProgress, 1);
+  });
+
+  it("canonical progress: failed/cancelled do not count but reflect cumulative round progress", () => {
+    const broker = new InMemoryA2ABroker();
+    registerWorker(broker, "fail-worker");
+    registerWorker(broker, "ok-worker");
+
+    // One succeeded, one failed for the same round
+    const t1 = createTask(broker, {
+      id: "ok-task",
+      targetNodeId: "ok-worker",
+      payload: { parentRoundId: "mixed-round", parentRoundTotal: "3" },
+    });
+    broker.claimTask(t1.id, "ok-worker");
+    broker.completeTask(t1.id, "ok-worker", { summary: "ok" });
+
+    const t2 = createTask(broker, {
+      id: "fail-task",
+      targetNodeId: "fail-worker",
+      payload: { parentRoundId: "mixed-round", parentRoundTotal: "3" },
+    });
+    broker.claimTask(t2.id, "fail-worker");
+    broker.failTask(t2.id, "fail-worker", { message: "oops" });
+
+    const events = broker.getTerminalTaskEventOutbox().subscribe();
+    assert.equal(events.length, 2);
+
+    const ok = events.find(e => e.payload.taskId === "ok-task")!;
+    assert.equal(ok.payload.parentRoundProgress, 1);
+    assert.equal(ok.payload.terminalBriefTitle, "A2A Terminal Brief 완료: ok-worker(1/3)");
+
+    const fail = events.find(e => e.payload.taskId === "fail-task")!;
+    // Failed event does NOT count its OWN task, but inherits cumulative round progress.
+    // Since ok-worker succeeded, progress=1, even for the failed event.
+    assert.equal(fail.payload.parentRoundProgress, 1, "failed event inherits cumulative round progress (1 succeeded)");
+    // Terminal brief title is assigned when progress > 0 — it reflects round state.
+    assert.equal(fail.payload.terminalBriefTitle, "A2A Terminal Brief 완료: fail-worker(1/3)");
+  });
+
+  it("canonical progress: broker restart reconstructs correct progress", () => {
+    const broker = new InMemoryA2ABroker();
+    registerWorker(broker, "restart-w1");
+    registerWorker(broker, "restart-w2");
+
+    const make = (id: string, worker: string) => {
+      const t = createTask(broker, {
+        id,
+        targetNodeId: worker,
+        payload: { parentRoundId: "restart-round", parentRoundTotal: "3" },
+      });
+      broker.claimTask(t.id, worker);
+      broker.completeTask(t.id, worker, { summary: "done" });
+    };
+    make("restart-task-1", "restart-w1");
+    make("restart-task-2", "restart-w2");
+
+    // Snapshot and restore
+    const restarted = new InMemoryA2ABroker(undefined, broker.exportSnapshot(), {});
+    const events = restarted.getTerminalTaskEventOutbox().subscribe();
+    assert.equal(events.length, 2);
+
+    const e1 = events.find(e => e.payload.taskId === "restart-task-1")!;
+    const e2 = events.find(e => e.payload.taskId === "restart-task-2")!;
+    // After restore, rebuildRoundProgressCounters assigns cumulative unique-worker count
+    // based on stored event payload order. Both events share the same round.
+    // Each has parentRoundProgress already in the snapshot from enqueue time.
+    assert.equal(e1.payload.parentRoundProgress, 1);
+    assert.equal(e2.payload.parentRoundProgress, 2);
+  });
+
+  it("canonical progress: standalone succeeded event shows 1/1", () => {
+    const broker = new InMemoryA2ABroker();
+    registerWorker(broker, "solo");
+
+    const t = createTask(broker, {
+      id: "solo-task",
+      targetNodeId: "solo",
+      payload: { parentRoundId: "solo-round", parentRoundTotal: "1" },
+    });
+    broker.claimTask(t.id, "solo");
+    broker.completeTask(t.id, "solo", { summary: "solo success" });
+
+    const [event] = broker.getTerminalTaskEventOutbox().subscribe();
+    assert.equal(event.payload.parentRoundProgress, 1);
+    assert.equal(event.payload.parentRoundTotal, 1);
+    assert.equal(event.payload.terminalBriefTitle, "A2A Terminal Brief 완료: solo(1/1)");
   });
 });
 

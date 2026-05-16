@@ -88,7 +88,7 @@ export interface TerminalTaskEventPayload {
    * default title.
    */
   parentRoundTotal?: number;
-  /** 1-based worker/task order within the parent round. Mirrors `parentRoundProgress`. */
+  /** 1-based worker/task order within the parent round. Lane/order metadata only, not used for n/N progress computation. */
   parentRoundOrder?: number;
   /** Compact operator title for parent-round Terminal Brief notifications. */
   terminalBriefTitle?: string;
@@ -221,10 +221,12 @@ export class TerminalTaskEventOutbox {
   private readonly maxSeen: number;
 
   /**
-   * Round completion sequence counters keyed by run/round key.
-   * Incremented only for newly enqueued (not-deduped) terminal events so
-   * that parentRoundProgress reflects the broker's operator-facing completion
-   * order for that round.
+   * Round progress map keyed by run/round key. Tracked the last computed
+   * canonical completed-count for each round. The map is rebuilt from stored
+   * events on snapshot restore (see rebuildRoundProgressCounters).
+   * This does NOT sequence: canonical progress is computed from outbox event
+   * state after each enqueue (see computeCanonicalRoundProgress).
+   * Reference: a2a-broker#656, a2a-broker#660, a2a-broker#659
    */
   private readonly roundProgress = new Map<string, number>();
 
@@ -246,9 +248,9 @@ export class TerminalTaskEventOutbox {
     if (this.seen.has(id)) return null;
 
     const payload = buildTerminalTaskPayload(task);
-    applyRoundProgressMetadata(payload, this.roundProgress);
-    applyTerminalBriefTitle(payload);
-    applyTerminalBriefCompatibilityAliases(payload);
+    // Note: applyRoundProgressMetadata is intentionally NOT called here.
+    // parentRoundProgress is computed canonically after storage from all
+    // outbox events for this round (see computeCanonicalRoundProgress).
     const event: TerminalTaskOutboxEvent = {
       id,
       kind: "task.terminal",
@@ -270,6 +272,14 @@ export class TerminalTaskEventOutbox {
     this.events.push(event);
     this.markSeen(id);
     this.enforceRetention();
+    // Compute canonical completed-count from all stored events for this round
+    if (payload.run && payload.parentRoundTotal) {
+      const canonicalProgress = this.computeCanonicalRoundProgress(payload.run);
+      event.payload.parentRoundProgress = canonicalProgress;
+      payload.parentRoundProgress = canonicalProgress;
+    }
+    applyTerminalBriefTitle(payload);
+    applyTerminalBriefCompatibilityAliases(payload);
     return event;
   }
 
@@ -306,7 +316,9 @@ export class TerminalTaskEventOutbox {
       updatedAt: projection.completedAt,
       completedAt: projection.completedAt,
       ...(projection.parentRoundTotal ? { parentRoundTotal: projection.parentRoundTotal } : {}),
-      ...(projection.parentRoundOrder ? { parentRoundProgress: projection.parentRoundOrder, parentRoundOrder: projection.parentRoundOrder } : {}),
+      // parentRoundOrder is lane/order metadata only (a2a-broker#656).
+      // Canonical parentRoundProgress is computed after storage from all outbox events.
+      ...(projection.parentRoundOrder ? { parentRoundOrder: projection.parentRoundOrder } : {}),
       crossBrokerHandoff: {
         parentRoundId: projection.parentRoundId,
         originBrokerId: parentBrokerId,
@@ -322,9 +334,9 @@ export class TerminalTaskEventOutbox {
         reason: "cross-broker projections are parent-broker aggregation evidence only; child/handoff brokers do not notify or ACK",
       },
     };
-    applyRoundProgressMetadata(payload, this.roundProgress);
-    applyTerminalBriefTitle(payload);
-    applyTerminalBriefCompatibilityAliases(payload);
+    // Note: applyRoundProgressMetadata is intentionally NOT called here.
+    // parentRoundProgress is computed canonically after storage from all
+    // outbox events for this round (see computeCanonicalRoundProgress).
     const event: TerminalTaskOutboxEvent = {
       id,
       kind: "task.terminal",
@@ -346,6 +358,14 @@ export class TerminalTaskEventOutbox {
     this.events.push(event);
     this.markSeen(id);
     this.enforceRetention();
+    // Compute canonical completed-count from all stored events for this round
+    if (payload.run && payload.parentRoundTotal) {
+      const canonicalProgress = this.computeCanonicalRoundProgress(payload.run);
+      event.payload.parentRoundProgress = canonicalProgress;
+      payload.parentRoundProgress = canonicalProgress;
+    }
+    applyTerminalBriefTitle(payload);
+    applyTerminalBriefCompatibilityAliases(payload);
     return event;
   }
 
@@ -489,17 +509,63 @@ export class TerminalTaskEventOutbox {
   }
 
   /**
-   * Rebuild round progress counters from stored events so that fresh
-   * enqueues resume at the correct sequence number after a snapshot restore.
+   * Compute canonical completed-count for a round from all stored outbox events.
+   * Counts only succeeded events, deduplicated by worker (keeps latest per
+   * worker). Excludes retries/superseded originals, duplicate/replays,
+   * failed/cancelled events, and stale projections.
+   *
+   * Reference: a2a-broker#656, a2a-broker#660, a2a-broker#659
+   */
+  private computeCanonicalRoundProgress(runKey: string): number {
+    const succeededByWorker = new Map<string, TerminalTaskOutboxEvent>();
+    for (const event of this.events) {
+      if (event.payload.run !== runKey) continue;
+      if (event.payload.status !== "succeeded") continue;
+      const worker = event.payload.worker ?? event.payload.taskId;
+      const existing = succeededByWorker.get(worker);
+      // Keep the latest completion per worker (deduplication) — retries/superseded
+      // originals with older completedAt are excluded.
+      if (
+        !existing ||
+        (event.payload.completedAt &&
+          existing.payload.completedAt &&
+          event.payload.completedAt > existing.payload.completedAt)
+      ) {
+        succeededByWorker.set(worker, event);
+      }
+    }
+    return succeededByWorker.size;
+  }
+
+  /**
+   * Rebuild canonical round progress from stored events after a snapshot restore.
+   * Computes canonical completed-count per round and updates stored event payloads
+   * so that broker restart preserves correct n/N semantics.
    */
   private rebuildRoundProgressCounters(): void {
     this.roundProgress.clear();
+    // Group events by run
+    const runEvents = new Map<string, TerminalTaskOutboxEvent[]>();
     for (const event of this.events) {
       const runKey = event.payload.run;
       if (!runKey) continue;
-      const counted = (this.roundProgress.get(runKey) ?? 0) + 1;
-      const current = event.payload.parentRoundProgress ?? 0;
-      this.roundProgress.set(runKey, Math.max(counted, current));
+      if (!runEvents.has(runKey)) runEvents.set(runKey, []);
+      runEvents.get(runKey)!.push(event);
+    }
+    // Recompute canonical progress for each run — cumulative unique succeeded
+    // workers per event, matching what would have been computed at enqueue time.
+    for (const [runKey, events] of runEvents) {
+      const seenWorkers = new Set<string>();
+      for (const event of events) {
+        if (event.payload.status === "succeeded") {
+          const worker = event.payload.worker ?? event.payload.taskId;
+          seenWorkers.add(worker);
+        }
+        if (event.payload.parentRoundTotal !== undefined) {
+          event.payload.parentRoundProgress = seenWorkers.size;
+        }
+      }
+      this.roundProgress.set(runKey, seenWorkers.size);
     }
   }
 
@@ -652,7 +718,9 @@ function buildTerminalTaskPayload(task: TaskRecord): TerminalTaskEventPayload {
   );
   if (parentRoundOrder) {
     payload.parentRoundOrder = parentRoundOrder;
-    payload.parentRoundProgress = parentRoundOrder;
+    // Note: parentRoundProgress is NOT set from parentRoundOrder.
+    // Canonical completed-count is computed after storage from all outbox events.
+    // See computeCanonicalRoundProgress(). a2a-broker#656
   }
   const traceId = firstSafeText(task.via?.traceId, task.payload["traceId"], output["traceId"]);
   if (traceId) payload.traceId = traceId;
@@ -966,6 +1034,11 @@ function normalizePositiveInt(value: number | undefined, fallback: number): numb
 }
 
 /**
+ * @deprecated No longer called from enqueue paths.
+ * Canonical parentRoundProgress is now computed after storage by
+ * {@link TerminalTaskEventOutbox#computeCanonicalRoundProgress}.
+ * See a2a-broker#656.
+ *
  * Set {@link TerminalTaskEventPayload.parentRoundProgress} on the payload by
  * incrementing a broker-local sequence counter keyed by the payload's run key.
  *
@@ -978,18 +1051,11 @@ function applyRoundProgressMetadata(
   payload: TerminalTaskEventPayload,
   roundProgress: Map<string, number>,
 ): void {
-  const runKey = payload.run;
-  if (!runKey) return;
-  const explicitProgress = payload.parentRoundProgress;
-  if (explicitProgress && payload.parentRoundTotal) {
-    roundProgress.set(runKey, Math.max(roundProgress.get(runKey) ?? 0, explicitProgress));
-    return;
-  }
-
-  const next = (roundProgress.get(runKey) ?? 0) + 1;
-  roundProgress.set(runKey, next);
-  if (!payload.parentRoundTotal) return;
-  payload.parentRoundProgress = next;
+  // No-op: canonical progress is computed via computeCanonicalRoundProgress()
+  // after storage in enqueue() and enqueueCrossBrokerProjection().
+  // a2a-broker#656
+  void payload;
+  void roundProgress;
 }
 
 function applyTerminalBriefTitle(payload: TerminalTaskEventPayload): void {
