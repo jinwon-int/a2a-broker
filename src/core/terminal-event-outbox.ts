@@ -88,7 +88,7 @@ export interface TerminalTaskEventPayload {
    * default title.
    */
   parentRoundTotal?: number;
-  /** 1-based worker/task order within the parent round. Mirrors `parentRoundProgress`. */
+  /** 1-based worker/task order within the parent round. When absent, defaults to the auto-increment completed count. */
   parentRoundOrder?: number;
   /** Compact operator title for parent-round Terminal Brief notifications. */
   terminalBriefTitle?: string;
@@ -306,7 +306,7 @@ export class TerminalTaskEventOutbox {
       updatedAt: projection.completedAt,
       completedAt: projection.completedAt,
       ...(projection.parentRoundTotal ? { parentRoundTotal: projection.parentRoundTotal } : {}),
-      ...(projection.parentRoundOrder ? { parentRoundProgress: projection.parentRoundOrder, parentRoundOrder: projection.parentRoundOrder } : {}),
+      ...(projection.parentRoundOrder ? { parentRoundOrder: projection.parentRoundOrder } : {}),
       crossBrokerHandoff: {
         parentRoundId: projection.parentRoundId,
         originBrokerId: parentBrokerId,
@@ -652,7 +652,6 @@ function buildTerminalTaskPayload(task: TaskRecord): TerminalTaskEventPayload {
   );
   if (parentRoundOrder) {
     payload.parentRoundOrder = parentRoundOrder;
-    payload.parentRoundProgress = parentRoundOrder;
   }
   const traceId = firstSafeText(task.via?.traceId, task.payload["traceId"], output["traceId"]);
   if (traceId) payload.traceId = traceId;
@@ -980,11 +979,6 @@ function applyRoundProgressMetadata(
 ): void {
   const runKey = payload.run;
   if (!runKey) return;
-  const explicitProgress = payload.parentRoundProgress;
-  if (explicitProgress && payload.parentRoundTotal) {
-    roundProgress.set(runKey, Math.max(roundProgress.get(runKey) ?? 0, explicitProgress));
-    return;
-  }
 
   const next = (roundProgress.get(runKey) ?? 0) + 1;
   roundProgress.set(runKey, next);

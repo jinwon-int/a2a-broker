@@ -574,9 +574,9 @@ describe("TerminalTaskEventOutbox", () => {
     assert.equal(event.payload.brokerOfRecordId, "seoseo");
     assert.equal(event.payload.parentRoundTotal, 7);
     assert.equal(event.payload.parentRoundOrder, 6);
-    assert.equal(event.payload.parentRoundProgress, 6);
-    assert.equal(event.payload.terminalBriefTitle, "A2A Terminal Brief 완료: jingun(6/7)");
-    assert.equal(event.payload.title, "A2A Terminal Brief 완료: jingun(6/7)");
+    assert.equal(event.payload.parentRoundProgress, 1);
+    assert.equal(event.payload.terminalBriefTitle, "A2A Terminal Brief 완료: jingun(1/7)");
+    assert.equal(event.payload.title, "A2A Terminal Brief 완료: jingun(1/7)");
   });
 
   it("direct task flow emits bangtong compact Terminal Brief on failed and canceled", () => {
