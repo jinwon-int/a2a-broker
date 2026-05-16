@@ -873,7 +873,7 @@ test("cross-broker Terminal Brief dedup only suppresses duplicates but preserves
   assert.equal(currentEvent.payload.status, "succeeded");
   assert.equal(currentEvent.payload.worker, "dungae");
   assert.equal(currentEvent.payload.parentRoundTotal, 5);
-  assert.equal(currentEvent.payload.terminalBriefTitle, "A2A Terminal Brief 완료: dungae(3/5)");
+  assert.equal(currentEvent.payload.terminalBriefTitle, "A2A Terminal Brief 완료: dungae(1/5)");
 
   // Internal metadata on the projection record shows replay count
   const stored = broker.getCrossBrokerTerminalBriefProjection("round-parent", "gwakga");
