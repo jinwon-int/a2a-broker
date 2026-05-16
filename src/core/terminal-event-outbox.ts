@@ -221,12 +221,12 @@ export class TerminalTaskEventOutbox {
   private readonly maxSeen: number;
 
   /**
-   * Round completion sequence counters keyed by run/round key.
-   * Incremented only for newly enqueued (not-deduped) terminal events so
-   * that parentRoundProgress reflects the broker's operator-facing completion
-   * order for that round.
+   * Tracks unique succeeded canonical child task IDs per run/round key.
+   * The set size is used as the parentRoundProgress numerator so that n/N
+   * reflects succeeded canonical child tasks, not event sequence or lane order.
+   * Non-succeeded events (failed/canceled/blocked) do not add to this set.
    */
-  private readonly roundProgress = new Map<string, number>();
+  private readonly succeededChildIds = new Map<string, Set<string>>();
 
   constructor(options: TerminalTaskEventOutboxOptions = {}) {
     this.maxEvents = normalizePositiveInt(options.maxEvents, DEFAULT_TERMINAL_TASK_OUTBOX_RETENTION);
@@ -246,7 +246,7 @@ export class TerminalTaskEventOutbox {
     if (this.seen.has(id)) return null;
 
     const payload = buildTerminalTaskPayload(task);
-    applyRoundProgressMetadata(payload, this.roundProgress);
+    applyRoundProgressMetadata(payload, this.succeededChildIds);
     applyTerminalBriefTitle(payload);
     applyTerminalBriefCompatibilityAliases(payload);
     const event: TerminalTaskOutboxEvent = {
@@ -322,7 +322,7 @@ export class TerminalTaskEventOutbox {
         reason: "cross-broker projections are parent-broker aggregation evidence only; child/handoff brokers do not notify or ACK",
       },
     };
-    applyRoundProgressMetadata(payload, this.roundProgress);
+    applyRoundProgressMetadata(payload, this.succeededChildIds);
     applyTerminalBriefTitle(payload);
     applyTerminalBriefCompatibilityAliases(payload);
     const event: TerminalTaskOutboxEvent = {
@@ -448,7 +448,7 @@ export class TerminalTaskEventOutbox {
       this.restore(event);
     }
     this.enforceRetention();
-    this.rebuildRoundProgressCounters();
+    this.rebuildSucceededChildren();
   }
 
   private restore(event: TerminalTaskOutboxEvent): void {
@@ -489,17 +489,20 @@ export class TerminalTaskEventOutbox {
   }
 
   /**
-   * Rebuild round progress counters from stored events so that fresh
-   * enqueues resume at the correct sequence number after a snapshot restore.
+   * Rebuild the succeeded-child-IDs set from stored events so that fresh
+   * enqueues resume at the correct succeeded count after a snapshot restore.
+   * Only succeeded-status events are counted as canonical children.
    */
-  private rebuildRoundProgressCounters(): void {
-    this.roundProgress.clear();
+  private rebuildSucceededChildren(): void {
+    this.succeededChildIds.clear();
     for (const event of this.events) {
       const runKey = event.payload.run;
       if (!runKey) continue;
-      const counted = (this.roundProgress.get(runKey) ?? 0) + 1;
-      const current = event.payload.parentRoundProgress ?? 0;
-      this.roundProgress.set(runKey, Math.max(counted, current));
+      if (event.payload.status !== "succeeded") continue;
+      const childId = event.payload.taskId;
+      const counted = this.succeededChildIds.get(runKey) ?? new Set<string>();
+      counted.add(childId);
+      this.succeededChildIds.set(runKey, counted);
     }
   }
 
@@ -976,20 +979,26 @@ function normalizePositiveInt(value: number | undefined, fallback: number): numb
  */
 function applyRoundProgressMetadata(
   payload: TerminalTaskEventPayload,
-  roundProgress: Map<string, number>,
+  succeededChildIds: Map<string, Set<string>>,
 ): void {
   const runKey = payload.run;
   if (!runKey) return;
-  const explicitProgress = payload.parentRoundProgress;
-  if (explicitProgress && payload.parentRoundTotal) {
-    roundProgress.set(runKey, Math.max(roundProgress.get(runKey) ?? 0, explicitProgress));
-    return;
+
+  // Only succeeded status canonical children increment the succeeded count
+  if (payload.status === "succeeded") {
+    const childId = payload.taskId;
+    const counted = succeededChildIds.get(runKey) ?? new Set<string>();
+    counted.add(childId);
+    succeededChildIds.set(runKey, counted);
   }
 
-  const next = (roundProgress.get(runKey) ?? 0) + 1;
-  roundProgress.set(runKey, next);
-  if (!payload.parentRoundTotal) return;
-  payload.parentRoundProgress = next;
+  // Numerator = count of unique succeeded canonical children for this run
+  const succeededCount = succeededChildIds.get(runKey)?.size ?? 0;
+
+  // Only set progress when total is known
+  if (payload.parentRoundTotal) {
+    payload.parentRoundProgress = succeededCount;
+  }
 }
 
 function applyTerminalBriefTitle(payload: TerminalTaskEventPayload): void {
@@ -999,13 +1008,28 @@ function applyTerminalBriefTitle(payload: TerminalTaskEventPayload): void {
 
 function applyTerminalBriefCompatibilityAliases(payload: TerminalTaskEventPayload): void {
   if (payload.run && !payload.parentRoundId) payload.parentRoundId = payload.run;
-  if (payload.parentRoundProgress && !payload.parentRoundOrder) payload.parentRoundOrder = payload.parentRoundProgress;
+  // parentRoundOrder and parentRoundProgress now have distinct semantics —
+  // parentRoundProgress is the succeeded-count numerator, parentRoundOrder is
+  // the explicit lane order. The old alias is intentionally not recreated.
   if (payload.terminalBriefTitle && !payload.title) payload.title = payload.terminalBriefTitle;
 }
 
+const TERMINAL_BRIEF_STATUS_LABELS: Record<string, string> = {
+  succeeded: "완료",
+  failed: "실패",
+  canceled: "취소",
+  blocked: "차단",
+};
+
 function buildTerminalBriefTitle(payload: TerminalTaskEventPayload): string | undefined {
-  if (!payload.worker || !payload.parentRoundProgress || !payload.parentRoundTotal) return undefined;
-  return `A2A Terminal Brief 완료: ${payload.worker}(${payload.parentRoundProgress}/${payload.parentRoundTotal})`;
+  if (!payload.worker) return undefined;
+  const label = TERMINAL_BRIEF_STATUS_LABELS[payload.status] ?? "완료";
+  const progress = payload.parentRoundProgress;
+  const total = payload.parentRoundTotal;
+  if (progress !== undefined && total !== undefined) {
+    return `A2A Terminal Brief ${label}: ${payload.worker}(${progress}/${total})`;
+  }
+  return `A2A Terminal Brief ${label}: ${payload.worker}`;
 }
 
 /**
