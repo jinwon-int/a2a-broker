@@ -2,7 +2,10 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import {
+  CAPABILITY_CARD_MAX_BYTES,
   WORKER_CAPABILITY_CARD_SCHEMA_VERSION,
+  InMemoryWorkerCapabilityCardRepository,
+  createDefaultCapabilityCard,
   createWorkerCapabilityCard,
   queryWorkerCapabilityCards,
   validateWorkerCapabilityCard,
@@ -245,4 +248,188 @@ test("worker capability card validation rejects secret-like extension fields", (
 
   assert.equal(result.ok, false);
   assert.match(result.errors.join("\n"), /rawMetadata\.githubToken/);
+});
+
+test("InMemoryWorkerCapabilityCardRepository stores, retrieves, lists, and deletes cards", () => {
+  const repo = new InMemoryWorkerCapabilityCardRepository();
+  assert.equal(repo.count(), 0);
+
+  const card1 = createWorkerCapabilityCard(BASE_WORKER, {
+    teamId: "team1",
+    brokerOfRecord: "seoseo",
+    assignmentRoles: ["libero"],
+    supportedTaskTypes: ["analyze"],
+    skills: [],
+  });
+  const card2 = createWorkerCapabilityCard(
+    { ...BASE_WORKER, nodeId: "team2-docs", role: "researcher" },
+    {
+      teamId: "team2",
+      brokerOfRecord: "gwakga",
+      assignmentRoles: ["docs-compat"],
+      supportedTaskTypes: ["validate_change"],
+      skills: [],
+    },
+  );
+
+  repo.store(card1);
+  assert.equal(repo.count(), 1);
+
+  const retrieved = repo.get("yukson");
+  assert.ok(retrieved);
+  assert.equal(retrieved.worker.id, "yukson");
+  assert.deepEqual(retrieved.assignment.roles, ["libero"]);
+
+  assert.equal(repo.get("nonexistent"), null);
+
+  repo.store(card2);
+  assert.equal(repo.count(), 2);
+
+  const all = repo.list();
+  assert.equal(all.length, 2);
+  assert.deepEqual(
+    all.map((c) => c.worker.id).sort(),
+    ["team2-docs", "yukson"],
+  );
+
+  repo.delete("yukson");
+  assert.equal(repo.count(), 1);
+  assert.equal(repo.get("yukson"), null);
+
+  repo.delete("nonexistent"); // no-op
+  assert.equal(repo.count(), 1);
+
+  repo.delete("team2-docs");
+  assert.equal(repo.count(), 0);
+});
+
+test("InMemoryWorkerCapabilityCardRepository overwrites existing card on re-store", () => {
+  const repo = new InMemoryWorkerCapabilityCardRepository();
+
+  const card = createWorkerCapabilityCard(BASE_WORKER, {
+    teamId: "team1",
+    brokerOfRecord: "seoseo",
+    assignmentRoles: ["implementation"],
+    supportedTaskTypes: ["propose_patch"],
+    skills: [],
+  });
+  repo.store(card);
+
+  const updated = { ...card, assignment: { ...card.assignment, roles: ["libero"] as const } };
+  repo.store(updated);
+
+  assert.equal(repo.count(), 1);
+  assert.deepEqual(repo.get("yukson")?.assignment.roles, ["libero"]);
+});
+
+test("InMemoryWorkerCapabilityCardRepository rejects oversized cards", () => {
+  const repo = new InMemoryWorkerCapabilityCardRepository();
+  const hugeSkills = [];
+  for (let i = 0; i < 500; i++) {
+    hugeSkills.push({
+      id: `skill-${i}-` + "x".repeat(50),
+      name: "x".repeat(100),
+      description: "x".repeat(200),
+      tags: ["x".repeat(20)],
+    });
+  }
+
+  const bigCard = createWorkerCapabilityCard(BASE_WORKER, {
+    teamId: "team1",
+    brokerOfRecord: "seoseo",
+    assignmentRoles: ["implementation"],
+    supportedTaskTypes: ["analyze"],
+    skills: hugeSkills,
+  });
+
+  assert.throws(() => repo.store(bigCard), /exceeds/);
+  assert.equal(repo.count(), 0);
+});
+
+test("createDefaultCapabilityCard infers role and task type from WorkerView", () => {
+  const analystView: WorkerView = {
+    ...BASE_WORKER,
+    nodeId: "analyst-1",
+    role: "analyst",
+    capabilities: { canAnalyze: true, canBackfill: true, canPatchWorkspace: true, canPromoteLive: false, workspaceIds: ["ws1"], environments: ["research"] },
+  };
+
+  let card = createDefaultCapabilityCard(analystView);
+  assert.equal(card.worker.id, "analyst-1");
+  assert.deepEqual(card.assignment.roles, ["implementation"]);
+  assert.ok(card.assignment.supportedTaskTypes.includes("propose_patch"));
+  assert.ok(card.assignment.supportedTaskTypes.includes("analyze"));
+  assert.equal(card.team.teamId, "team1");
+  assert.equal(card.team.brokerOfRecord, "unknown");
+
+  // operator role → runner-safety
+  const operatorView: WorkerView = {
+    ...BASE_WORKER,
+    nodeId: "operator-1",
+    role: "operator",
+    capabilities: { canAnalyze: false, canBackfill: false, canPatchWorkspace: false, canPromoteLive: true, workspaceIds: [], environments: ["live"] },
+  };
+  card = createDefaultCapabilityCard(operatorView);
+  assert.deepEqual(card.assignment.roles, ["runner-safety"]);
+
+  // hub role → no roles
+  const hubView: WorkerView = {
+    ...BASE_WORKER,
+    nodeId: "hub-1",
+    role: "hub",
+  };
+  card = createDefaultCapabilityCard(hubView);
+  assert.deepEqual(card.assignment.roles, []);
+});
+
+test("createDefaultCapabilityCard accepts explicit overrides", () => {
+  const card = createDefaultCapabilityCard(BASE_WORKER, {
+    teamId: "team2",
+    brokerOfRecord: "gwakga",
+    assignmentRoles: ["docs-compat"],
+    supportedTaskTypes: ["validate_change"],
+  });
+
+  assert.equal(card.team.teamId, "team2");
+  assert.equal(card.team.brokerOfRecord, "gwakga");
+  assert.deepEqual(card.assignment.roles, ["docs-compat"]);
+  assert.deepEqual(card.assignment.supportedTaskTypes, ["validate_change"]);
+});
+
+test("listCapabilityProfiles filters by query parameters", () => {
+  const repo = new InMemoryWorkerCapabilityCardRepository();
+
+  const impl = createWorkerCapabilityCard(BASE_WORKER, {
+    teamId: "team1",
+    brokerOfRecord: "seoseo",
+    assignmentRoles: ["implementation"],
+    supportedTaskTypes: ["propose_patch"],
+    skills: [],
+  });
+  const docs = createWorkerCapabilityCard(
+    { ...BASE_WORKER, nodeId: "docs-1", role: "researcher" },
+    {
+      teamId: "team2",
+      brokerOfRecord: "gwakga",
+      assignmentRoles: ["docs-compat"],
+      supportedTaskTypes: ["validate_change"],
+      skills: [],
+    },
+  );
+  repo.store(impl);
+  repo.store(docs);
+
+  // Filter by assignment role
+  const result = queryWorkerCapabilityCards(repo.list(), { assignmentRole: "docs-compat" });
+  assert.equal(result.length, 1);
+  assert.equal(result[0].worker.id, "docs-1");
+
+  // Empty filter returns all
+  const all = queryWorkerCapabilityCards(repo.list(), {});
+  assert.equal(all.length, 2);
+});
+
+test("CAPABILITY_CARD_MAX_BYTES constant is defined and reasonable", () => {
+  assert.ok(CAPABILITY_CARD_MAX_BYTES > 512);
+  assert.ok(CAPABILITY_CARD_MAX_BYTES <= 65536);
 });

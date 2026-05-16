@@ -117,6 +117,118 @@ export interface WorkerCapabilityCardQuery {
   safeForDiscovery?: boolean;
 }
 
+/**
+ * Soft cap on serialized capability card payload to prevent unbounded profile
+ * bloat from leaking into broker state snapshots or assignment planning.
+ */
+export const CAPABILITY_CARD_MAX_BYTES = 4096;
+
+/**
+ * Runtime seam for worker capability profile storage.
+ *
+ * JSON/in-memory deployments can use the built-in
+ * {@link InMemoryWorkerCapabilityCardRepository}. SQLite deployments can bind
+ * a table-native implementation so profile data has a dedicated storage path
+ * independent of the worker hot-table snapshot.
+ */
+export interface WorkerCapabilityCardRepository {
+  /** Persist or overwrite a capability card for the worker. */
+  store(card: WorkerCapabilityCard): void;
+  /** Retrieve a capability card by worker id, or null. */
+  get(workerId: string): WorkerCapabilityCard | null;
+  /** List all stored capability cards. */
+  list(): WorkerCapabilityCard[];
+  /** Remove a stored card. No-op when absent. */
+  delete(workerId: string): void;
+  /** Number of stored cards. */
+  count(): number;
+}
+
+/**
+ * In-memory {@link WorkerCapabilityCardRepository} backed by a
+ * `Map<string, WorkerCapabilityCard>`.
+ *
+ * Thread-unsafe; use within a single broker instance.
+ */
+export class InMemoryWorkerCapabilityCardRepository implements WorkerCapabilityCardRepository {
+  private readonly cards = new Map<string, WorkerCapabilityCard>();
+
+  store(card: WorkerCapabilityCard): void {
+    assertCardSizeWithinBounds(card);
+    this.cards.set(card.worker.id, card);
+  }
+
+  get(workerId: string): WorkerCapabilityCard | null {
+    return this.cards.get(workerId) ?? null;
+  }
+
+  list(): WorkerCapabilityCard[] {
+    return [...this.cards.values()];
+  }
+
+  delete(workerId: string): void {
+    this.cards.delete(workerId);
+  }
+
+  count(): number {
+    return this.cards.size;
+  }
+}
+
+/**
+ * Build a default capability card from a {@link WorkerView} with basic
+ * assignment metadata. Useful for auto-population when a worker registers
+ * and no explicit card has been provided.
+ */
+export function createDefaultCapabilityCard(
+  worker: WorkerView,
+  defaults?: {
+    teamId?: WorkerRegistryTeamId;
+    brokerOfRecord?: string;
+    lane?: WorkerRegistryTeamId;
+    assignmentRoles?: WorkerAssignmentRole[];
+    supportedTaskTypes?: A2AExchangeIntent[];
+  },
+): WorkerCapabilityCard {
+  const teamId = defaults?.teamId ?? (worker.metadata?.teamId === "team2" ? "team2" : "team1");
+  return createWorkerCapabilityCard(worker, {
+    teamId,
+    brokerOfRecord: defaults?.brokerOfRecord ?? "unknown",
+    assignmentRoles: defaults?.assignmentRoles ?? inferRolesFromWorker(worker),
+    supportedTaskTypes: defaults?.supportedTaskTypes ?? inferTaskTypesFromWorker(worker),
+    skills: [],
+  });
+}
+
+function inferRolesFromWorker(worker: WorkerView): WorkerAssignmentRole[] {
+  if (worker.role === "hub") return [];
+  if (worker.role === "operator") return ["runner-safety"];
+  if (worker.metadata?.teamId === "libero") return ["libero"];
+  return ["implementation"];
+}
+
+function inferTaskTypesFromWorker(worker: WorkerView): A2AExchangeIntent[] {
+  const types: A2AExchangeIntent[] = [];
+  if (worker.capabilities.canAnalyze) types.push("analyze");
+  if (worker.capabilities.canBackfill) types.push("backfill");
+  if (worker.capabilities.canPatchWorkspace) {
+    types.push("propose_patch", "apply_local_change");
+  }
+  if (worker.capabilities.canPromoteLive) {
+    types.push("promote_to_live");
+  }
+  return types.length > 0 ? types : ["analyze"];
+}
+
+function assertCardSizeWithinBounds(card: WorkerCapabilityCard): void {
+  const size = new TextEncoder().encode(JSON.stringify(card)).length;
+  if (size > CAPABILITY_CARD_MAX_BYTES) {
+    throw new Error(
+      `capability card for worker ${card.worker.id} exceeds ${CAPABILITY_CARD_MAX_BYTES} bytes (${size})`,
+    );
+  }
+}
+
 const DEFAULT_VISIBILITY: WorkerVisibilityFlags = {
   scope: "team",
   safeForDiscovery: false,
