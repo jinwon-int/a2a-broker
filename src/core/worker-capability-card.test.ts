@@ -9,6 +9,7 @@ import {
   createWorkerCapabilityCard,
   queryWorkerCapabilityCards,
   validateWorkerCapabilityCard,
+  type WorkerAssignmentRole,
   type WorkerCapabilityCard,
 } from "./worker-capability-card.js";
 import type { WorkerView } from "./types.js";
@@ -315,7 +316,7 @@ test("InMemoryWorkerCapabilityCardRepository overwrites existing card on re-stor
   });
   repo.store(card);
 
-  const updated = { ...card, assignment: { ...card.assignment, roles: ["libero"] as const } };
+  const updated = { ...card, assignment: { ...card.assignment, roles: ["libero"] as WorkerAssignmentRole[] } };
   repo.store(updated);
 
   assert.equal(repo.count(), 1);
