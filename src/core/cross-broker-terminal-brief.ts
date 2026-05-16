@@ -23,7 +23,8 @@ export type CrossBrokerTerminalBriefRejectCode =
   | "wrong_origin"
   | "stale_replay"
   | "terminal_ack_forbidden"
-  | "missing_dispatch_metadata";
+  | "missing_dispatch_metadata"
+  | "completed_count_exceeded";
 
 export interface TerminalBriefDispatchValidationResult {
   valid: boolean;
@@ -220,6 +221,22 @@ export class CrossBrokerTerminalBriefProjectionStore {
     const parentBroker = normalizeToken(this.options.parentBrokerOfRecord?.(normalized.parentRoundId));
     if (receiverBrokerId && parentBroker && parentBroker !== receiverBrokerId) {
       return reject("wrong_origin", `parent round ${normalized.parentRoundId} belongs to broker-of-record ${parentBroker}`, now);
+    }
+
+    // Completed-count validation: reject if accepting this projection would cause
+    // the count of distinct projections for this round+origin to exceed parentRoundTotal.
+    // Replacements (same recordKey, newer completedAt) are allowed since they don't
+    // increase the count.
+    if (normalized.parentRoundTotal) {
+      const existingCountForRoundOrigin = [...this.records.values()]
+        .filter((r) => r.parentRoundId === normalized.parentRoundId && r.originBrokerId === normalized.originBrokerId)
+        .length;
+      const key = recordKey(normalized);
+      const keyAlreadyStored = this.records.has(key);
+      const effectiveCount = keyAlreadyStored ? existingCountForRoundOrigin : existingCountForRoundOrigin + 1;
+      if (effectiveCount > normalized.parentRoundTotal) {
+        return reject("completed_count_exceeded", `cross-broker Terminal Brief projection limit reached for round ${normalized.parentRoundId} from origin ${normalized.originBrokerId}: ${effectiveCount} would exceed parentRoundTotal ${normalized.parentRoundTotal}`, now);
+      }
     }
 
     const key = recordKey(normalized);

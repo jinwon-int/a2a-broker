@@ -589,3 +589,176 @@ test("bangtong compact Terminal Brief emitted on every terminal status: blocked"
   assert.equal(event.payload.terminalBriefTitle, "A2A Terminal Brief 완료: bangtong(1/7)");
   assert.equal(event.payload.status, "blocked");
 });
+
+test("completed-count validation rejects projection when origin exceeds parentRoundTotal", () => {
+  const broker = new InMemoryA2ABroker(undefined, undefined, { brokerId: "parent-broker" });
+  createParentRound(broker);
+
+  // Fill up to the limit: 3 projections from origin "test-origin" for round with total=3
+  const first = broker.ingestCrossBrokerTerminalBriefProjection(projection({
+    originBrokerId: "test-origin",
+    childTaskId: "task-1",
+    childWorkerId: "worker-a",
+    parentRoundTotal: "3",
+    parentRoundOrder: "1",
+    completedAt: "2026-05-14T02:01:00.000Z",
+  }));
+  assert.equal(first.accepted, true);
+
+  const second = broker.ingestCrossBrokerTerminalBriefProjection(projection({
+    originBrokerId: "test-origin",
+    childTaskId: "task-2",
+    childWorkerId: "worker-b",
+    parentRoundTotal: "3",
+    parentRoundOrder: "2",
+    completedAt: "2026-05-14T02:02:00.000Z",
+  }));
+  assert.equal(second.accepted, true);
+
+  const third = broker.ingestCrossBrokerTerminalBriefProjection(projection({
+    originBrokerId: "test-origin",
+    childTaskId: "task-3",
+    childWorkerId: "worker-c",
+    parentRoundTotal: "3",
+    parentRoundOrder: "3",
+    completedAt: "2026-05-14T02:03:00.000Z",
+  }));
+  assert.equal(third.accepted, true);
+
+  // Fourth projection from same origin should be rejected (3 already stored, total=3)
+  const fourth = broker.ingestCrossBrokerTerminalBriefProjection(projection({
+    originBrokerId: "test-origin",
+    childTaskId: "task-4",
+    childWorkerId: "worker-d",
+    parentRoundTotal: "3",
+    parentRoundOrder: "3",
+    completedAt: "2026-05-14T02:04:00.000Z",
+  }));
+  assert.equal(fourth.accepted, false);
+  assert.equal(fourth.ack.code, "completed_count_exceeded");
+  assert.equal(fourth.ack.terminalAck, false);
+
+  // Verify only 3 records were stored
+  const records = broker.listCrossBrokerTerminalBriefProjections({ parentRoundId: "round-parent", originBrokerId: "test-origin" });
+  assert.equal(records.length, 3);
+});
+
+test("completed-count validation allows replacement at limit for same key update", () => {
+  const broker = new InMemoryA2ABroker(undefined, undefined, { brokerId: "parent-broker" });
+  createParentRound(broker);
+
+  // Fill up to the limit: 3 projections from origin "updater"
+  broker.ingestCrossBrokerTerminalBriefProjection(projection({
+    originBrokerId: "updater",
+    childTaskId: "task-1",
+    parentRoundTotal: "3",
+    parentRoundOrder: "1",
+    completedAt: "2026-05-14T03:01:00.000Z",
+  }));
+  broker.ingestCrossBrokerTerminalBriefProjection(projection({
+    originBrokerId: "updater",
+    childTaskId: "task-2",
+    parentRoundTotal: "3",
+    parentRoundOrder: "2",
+    completedAt: "2026-05-14T03:02:00.000Z",
+  }));
+  broker.ingestCrossBrokerTerminalBriefProjection(projection({
+    originBrokerId: "updater",
+    childTaskId: "task-3",
+    parentRoundTotal: "3",
+    parentRoundOrder: "3",
+    completedAt: "2026-05-14T03:03:00.000Z",
+  }));
+
+  // Update (same key) with newer completedAt — should be accepted as a replacement
+  const replace = broker.ingestCrossBrokerTerminalBriefProjection(projection({
+    originBrokerId: "updater",
+    childTaskId: "task-3",
+    parentRoundTotal: "3",
+    parentRoundOrder: "3",
+    summary: "updated: fixed more issues",
+    completedAt: "2026-05-14T03:04:00.000Z",
+  }));
+  assert.equal(replace.accepted, true);
+  assert.equal(replace.ack.decision, "accepted");
+
+  // Records count should still be 3
+  const records = broker.listCrossBrokerTerminalBriefProjections({ parentRoundId: "round-parent", originBrokerId: "updater" });
+  assert.equal(records.length, 3);
+
+  // The updated record should have the new summary
+  const stored = records.find((r) => r.childTaskId === "task-3");
+  assert.ok(stored);
+  assert.equal(stored?.summary, "updated: fixed more issues");
+});
+
+test("completed-count validation is scoped per origin", () => {
+  const broker = new InMemoryA2ABroker(undefined, undefined, { brokerId: "parent-broker" });
+  createParentRound(broker);
+
+  // Origin gwakga sends 2 projections (total=5)
+  const gwakga1 = broker.ingestCrossBrokerTerminalBriefProjection(projection({
+    originBrokerId: "gwakga",
+    childTaskId: "gwakga-task-1",
+    parentRoundTotal: "5",
+    parentRoundOrder: "1",
+    completedAt: "2026-05-14T04:01:00.000Z",
+  }));
+  assert.equal(gwakga1.accepted, true);
+
+  const gwakga2 = broker.ingestCrossBrokerTerminalBriefProjection(projection({
+    originBrokerId: "gwakga",
+    childTaskId: "gwakga-task-2",
+    parentRoundTotal: "5",
+    parentRoundOrder: "2",
+    completedAt: "2026-05-14T04:02:00.000Z",
+  }));
+  assert.equal(gwakga2.accepted, true);
+
+  // 2 more from gwakga to reach limit of 5, plus 1 more to exceed
+  broker.ingestCrossBrokerTerminalBriefProjection(projection({
+    originBrokerId: "gwakga",
+    childTaskId: "gwakga-task-3",
+    parentRoundTotal: "5",
+    parentRoundOrder: "3",
+    completedAt: "2026-05-14T04:03:00.000Z",
+  }));
+  broker.ingestCrossBrokerTerminalBriefProjection(projection({
+    originBrokerId: "gwakga",
+    childTaskId: "gwakga-task-4",
+    parentRoundTotal: "5",
+    parentRoundOrder: "4",
+    completedAt: "2026-05-14T04:04:00.000Z",
+  }));
+  broker.ingestCrossBrokerTerminalBriefProjection(projection({
+    originBrokerId: "gwakga",
+    childTaskId: "gwakga-task-5",
+    parentRoundTotal: "5",
+    parentRoundOrder: "5",
+    completedAt: "2026-05-14T04:05:00.000Z",
+  }));
+
+  // Gwakga at limit; 6th should reject
+  const gwakgaExceed = broker.ingestCrossBrokerTerminalBriefProjection(projection({
+    originBrokerId: "gwakga",
+    childTaskId: "gwakga-task-6",
+    parentRoundTotal: "5",
+    parentRoundOrder: "5",
+    completedAt: "2026-05-14T04:06:00.000Z",
+  }));
+  assert.equal(gwakgaExceed.accepted, false);
+  assert.equal(gwakgaExceed.ack.code, "completed_count_exceeded");
+
+  // But seoseo (different origin) can still send its own projections for same round
+  const seoseo1 = broker.ingestCrossBrokerTerminalBriefProjection(projection({
+    originBrokerId: "seoseo",
+    childTaskId: "seoseo-task-1",
+    parentRoundTotal: "3",
+    parentRoundOrder: "1",
+    completedAt: "2026-05-14T04:11:00.000Z",
+  }));
+  assert.equal(seoseo1.accepted, true);
+
+  const records = broker.listCrossBrokerTerminalBriefProjections({ parentRoundId: "round-parent" });
+  assert.equal(records.length, 6); // 5 gwakga + 1 seoseo
+});
