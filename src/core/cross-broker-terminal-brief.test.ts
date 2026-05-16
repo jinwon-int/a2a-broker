@@ -180,9 +180,9 @@ test("cross-broker Terminal Brief projection carries parent round denominator in
   assert.equal(terminalEvents[0]?.payload.worker, "dungae");
   assert.equal(terminalEvents[0]?.payload.parentRoundTotal, 7);
   assert.equal(terminalEvents[0]?.payload.parentRoundOrder, 5);
-  assert.equal(terminalEvents[0]?.payload.parentRoundProgress, 5);
-  assert.equal(terminalEvents[0]?.payload.terminalBriefTitle, "A2A Terminal Brief 완료: dungae(5/7)");
-  assert.equal(terminalEvents[0]?.payload.title, "A2A Terminal Brief 완료: dungae(5/7)");
+  assert.equal(terminalEvents[0]?.payload.parentRoundProgress, 1);
+  assert.equal(terminalEvents[0]?.payload.terminalBriefTitle, "A2A Terminal Brief 완료: dungae(1/7)");
+  assert.equal(terminalEvents[0]?.payload.title, "A2A Terminal Brief 완료: dungae(1/7)");
   assert.deepEqual(terminalEvents[0]?.payload.crossBrokerHandoff, {
     parentRoundId: "round-parent",
     originBrokerId: "parent-broker",
@@ -242,9 +242,9 @@ test("Seoseo-origin parent keeps distinct Gwakga handoff children and explicit o
   assert.equal(terminalEvents.length, 2);
   assert.equal(terminalEvents[0]?.payload.run, parentRoundId);
   assert.equal(terminalEvents[0]?.payload.worker, "dungae");
-  assert.equal(terminalEvents[0]?.payload.parentRoundProgress, 5);
+  assert.equal(terminalEvents[0]?.payload.parentRoundProgress, 1);
   assert.equal(terminalEvents[0]?.payload.parentRoundTotal, 7);
-  assert.equal(terminalEvents[0]?.payload.terminalBriefTitle, "A2A Terminal Brief 완료: dungae(5/7)");
+  assert.equal(terminalEvents[0]?.payload.terminalBriefTitle, "A2A Terminal Brief 완료: dungae(1/7)");
   assert.deepEqual(terminalEvents[0]?.payload.notificationOwnership, {
     ownerBrokerId: "seoseo",
     scope: "parent-broker-only",
@@ -253,8 +253,8 @@ test("Seoseo-origin parent keeps distinct Gwakga handoff children and explicit o
     reason: "cross-broker projections are parent-broker aggregation evidence only; child/handoff brokers do not notify or ACK",
   });
   assert.equal(terminalEvents[1]?.payload.worker, "jingun");
-  assert.equal(terminalEvents[1]?.payload.parentRoundProgress, 6);
-  assert.equal(terminalEvents[1]?.payload.terminalBriefTitle, "A2A Terminal Brief 완료: jingun(6/7)");
+  assert.equal(terminalEvents[1]?.payload.parentRoundProgress, 2);
+  assert.equal(terminalEvents[1]?.payload.terminalBriefTitle, "A2A Terminal Brief 완료: jingun(2/7)");
 });
 
 test("cross-broker Terminal Brief projection is symmetric for Gwakga-owned parent rounds", () => {
@@ -286,8 +286,8 @@ test("cross-broker Terminal Brief projection is symmetric for Gwakga-owned paren
   assert.equal(terminalEvent?.payload.run, parentRoundId);
   assert.equal(terminalEvent?.payload.worker, "dungae");
   assert.equal(terminalEvent?.payload.parentRoundTotal, 7);
-  assert.equal(terminalEvent?.payload.parentRoundProgress, 5);
-  assert.equal(terminalEvent?.payload.terminalBriefTitle, "A2A Terminal Brief 완료: dungae(5/7)");
+  assert.equal(terminalEvent?.payload.parentRoundProgress, 1);
+  assert.equal(terminalEvent?.payload.terminalBriefTitle, "A2A Terminal Brief 완료: dungae(1/7)");
   assert.deepEqual(terminalEvent?.payload.crossBrokerHandoff, {
     parentRoundId,
     originBrokerId: "gwakga",
@@ -540,7 +540,8 @@ test("bangtong compact Terminal Brief emitted on every terminal status: failed",
   const events = broker.getTerminalTaskEventOutbox().subscribe();
   const event = events.find(e => e.payload.taskId === "bangtong-task-failed");
   assert.ok(event, "bangtong failed event must exist");
-  assert.equal(event.payload.terminalBriefTitle, "A2A Terminal Brief 완료: bangtong(1/7)");
+  // Non-succeeded statuses do not inflate the completed count, so terminalBriefTitle is absent
+  assert.equal(event.payload.terminalBriefTitle, undefined);
   assert.equal(event.payload.status, "failed");
 });
 
@@ -563,7 +564,8 @@ test("bangtong compact Terminal Brief emitted on every terminal status: canceled
   const events = broker.getTerminalTaskEventOutbox().subscribe();
   const event = events.find(e => e.payload.taskId === "bangtong-task-canceled");
   assert.ok(event, "bangtong canceled event must exist");
-  assert.equal(event.payload.terminalBriefTitle, "A2A Terminal Brief 완료: bangtong(1/7)");
+  // Non-succeeded statuses do not inflate the completed count
+  assert.equal(event.payload.terminalBriefTitle, undefined);
   assert.equal(event.payload.status, "canceled");
 });
 
@@ -586,6 +588,7 @@ test("bangtong compact Terminal Brief emitted on every terminal status: blocked"
   const events = broker.getTerminalTaskEventOutbox().subscribe();
   const event = events.find(e => e.payload.taskId === "bangtong-task-blocked");
   assert.ok(event, "bangtong blocked event must exist");
-  assert.equal(event.payload.terminalBriefTitle, "A2A Terminal Brief 완료: bangtong(1/7)");
+  // Non-succeeded statuses do not inflate the completed count
+  assert.equal(event.payload.terminalBriefTitle, undefined);
   assert.equal(event.payload.status, "blocked");
 });

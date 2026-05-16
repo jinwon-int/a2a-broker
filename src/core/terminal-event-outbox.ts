@@ -220,14 +220,6 @@ export class TerminalTaskEventOutbox {
   private readonly maxEvents: number;
   private readonly maxSeen: number;
 
-  /**
-   * Round completion sequence counters keyed by run/round key.
-   * Incremented only for newly enqueued (not-deduped) terminal events so
-   * that parentRoundProgress reflects the broker's operator-facing completion
-   * order for that round.
-   */
-  private readonly roundProgress = new Map<string, number>();
-
   constructor(options: TerminalTaskEventOutboxOptions = {}) {
     this.maxEvents = normalizePositiveInt(options.maxEvents, DEFAULT_TERMINAL_TASK_OUTBOX_RETENTION);
     this.maxSeen = this.maxEvents * 2;
@@ -246,7 +238,7 @@ export class TerminalTaskEventOutbox {
     if (this.seen.has(id)) return null;
 
     const payload = buildTerminalTaskPayload(task);
-    applyRoundProgressMetadata(payload, this.roundProgress);
+    applyRoundProgressMetadata(payload, this.events);
     applyTerminalBriefTitle(payload);
     applyTerminalBriefCompatibilityAliases(payload);
     const event: TerminalTaskOutboxEvent = {
@@ -306,7 +298,7 @@ export class TerminalTaskEventOutbox {
       updatedAt: projection.completedAt,
       completedAt: projection.completedAt,
       ...(projection.parentRoundTotal ? { parentRoundTotal: projection.parentRoundTotal } : {}),
-      ...(projection.parentRoundOrder ? { parentRoundProgress: projection.parentRoundOrder, parentRoundOrder: projection.parentRoundOrder } : {}),
+      ...(projection.parentRoundOrder ? { parentRoundOrder: projection.parentRoundOrder } : {}),
       crossBrokerHandoff: {
         parentRoundId: projection.parentRoundId,
         originBrokerId: parentBrokerId,
@@ -322,7 +314,7 @@ export class TerminalTaskEventOutbox {
         reason: "cross-broker projections are parent-broker aggregation evidence only; child/handoff brokers do not notify or ACK",
       },
     };
-    applyRoundProgressMetadata(payload, this.roundProgress);
+    applyRoundProgressMetadata(payload, this.events);
     applyTerminalBriefTitle(payload);
     applyTerminalBriefCompatibilityAliases(payload);
     const event: TerminalTaskOutboxEvent = {
@@ -448,7 +440,6 @@ export class TerminalTaskEventOutbox {
       this.restore(event);
     }
     this.enforceRetention();
-    this.rebuildRoundProgressCounters();
   }
 
   private restore(event: TerminalTaskOutboxEvent): void {
@@ -488,20 +479,7 @@ export class TerminalTaskEventOutbox {
     return this.applyLimit(this.events.slice(start), options.limit);
   }
 
-  /**
-   * Rebuild round progress counters from stored events so that fresh
-   * enqueues resume at the correct sequence number after a snapshot restore.
-   */
-  private rebuildRoundProgressCounters(): void {
-    this.roundProgress.clear();
-    for (const event of this.events) {
-      const runKey = event.payload.run;
-      if (!runKey) continue;
-      const counted = (this.roundProgress.get(runKey) ?? 0) + 1;
-      const current = event.payload.parentRoundProgress ?? 0;
-      this.roundProgress.set(runKey, Math.max(counted, current));
-    }
-  }
+
 
   private indexAfter(afterId: string | undefined): number {
     if (!afterId) return 0;
@@ -652,7 +630,6 @@ function buildTerminalTaskPayload(task: TaskRecord): TerminalTaskEventPayload {
   );
   if (parentRoundOrder) {
     payload.parentRoundOrder = parentRoundOrder;
-    payload.parentRoundProgress = parentRoundOrder;
   }
   const traceId = firstSafeText(task.via?.traceId, task.payload["traceId"], output["traceId"]);
   if (traceId) payload.traceId = traceId;
@@ -966,30 +943,39 @@ function normalizePositiveInt(value: number | undefined, fallback: number): numb
 }
 
 /**
- * Set {@link TerminalTaskEventPayload.parentRoundProgress} on the payload by
- * incrementing a broker-local sequence counter keyed by the payload's run key.
+ * Set {@link TerminalTaskEventPayload.parentRoundProgress} by counting
+ * canonical parent-round completed (succeeded) events in the outbox.
+ *
+ * n/N means completed canonical tasks / total canonical tasks.
+ * Failed, canceled, and blocked events do not increment the numerator.
+ * Duplicates/replays are rejected upstream by the seen-set dedup.
+ * Retries produce distinct stable ids (different completedAt) and the
+ * failed original is excluded from the succeeded count.
+ * parentRoundOrder is preserved as lane/order metadata only.
  *
  * When the payload has no run key this is a no-op. When parentRoundTotal is
- * unknown, the sequence counter still advances but the payload field is omitted
- * so downstream notifiers fall back instead of rendering misleading `n/?`
- * progress.
+ * unknown, the field is omitted so downstream notifiers fall back instead
+ * of rendering misleading `n/?` progress.
  */
 function applyRoundProgressMetadata(
   payload: TerminalTaskEventPayload,
-  roundProgress: Map<string, number>,
+  events: TerminalTaskOutboxEvent[],
 ): void {
   const runKey = payload.run;
   if (!runKey) return;
-  const explicitProgress = payload.parentRoundProgress;
-  if (explicitProgress && payload.parentRoundTotal) {
-    roundProgress.set(runKey, Math.max(roundProgress.get(runKey) ?? 0, explicitProgress));
-    return;
-  }
-
-  const next = (roundProgress.get(runKey) ?? 0) + 1;
-  roundProgress.set(runKey, next);
   if (!payload.parentRoundTotal) return;
-  payload.parentRoundProgress = next;
+
+  // Count canonical completed events for this round.
+  // Only succeeded events represent true task completion; failed/canceled/
+  // blocked events are carriers of terminal state but not progress.
+  const succeededCount = events.filter(
+    e => e.payload.run === runKey && e.payload.status === "succeeded"
+  ).length;
+
+  // The current event hasn't been added to the array yet, so include it
+  // when the event is itself a succeeded completion.
+  const currentIsSucceeded = payload.status === "succeeded";
+  payload.parentRoundProgress = succeededCount + (currentIsSucceeded ? 1 : 0);
 }
 
 function applyTerminalBriefTitle(payload: TerminalTaskEventPayload): void {
@@ -999,7 +985,6 @@ function applyTerminalBriefTitle(payload: TerminalTaskEventPayload): void {
 
 function applyTerminalBriefCompatibilityAliases(payload: TerminalTaskEventPayload): void {
   if (payload.run && !payload.parentRoundId) payload.parentRoundId = payload.run;
-  if (payload.parentRoundProgress && !payload.parentRoundOrder) payload.parentRoundOrder = payload.parentRoundProgress;
   if (payload.terminalBriefTitle && !payload.title) payload.title = payload.terminalBriefTitle;
 }
 

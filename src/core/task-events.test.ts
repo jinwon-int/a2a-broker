@@ -534,7 +534,7 @@ describe("TerminalTaskEventOutbox", () => {
     assert.equal(event.payload.originBrokerId, "seoseo");
     assert.equal(event.payload.brokerOfRecordId, "seoseo");
     assert.equal(event.payload.parentRoundTotal, 7);
-    assert.equal(event.payload.parentRoundOrder, 1);
+    assert.equal(event.payload.parentRoundOrder, undefined);
     assert.equal(event.payload.parentRoundProgress, 1);
     assert.equal(event.payload.terminalBriefTitle, "A2A Terminal Brief 완료: bangtong(1/7)");
     assert.equal(event.payload.notificationOwnership, undefined);
@@ -574,9 +574,9 @@ describe("TerminalTaskEventOutbox", () => {
     assert.equal(event.payload.brokerOfRecordId, "seoseo");
     assert.equal(event.payload.parentRoundTotal, 7);
     assert.equal(event.payload.parentRoundOrder, 6);
-    assert.equal(event.payload.parentRoundProgress, 6);
-    assert.equal(event.payload.terminalBriefTitle, "A2A Terminal Brief 완료: jingun(6/7)");
-    assert.equal(event.payload.title, "A2A Terminal Brief 완료: jingun(6/7)");
+    assert.equal(event.payload.parentRoundProgress, 1);
+    assert.equal(event.payload.terminalBriefTitle, "A2A Terminal Brief 완료: jingun(1/7)");
+    assert.equal(event.payload.title, "A2A Terminal Brief 완료: jingun(1/7)");
   });
 
   it("direct task flow emits bangtong compact Terminal Brief on failed and canceled", () => {
@@ -605,16 +605,18 @@ describe("TerminalTaskEventOutbox", () => {
 
     const failedEvent = events.find(e => e.payload.taskId === "bangtong-failed");
     assert.ok(failedEvent, "bangtong-failed event must exist");
-    assert.equal(failedEvent.payload.terminalBriefTitle, "A2A Terminal Brief 완료: bangtong(1/7)");
+    // Failed events carry the current completed count (not counting the failure)
+    assert.equal(failedEvent.payload.terminalBriefTitle, undefined);
     assert.equal(failedEvent.payload.status, "failed");
-    assert.equal(failedEvent.payload.parentRoundProgress, 1);
+    assert.equal(failedEvent.payload.parentRoundProgress, 0);
     assert.equal(failedEvent.payload.parentRoundTotal, 7);
 
     const canceledEvent = events.find(e => e.payload.taskId === "bangtong-canceled");
     assert.ok(canceledEvent, "bangtong-canceled event must exist");
-    assert.equal(canceledEvent.payload.terminalBriefTitle, "A2A Terminal Brief 완료: bangtong(1/7)");
+    // Canceled events also do not increment the completed count
+    assert.equal(canceledEvent.payload.terminalBriefTitle, undefined);
     assert.equal(canceledEvent.payload.status, "canceled");
-    assert.equal(canceledEvent.payload.parentRoundProgress, 1);
+    assert.equal(canceledEvent.payload.parentRoundProgress, 0);
     assert.equal(canceledEvent.payload.parentRoundTotal, 7);
   });
 
@@ -1177,6 +1179,219 @@ describe("TerminalTaskEventOutbox", () => {
 
     assert.equal(blocked.status, "blocked");
     assert.equal(broker.getTerminalTaskEventOutbox().subscribe().length, 0);
+  });
+
+  it("counts parent round progress correctly for out-of-order completions", () => {
+    // Reference: a2a-broker#656, a2a-broker#660, a2a-broker#659
+    // n/N = completed canonical tasks / total canonical tasks, not lane order
+    const broker = new InMemoryA2ABroker();
+    registerWorker(broker, "worker-1");
+
+    const third = createTask(broker, {
+      id: "order-third",
+      targetNodeId: "worker-1",
+      payload: { parentRoundId: "round-ooo", parentRoundTotal: 3 },
+    });
+    const first = createTask(broker, {
+      id: "order-first",
+      targetNodeId: "worker-1",
+      payload: { parentRoundId: "round-ooo", parentRoundTotal: 3 },
+    });
+    const second = createTask(broker, {
+      id: "order-second",
+      targetNodeId: "worker-1",
+      payload: { parentRoundId: "round-ooo", parentRoundTotal: 3 },
+    });
+
+    // Complete in 3, 1, 2 order
+    broker.claimTask(third.id, "worker-1");
+    broker.completeTask(third.id, "worker-1", { summary: "third done" });
+    broker.claimTask(first.id, "worker-1");
+    broker.completeTask(first.id, "worker-1", { summary: "first done" });
+    broker.claimTask(second.id, "worker-1");
+    broker.completeTask(second.id, "worker-1", { summary: "second done" });
+
+    const events = broker.getTerminalTaskEventOutbox().subscribe();
+    const thirdEvent = events.find(e => e.payload.taskId === "order-third");
+    const firstEvent = events.find(e => e.payload.taskId === "order-first");
+    const secondEvent = events.find(e => e.payload.taskId === "order-second");
+
+    assert.ok(thirdEvent && firstEvent && secondEvent, "all three events must exist");
+    // First completed = progress 1
+    assert.equal(thirdEvent.payload.parentRoundProgress, 1);
+    // Second completed = progress 2
+    assert.equal(firstEvent.payload.parentRoundProgress, 2);
+    // Third completed = progress 3
+    assert.equal(secondEvent.payload.parentRoundProgress, 3);
+  });
+
+  it("does not inflate completed count on retry or supersession", () => {
+    // Reference: a2a-broker#656, a2a-broker#660, a2a-broker#659
+    const broker = new InMemoryA2ABroker();
+    registerWorker(broker, "worker-1");
+
+    const original = createTask(broker, {
+      id: "retry-original",
+      targetNodeId: "worker-1",
+      payload: { parentRoundId: "round-retry", parentRoundTotal: 2 },
+    });
+    broker.claimTask(original.id, "worker-1");
+    broker.completeTask(original.id, "worker-1", { summary: "original done" });
+
+    // Retry: new task in same round
+    const retry = createTask(broker, {
+      id: "retry-attempt",
+      targetNodeId: "worker-1",
+      payload: { parentRoundId: "round-retry", parentRoundTotal: 2 },
+    });
+    broker.claimTask(retry.id, "worker-1");
+    broker.completeTask(retry.id, "worker-1", { summary: "retry done" });
+
+    const events = broker.getTerminalTaskEventOutbox().subscribe();
+    const originalEvent = events.find(e => e.payload.taskId === "retry-original");
+    const retryEvent = events.find(e => e.payload.taskId === "retry-attempt");
+
+    assert.ok(originalEvent, "original event must exist");
+    assert.ok(retryEvent, "retry event must exist");
+    // First succeeded event = progress 1
+    assert.equal(originalEvent.payload.parentRoundProgress, 1);
+    // Second succeeded event = progress 2 (each completed task is counted)
+    assert.equal(retryEvent.payload.parentRoundProgress, 2);
+  });
+
+  it("does not inflate completed count on duplicate or replay events", () => {
+    // Reference: a2a-broker#656, a2a-broker#660, a2a-broker#659
+    const broker = new InMemoryA2ABroker();
+    registerWorker(broker, "worker-1");
+
+    const task = createTask(broker, {
+      id: "duplicate-task",
+      targetNodeId: "worker-1",
+      payload: { parentRoundId: "round-duplicate", parentRoundTotal: 1 },
+    });
+    broker.claimTask(task.id, "worker-1");
+    broker.completeTask(task.id, "worker-1", { summary: "done once" });
+
+    // Complete same task twice triggers an idempotent handle
+    broker.completeTask(task.id, "worker-1", { summary: "done again" });
+
+    const events = broker.getTerminalTaskEventOutbox().subscribe();
+    const deduped = events.filter(e => e.payload.taskId === "duplicate-task");
+    // Only one event should exist for this task (the replay is suppressed)
+    assert.equal(deduped.length, 1);
+    assert.equal(deduped[0].payload.parentRoundProgress, 1);
+  });
+
+  it("counts only succeeded events, not failed or canceled, for round progress", () => {
+    // Reference: a2a-broker#656, a2a-broker#660, a2a-broker#659
+    const broker = new InMemoryA2ABroker();
+    registerWorker(broker, "worker-1");
+
+    const fail1 = createTask(broker, {
+      id: "progress-fail-1",
+      targetNodeId: "worker-1",
+      payload: { parentRoundId: "round-progress", parentRoundTotal: 3 },
+    });
+    const fail2 = createTask(broker, {
+      id: "progress-fail-2",
+      targetNodeId: "worker-1",
+      payload: { parentRoundId: "round-progress", parentRoundTotal: 3 },
+    });
+    const succeed = createTask(broker, {
+      id: "progress-succeed-3",
+      targetNodeId: "worker-1",
+      payload: { parentRoundId: "round-progress", parentRoundTotal: 3 },
+    });
+
+    // fail, fail, succeed
+    broker.claimTask(fail1.id, "worker-1");
+    broker.failTask(fail1.id, "worker-1", { message: "failed first" });
+    broker.claimTask(fail2.id, "worker-1");
+    broker.failTask(fail2.id, "worker-1", { message: "failed second" });
+    broker.claimTask(succeed.id, "worker-1");
+    broker.completeTask(succeed.id, "worker-1", { summary: "finally succeeded" });
+
+    const events = broker.getTerminalTaskEventOutbox().subscribe();
+    const fail1Event = events.find(e => e.payload.taskId === "progress-fail-1");
+    const fail2Event = events.find(e => e.payload.taskId === "progress-fail-2");
+    const succeedEvent = events.find(e => e.payload.taskId === "progress-succeed-3");
+
+    assert.ok(fail1Event && fail2Event && succeedEvent, "all three events must exist");
+    // Failed events: progress = 0 (no succeeded events yet)
+    assert.equal(fail1Event.payload.parentRoundProgress, 0);
+    assert.equal(fail2Event.payload.parentRoundProgress, 0);
+    // Succeeded event: progress = 1 (one succeeded event, despite two prior failures)
+    assert.equal(succeedEvent.payload.parentRoundProgress, 1);
+  });
+
+  it("reconstructs parent round progress correctly after outbox snapshot restore", () => {
+    // Broker restart-safe: progress is reconstructed from events, not in-memory state
+    const broker = new InMemoryA2ABroker();
+    registerWorker(broker, "worker-1");
+
+    const a = createTask(broker, {
+      id: "restore-a",
+      targetNodeId: "worker-1",
+      payload: { parentRoundId: "round-restore", parentRoundTotal: 2 },
+    });
+    const b = createTask(broker, {
+      id: "restore-b",
+      targetNodeId: "worker-1",
+      payload: { parentRoundId: "round-restore", parentRoundTotal: 2 },
+    });
+
+    broker.claimTask(a.id, "worker-1");
+    broker.completeTask(a.id, "worker-1", { summary: "a done" });
+
+    // Snapshot the outbox
+    const snapshot = broker.getTerminalTaskEventOutbox().snapshot();
+    assert.equal(snapshot.length, 1);
+
+    // Restore snapshot into a fresh broker
+    const freshBroker = new InMemoryA2ABroker();
+    registerWorker(freshBroker, "worker-1");
+    freshBroker.getTerminalTaskEventOutbox().restoreSnapshot(snapshot);
+
+    // Complete task b on the fresh broker
+    // The fresh broker needs the task to exist for the terminal event to be derived
+    const b2 = freshBroker.createTask({
+      id: "restore-b",
+      intent: "analyze",
+      requester: { id: "hub", kind: "node", role: "hub" },
+      target: { id: "worker-1", kind: "node", role: "operator" },
+      payload: { parentRoundId: "round-restore", parentRoundTotal: 2 },
+    });
+    freshBroker.claimTask(b2.id, "worker-1");
+    freshBroker.completeTask(b2.id, "worker-1", { summary: "b done" });
+
+    const restoredEvents = freshBroker.getTerminalTaskEventOutbox().subscribe();
+    const aEvent = restoredEvents.find(e => e.payload.taskId === "restore-a");
+    const bEvent = restoredEvents.find(e => e.payload.taskId === "restore-b");
+
+    assert.ok(aEvent && bEvent, "both events must exist after restore");
+    // a was completed first
+    assert.equal(aEvent.payload.parentRoundProgress, 1);
+    // b was completed second, counting the restored a's succeeded event + current
+    assert.equal(bEvent.payload.parentRoundProgress, 2);
+  });
+
+  it("emits standalone 1/1 progress for single-task rounds", () => {
+    const broker = new InMemoryA2ABroker();
+    registerWorker(broker, "worker-1");
+
+    const solo = createTask(broker, {
+      id: "standalone-solo",
+      targetNodeId: "worker-1",
+      payload: { parentRoundId: "round-standalone", parentRoundTotal: 1 },
+    });
+    broker.claimTask(solo.id, "worker-1");
+    broker.completeTask(solo.id, "worker-1", { summary: "solo complete" });
+
+    const [event] = broker.getTerminalTaskEventOutbox().subscribe();
+    assert.ok(event);
+    assert.equal(event.payload.parentRoundProgress, 1);
+    assert.equal(event.payload.parentRoundTotal, 1);
+    assert.equal(event.payload.terminalBriefTitle, "A2A Terminal Brief 완료: worker-1(1/1)");
   });
 });
 
