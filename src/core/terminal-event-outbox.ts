@@ -275,15 +275,33 @@ export class TerminalTaskEventOutbox {
 
 
   enqueueCrossBrokerProjection(projection: CrossBrokerTerminalBriefProjection): TerminalTaskOutboxEvent | null {
-    const syntheticTaskId = projection.childTaskId ?? `cross-broker:${projection.parentRoundId}:${projection.originBrokerId}`;
-    const id = formatTerminalTaskEventId(
-      `cross-broker:${projection.parentRoundId}:${projection.originBrokerId}:${syntheticTaskId}`,
-      projection.status,
-      projection.completedAt,
-    );
+    // Stable notification idempotency key:
+    //   parentRoundId + canonicalChildTaskId + terminal status + notification owner
+    //
+    // The canonical child task id is, in order of preference:
+    //   1. projection.childTaskId  (explicit child broker task id)
+    //   2. worker:<childWorkerId>   (discriminates multiple workers from same origin broker)
+    //   3. broker:<originBrokerId>  (fallback — origin broker id alone)
+    //
+    // completedAt is intentionally EXCLUDED from this key so that replay/retry
+    // with slightly different timestamps (clock skew, retransmission) does not
+    // create duplicate operator-facing Terminal Brief events.
+    const canonicalChildTaskId = projection.childTaskId
+      ?? (projection.childWorkerId ? `worker:${projection.childWorkerId}` : undefined)
+      ?? `broker:${projection.originBrokerId}`;
+    const notificationOwner = projection.brokerOfRecordId ?? "unknown-parent-broker";
+    const stableId = `cross-broker:${projection.parentRoundId}:${canonicalChildTaskId}:${projection.status}:${notificationOwner}`;
+    const id = `terminal:${encodeURIComponent(stableId)}`;
+
     const existing = this.events.find((event) => event.id === id);
     if (existing) return existing;
     if (this.seen.has(id)) return null;
+
+    // syntheticTaskId is used for the outbox event payload taskId (cosmetic),
+    // not for idempotency. Use childTaskId or a descriptive fallback.
+    const syntheticTaskId = projection.childTaskId
+      ?? (projection.childWorkerId ? `cross-broker-worker:${projection.childWorkerId}` : undefined)
+      ?? `cross-broker:${projection.parentRoundId}:${projection.originBrokerId}`;
 
     const taskBrief = sanitizeTaskBrief(projection.taskBrief)
       ?? sanitizeTaskBrief(`Cross-broker Terminal Brief from ${projection.originBrokerId}`);

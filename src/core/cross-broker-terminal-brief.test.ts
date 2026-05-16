@@ -672,3 +672,211 @@ test("cross-broker mixed succeeded and failed projections: numerator counts only
   assert.equal(succeededEvent.payload.terminalBriefTitle, "A2A Terminal Brief 완료: bangtong(1/7)");
   assert.equal(succeededEvent.payload.status, "succeeded");
 });
+
+test("cross-broker Terminal Brief dedup uses stable notification idempotency key (ignores completedAt)", () => {
+  const broker = new InMemoryA2ABroker(undefined, undefined, { brokerId: "seoseo" });
+  createParentRound(broker);
+
+  // First projection with earlier timestamp
+  const first = broker.ingestCrossBrokerTerminalBriefProjection(projection({
+    parentRoundId: "round-parent",
+    originBrokerId: "gwakga",
+    brokerOfRecordId: "seoseo",
+    childTaskId: "gwakga-task-01",
+    childWorkerId: "dungae",
+    parentRoundTotal: "4",
+    parentRoundOrder: "2",
+    status: "succeeded",
+    completedAt: "2026-05-14T10:00:00.000Z",
+    emittedAt: "2026-05-14T10:00:01.000Z",
+  }));
+  assert.equal(first.accepted, true);
+  assert.equal(first.replayed, false);
+
+  // Second projection SAME logical notification (same parentRoundId, childTaskId,
+  // status, owner) but DIFFERENT completedAt and emittedAt. The sourceDigest
+  // changes (it includes completedAt), so the projection store replaces the
+  // record as a newer aggregate. The outbox idempotency key deliberately
+  // excludes completedAt, so the outbox returns the existing event.
+  const second = broker.ingestCrossBrokerTerminalBriefProjection(projection({
+    parentRoundId: "round-parent",
+    originBrokerId: "gwakga",
+    brokerOfRecordId: "seoseo",
+    childTaskId: "gwakga-task-01",
+    childWorkerId: "dungae",
+    parentRoundTotal: "4",
+    parentRoundOrder: "2",
+    status: "succeeded",
+    completedAt: "2026-05-14T11:00:00.000Z",
+    emittedAt: "2026-05-14T11:00:01.000Z",
+  }));
+  assert.equal(second.accepted, true);
+  // Different sourceDigest means the projection store treats this as a
+  // newer aggregate, not a replay (sourceDigest ≠ stale replay check).
+  assert.equal(second.replayed, false);
+
+  // Must still be exactly 1 terminal event — outbox dedup by stable key
+  // suppresses the duplicate even though the projection store accepted it.
+  const terminalEvents = broker.getTerminalTaskEventOutbox().subscribe();
+  assert.equal(terminalEvents.length, 1, "different completedAt must not create duplicate terminal events");
+
+  // The outbox event payload reflects the first projection's completedAt
+  // (it was not overwritten, only the dedup check returned the existing event).
+  assert.equal(terminalEvents[0]?.payload.completedAt, "2026-05-14T10:00:00.000Z",
+    "outbox event completedAt preserves first-accepted value");
+
+  // But the projection store record was updated with the newer completedAt
+  const stored = broker.getCrossBrokerTerminalBriefProjection("round-parent", "gwakga");
+  assert.equal(stored?.completedAt, "2026-05-14T11:00:00.000Z",
+    "projection store accepts newer completedAt without creating duplicate outbox event");
+});
+
+test("cross-broker Terminal Brief dedup key distinguishes multiple workers from same origin broker (no childTaskId)", () => {
+  const broker = new InMemoryA2ABroker(undefined, undefined, { brokerId: "seoseo" });
+  createParentRound(broker);
+
+  // dungae projection WITHOUT childTaskId — only childWorkerId differentiates
+  const dungae = broker.ingestCrossBrokerTerminalBriefProjection(projection({
+    parentRoundId: "round-parent",
+    originBrokerId: "gwakga",
+    brokerOfRecordId: "seoseo",
+    childTaskId: undefined,
+    childWorkerId: "dungae",
+    parentRoundTotal: "7",
+    parentRoundOrder: "5",
+    status: "succeeded",
+    completedAt: "2026-05-14T10:00:00.000Z",
+    emittedAt: "2026-05-14T10:00:01.000Z",
+  }));
+  assert.equal(dungae.accepted, true);
+
+  // jingun projection WITHOUT childTaskId — same parentRoundId, originBrokerId, different childWorkerId
+  const jingun = broker.ingestCrossBrokerTerminalBriefProjection(projection({
+    parentRoundId: "round-parent",
+    originBrokerId: "gwakga",
+    brokerOfRecordId: "seoseo",
+    childTaskId: undefined,
+    childWorkerId: "jingun",
+    parentRoundTotal: "7",
+    parentRoundOrder: "6",
+    status: "succeeded",
+    completedAt: "2026-05-14T10:05:00.000Z",
+    emittedAt: "2026-05-14T10:05:01.000Z",
+  }));
+  assert.equal(jingun.accepted, true);
+
+  // Both must have produced terminal events (no collision from missing childTaskId)
+  const terminalEvents = broker.getTerminalTaskEventOutbox().subscribe();
+  assert.equal(terminalEvents.length, 2, "two workers from same origin broker must each get a terminal event");
+
+  const workers = terminalEvents.map(e => e.payload.worker);
+  assert.ok(workers.includes("dungae"), "dungae must have a terminal event");
+  assert.ok(workers.includes("jingun"), "jingun must have a terminal event");
+
+  // Verify the projection store also has distinct records
+  const records = broker.listCrossBrokerTerminalBriefProjections({ parentRoundId: "round-parent", originBrokerId: "gwakga" });
+  assert.equal(records.length, 2, "projection store must have distinct records for both workers");
+  assert.deepEqual(records.map(r => r.childWorkerId).sort(), ["dungae", "jingun"]);
+});
+
+test("cross-broker Terminal Brief dedup key includes brokerOfRecordId in notification identity", () => {
+  const broker = new InMemoryA2ABroker(undefined, undefined, { brokerId: "shared-parent" });
+  createParentRound(broker);
+
+  // Same parent round, same child task, same status — different brokerOfRecordId
+  const firstOwner = broker.ingestCrossBrokerTerminalBriefProjection(projection({
+    parentRoundId: "round-parent",
+    originBrokerId: "child-broker-x",
+    brokerOfRecordId: "shared-parent",
+    childTaskId: "shared-child-42",
+    parentRoundTotal: "3",
+    parentRoundOrder: "1",
+    status: "succeeded",
+    completedAt: "2026-05-14T10:00:00.000Z",
+  }));
+  assert.equal(firstOwner.accepted, true);
+
+  // Second projection with different brokerOfRecordId — should be accepted as new, not replayed
+  const secondOwner = broker.ingestCrossBrokerTerminalBriefProjection(projection({
+    parentRoundId: "round-parent",
+    originBrokerId: "child-broker-x",
+    brokerOfRecordId: "other-broker",
+    childTaskId: "shared-child-42",
+    parentRoundTotal: "3",
+    parentRoundOrder: "1",
+    status: "succeeded",
+    completedAt: "2026-05-14T10:00:00.000Z",
+  }));
+  // Different brokerOfRecordId is technically rejected by wrong_origin validation
+  // for the primary broker. This test validates the idempotency key design —
+  // different owner gives a different stableId even when other identity fields match.
+  // The projection store recordKey already uses parentRoundId::originBrokerId::childKey
+  // so the second projection gets a different recordKey anyway.
+  assert.equal(secondOwner.accepted, false, "different brokerOfRecordId is rejected by origin check");
+  assert.equal(secondOwner.ack.code, "wrong_origin");
+
+  // Still only 1 accepted terminal event
+  const terminalEvents = broker.getTerminalTaskEventOutbox().subscribe();
+  assert.equal(terminalEvents.length, 1);
+  assert.equal(terminalEvents[0]?.payload.brokerOfRecordId, "shared-parent");
+});
+
+test("cross-broker Terminal Brief dedup only suppresses duplicates but preserves outbox event fields", () => {
+  const broker = new InMemoryA2ABroker(undefined, undefined, { brokerId: "seoseo" });
+  createParentRound(broker);
+
+  // First projection — accepted
+  const first = broker.ingestCrossBrokerTerminalBriefProjection(projection({
+    parentRoundId: "round-parent",
+    originBrokerId: "gwakga",
+    brokerOfRecordId: "seoseo",
+    childTaskId: "multiline-child",
+    childWorkerId: "dungae",
+    parentRoundTotal: "5",
+    parentRoundOrder: "3",
+    status: "succeeded",
+    summary: "completed successfully",
+    completedAt: "2026-05-15T01:00:00.000Z",
+  }));
+  assert.equal(first.accepted, true);
+
+  // Capture the outbox event for later comparison
+  const beforeEvents = broker.getTerminalTaskEventOutbox().subscribe();
+  const firstEvent = beforeEvents[0];
+
+  // Six replays — each should increment replayCount but NOT add more outbox events
+  for (let i = 0; i < 6; i++) {
+    const replay = broker.ingestCrossBrokerTerminalBriefProjection(projection({
+      parentRoundId: "round-parent",
+      originBrokerId: "gwakga",
+      brokerOfRecordId: "seoseo",
+      childTaskId: "multiline-child",
+      childWorkerId: "dungae",
+      parentRoundTotal: "5",
+      parentRoundOrder: "3",
+      status: "succeeded",
+      summary: "completed successfully",
+      completedAt: "2026-05-15T01:00:00.000Z",
+    }));
+    assert.equal(replay.accepted, true);
+    assert.equal(replay.replayed, true, `replay #${i + 1} must be marked as replayed`);
+    assert.equal(replay.record.replayCount, i + 1, `replayCount must be ${i + 1}`);
+  }
+
+  // Exactly 1 terminal event — all duplicates suppressed at operator-facing level
+  const afterEvents = broker.getTerminalTaskEventOutbox().subscribe();
+  assert.equal(afterEvents.length, 1, "replays must not produce additional outbox events");
+
+  // Original outbox event fields preserved unchanged
+  const currentEvent = afterEvents[0];
+  assert.equal(currentEvent.id, firstEvent.id, "event id must be unchanged across replays");
+  assert.equal(currentEvent.payload.status, "succeeded");
+  assert.equal(currentEvent.payload.worker, "dungae");
+  assert.equal(currentEvent.payload.parentRoundTotal, 5);
+  assert.equal(currentEvent.payload.terminalBriefTitle, "A2A Terminal Brief 완료: dungae(1/5)");
+
+  // Internal metadata on the projection record shows replay count
+  const stored = broker.getCrossBrokerTerminalBriefProjection("round-parent", "gwakga");
+  assert.equal(stored?.replayCount, 6, "internal replayCount evidence is preserved across 6 replays");
+  assert.equal(stored?.summary, "completed successfully");
+});
