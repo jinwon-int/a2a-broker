@@ -154,12 +154,20 @@ export interface BrokerHotEntityMirrorRetentionWindow extends BrokerHotEntityMir
 
 export interface BrokerHotAuditDiagnostics {
   total: number;
+  heartbeat: number;
+  heartbeatRatio: number;
   workerHeartbeat: number;
   workerHeartbeatRatio: number;
+  taskHeartbeat: number;
+  taskHeartbeatRatio: number;
   recentWindowMs: number;
   recentTotal: number;
+  recentHeartbeat: number;
+  recentHeartbeatRatio: number;
   recentWorkerHeartbeat: number;
   recentWorkerHeartbeatRatio: number;
+  recentTaskHeartbeat: number;
+  recentTaskHeartbeatRatio: number;
   warnings: string[];
 }
 
@@ -228,12 +236,15 @@ export interface SqliteBrokerStateStoreOptions {
   maxHotRuntimeTerminalTasks?: number;
   /** Maximum audit rows to hydrate into live memory when using loadSource=hot-tables. */
   maxHotRuntimeAuditEvents?: number;
+  /** Maximum heartbeat audit rows retained in the SQLite hot audit table. */
+  maxHotRuntimeHeartbeatAuditEvents?: number;
   /** Maximum terminal outbox rows to hydrate into live memory when using loadSource=hot-tables. */
   maxHotRuntimeTerminalOutboxEvents?: number;
 }
 
 export interface SqliteAuditRuntimeRepositoryOptions {
   maxHotAuditEvents?: number;
+  maxHotHeartbeatAuditEvents?: number;
 }
 
 export interface SqliteTaskHotTableFilters {
@@ -757,6 +768,7 @@ const terminalOutboxEventSchema = z
 export const DEFAULT_HOT_RUNTIME_MAX_NON_TERMINAL_TASKS = 500;
 export const DEFAULT_HOT_RUNTIME_MAX_TERMINAL_TASKS = 2_000;
 export const DEFAULT_HOT_RUNTIME_MAX_AUDIT_EVENTS = 5_000;
+export const DEFAULT_HOT_RUNTIME_MAX_HEARTBEAT_AUDIT_EVENTS = 500;
 export const DEFAULT_HOT_RUNTIME_MAX_TERMINAL_OUTBOX_EVENTS = DEFAULT_TERMINAL_TASK_OUTBOX_RETENTION;
 
 const crossBrokerTerminalBriefProjectionSchema = z
@@ -868,6 +880,7 @@ export class SqliteBrokerStateStore implements BrokerStateStore {
   private readonly maxHotRuntimeNonTerminalTasks: number;
   private readonly maxHotRuntimeTerminalTasks: number;
   private readonly maxHotRuntimeAuditEvents: number;
+  private readonly maxHotRuntimeHeartbeatAuditEvents: number;
   private readonly maxHotRuntimeTerminalOutboxEvents: number;
   private readonly db: DatabaseSync;
   private readonly journalMode: string;
@@ -890,6 +903,10 @@ export class SqliteBrokerStateStore implements BrokerStateStore {
     this.maxHotRuntimeAuditEvents = normalizeNonNegativeSqliteLimit(
       options.maxHotRuntimeAuditEvents,
       DEFAULT_HOT_RUNTIME_MAX_AUDIT_EVENTS,
+    );
+    this.maxHotRuntimeHeartbeatAuditEvents = normalizeNonNegativeSqliteLimit(
+      options.maxHotRuntimeHeartbeatAuditEvents,
+      Math.min(this.maxHotRuntimeAuditEvents, DEFAULT_HOT_RUNTIME_MAX_HEARTBEAT_AUDIT_EVENTS),
     );
     this.maxHotRuntimeTerminalOutboxEvents = normalizeNonNegativeSqliteLimit(
       options.maxHotRuntimeTerminalOutboxEvents,
@@ -1290,42 +1307,63 @@ export class SqliteBrokerStateStore implements BrokerStateStore {
 
   readHotAuditDiagnostics(): BrokerHotAuditDiagnostics {
     const total = this.readTableCount("broker_audit_events");
-    const row = this.db.prepare("SELECT COUNT(*) AS count FROM broker_audit_events WHERE action = 'worker.heartbeat'").get() as
-      | { count?: number | bigint }
-      | undefined;
-    const workerHeartbeat = typeof row?.count === "bigint"
-      ? Number(row.count)
-      : typeof row?.count === "number" ? row.count : 0;
+    const workerHeartbeat = coerceSqliteCount(
+      this.db.prepare("SELECT COUNT(*) AS count FROM broker_audit_events WHERE action = 'worker.heartbeat'").get() as
+        | { count?: number | bigint }
+        | undefined,
+    );
+    const taskHeartbeat = coerceSqliteCount(
+      this.db.prepare("SELECT COUNT(*) AS count FROM broker_audit_events WHERE action = 'task.heartbeat'").get() as
+        | { count?: number | bigint }
+        | undefined,
+    );
+    const heartbeat = workerHeartbeat + taskHeartbeat;
+    const heartbeatRatio = total > 0 ? heartbeat / total : 0;
     const workerHeartbeatRatio = total > 0 ? workerHeartbeat / total : 0;
+    const taskHeartbeatRatio = total > 0 ? taskHeartbeat / total : 0;
     const recentCutoff = new Date(Date.now() - HOT_AUDIT_RECENT_WINDOW_MS).toISOString();
-    const recentTotalRow = this.db.prepare("SELECT COUNT(*) AS count FROM broker_audit_events WHERE created_at >= ?").get(recentCutoff) as
-      | { count?: number | bigint }
-      | undefined;
-    const recentWorkerHeartbeatRow = this.db.prepare("SELECT COUNT(*) AS count FROM broker_audit_events WHERE action = 'worker.heartbeat' AND created_at >= ?").get(recentCutoff) as
-      | { count?: number | bigint }
-      | undefined;
-    const recentTotal = typeof recentTotalRow?.count === "bigint"
-      ? Number(recentTotalRow.count)
-      : typeof recentTotalRow?.count === "number" ? recentTotalRow.count : 0;
-    const recentWorkerHeartbeat = typeof recentWorkerHeartbeatRow?.count === "bigint"
-      ? Number(recentWorkerHeartbeatRow.count)
-      : typeof recentWorkerHeartbeatRow?.count === "number" ? recentWorkerHeartbeatRow.count : 0;
+    const recentTotal = coerceSqliteCount(
+      this.db.prepare("SELECT COUNT(*) AS count FROM broker_audit_events WHERE created_at >= ?").get(recentCutoff) as
+        | { count?: number | bigint }
+        | undefined,
+    );
+    const recentWorkerHeartbeat = coerceSqliteCount(
+      this.db.prepare("SELECT COUNT(*) AS count FROM broker_audit_events WHERE action = 'worker.heartbeat' AND created_at >= ?").get(recentCutoff) as
+        | { count?: number | bigint }
+        | undefined,
+    );
+    const recentTaskHeartbeat = coerceSqliteCount(
+      this.db.prepare("SELECT COUNT(*) AS count FROM broker_audit_events WHERE action = 'task.heartbeat' AND created_at >= ?").get(recentCutoff) as
+        | { count?: number | bigint }
+        | undefined,
+    );
+    const recentHeartbeat = recentWorkerHeartbeat + recentTaskHeartbeat;
+    const recentHeartbeatRatio = recentTotal > 0 ? recentHeartbeat / recentTotal : 0;
     const recentWorkerHeartbeatRatio = recentTotal > 0 ? recentWorkerHeartbeat / recentTotal : 0;
+    const recentTaskHeartbeatRatio = recentTotal > 0 ? recentTaskHeartbeat / recentTotal : 0;
     const warnings: string[] = [];
     if (total > 8_000) {
       warnings.push(`broker_audit_events has ${total} rows; expected SQLite hot-table retention near 5000`);
     }
-    if (recentWorkerHeartbeat >= HOT_AUDIT_HEARTBEAT_CHURN_WARNING_COUNT && recentWorkerHeartbeatRatio > 0.8) {
-      warnings.push(`worker.heartbeat audit events are ${Math.round(recentWorkerHeartbeatRatio * 100)}% of broker_audit_events in the last ${Math.round(HOT_AUDIT_RECENT_WINDOW_MS / 60_000)} minutes`);
+    if (recentHeartbeat >= HOT_AUDIT_HEARTBEAT_CHURN_WARNING_COUNT && recentHeartbeatRatio > 0.8) {
+      warnings.push(`heartbeat audit events are ${Math.round(recentHeartbeatRatio * 100)}% of broker_audit_events in the last ${Math.round(HOT_AUDIT_RECENT_WINDOW_MS / 60_000)} minutes`);
     }
     return {
       total,
+      heartbeat,
+      heartbeatRatio,
       workerHeartbeat,
       workerHeartbeatRatio,
+      taskHeartbeat,
+      taskHeartbeatRatio,
       recentWindowMs: HOT_AUDIT_RECENT_WINDOW_MS,
       recentTotal,
+      recentHeartbeat,
+      recentHeartbeatRatio,
       recentWorkerHeartbeat,
       recentWorkerHeartbeatRatio,
+      recentTaskHeartbeat,
+      recentTaskHeartbeatRatio,
       warnings,
     };
   }
@@ -1530,6 +1568,14 @@ export class SqliteBrokerStateStore implements BrokerStateStore {
     let result: SqliteHotRetentionApplyResult | undefined;
     this.runImmediateTransaction(() => {
       result = this.pruneHotAuditEventsToMaxUnsafe(maxRecords);
+    });
+    return result!;
+  }
+
+  pruneHotHeartbeatAuditEventsToMax(maxRecords: number): SqliteHotRetentionApplyResult {
+    let result: SqliteHotRetentionApplyResult | undefined;
+    this.runImmediateTransaction(() => {
+      result = this.pruneHotHeartbeatAuditEventsToMaxUnsafe(maxRecords);
     });
     return result!;
   }
@@ -1843,6 +1889,14 @@ export class SqliteBrokerStateStore implements BrokerStateStore {
     return typeof row?.count === "number" ? row.count : 0;
   }
 
+  private readHotHeartbeatAuditCount(): number {
+    return coerceSqliteCount(
+      this.db.prepare("SELECT COUNT(*) AS count FROM broker_audit_events WHERE action IN ('worker.heartbeat', 'task.heartbeat')").get() as
+        | { count?: number | bigint }
+        | undefined,
+    );
+  }
+
   private writeHotEntityTables(snapshot: BrokerSnapshot, hints?: BrokerStateSaveHints): void {
     const hotExchangeHints = hints?.hotExchanges;
     const hotExchangeMessageHints = hints?.hotExchangeMessages;
@@ -1885,14 +1939,15 @@ export class SqliteBrokerStateStore implements BrokerStateStore {
         this.upsertHotTombstonesUnsafe(hotTombstoneHints);
       }
       if (hotAuditHints !== undefined) {
-        const onlyWorkerHeartbeatHints =
+        const onlyHeartbeatAuditHints =
           hotAuditHints.length > 0 &&
-          hotAuditHints.every((event) => event.action === "worker.heartbeat" && event.targetType === "worker");
-        if (!onlyWorkerHeartbeatHints) {
+          hotAuditHints.every(isHeartbeatAuditEvent);
+        if (!onlyHeartbeatAuditHints) {
           this.applyCanonicalHotRetentionPlan("broker_audit_events", snapshot.auditEvents.map((event) => event.id));
         }
         this.upsertHotAuditEventsUnsafe(hotAuditHints);
-        if (onlyWorkerHeartbeatHints) {
+        if (onlyHeartbeatAuditHints) {
+          this.pruneHotHeartbeatAuditEventsToMaxUnsafe(this.maxHotRuntimeHeartbeatAuditEvents);
           this.pruneHotAuditEventsToMaxUnsafe(this.maxHotRuntimeAuditEvents);
         }
       }
@@ -2221,6 +2276,37 @@ export class SqliteBrokerStateStore implements BrokerStateStore {
     };
   }
 
+  private pruneHotHeartbeatAuditEventsToMaxUnsafe(maxRecords: number): SqliteHotRetentionApplyResult {
+    const max = Math.max(0, Math.floor(maxRecords));
+    const before = this.readHotHeartbeatAuditCount();
+    if (before <= max) {
+      return {
+        table: "broker_audit_events",
+        retainedCount: before,
+        requestedPruneCount: 0,
+        prunedCount: 0,
+        remainingCount: before,
+      };
+    }
+    const deleteResult = this.db.prepare(
+      `DELETE FROM broker_audit_events
+       WHERE id IN (
+         SELECT id FROM broker_audit_events
+         WHERE action IN ('worker.heartbeat', 'task.heartbeat')
+         ORDER BY created_at DESC, id DESC
+         LIMIT -1 OFFSET ?
+       )`,
+    ).run(max);
+    const remaining = this.readHotHeartbeatAuditCount();
+    return {
+      table: "broker_audit_events",
+      retainedCount: max,
+      requestedPruneCount: before - max,
+      prunedCount: Number(deleteResult.changes ?? 0),
+      remainingCount: remaining,
+    };
+  }
+
   private upsertHotWorkersUnsafe(workers: WorkerRecord[]): void {
     const upsertWorker = this.db.prepare(
       `INSERT INTO broker_workers
@@ -2510,12 +2596,17 @@ function workerMatchesRuntimeFilters(worker: WorkerRecord, filters: WorkerListFi
 
 export class SqliteAuditRuntimeRepository implements AuditRuntimeRepository {
   private readonly maxHotAuditEvents: number;
+  private readonly maxHotHeartbeatAuditEvents: number;
 
   constructor(
     private readonly store: SqliteBrokerStateStore,
     options: SqliteAuditRuntimeRepositoryOptions = {},
   ) {
     this.maxHotAuditEvents = Math.max(0, Math.floor(options.maxHotAuditEvents ?? 5_000));
+    this.maxHotHeartbeatAuditEvents = Math.max(
+      0,
+      Math.floor(options.maxHotHeartbeatAuditEvents ?? Math.min(this.maxHotAuditEvents, DEFAULT_HOT_RUNTIME_MAX_HEARTBEAT_AUDIT_EVENTS)),
+    );
   }
 
   listAuditEvents(filters: AuditListFilters = {}): AuditEvent[] {
@@ -2523,10 +2614,11 @@ export class SqliteAuditRuntimeRepository implements AuditRuntimeRepository {
   }
 
   appendAuditEvent(event: AuditEvent): void {
-    const hotEvent = event.action === "worker.heartbeat" && event.targetType === "worker"
-      ? { ...event, id: `worker-heartbeat:${event.targetId}` }
-      : event;
+    const hotEvent = { ...event, id: getHeartbeatAuditEventId(event) ?? event.id };
     this.store.upsertHotAuditEvents([hotEvent]);
+    if (isHeartbeatAuditEvent(hotEvent)) {
+      this.store.pruneHotHeartbeatAuditEventsToMax(this.maxHotHeartbeatAuditEvents);
+    }
     this.store.pruneHotAuditEventsToMax(this.maxHotAuditEvents);
   }
 }
@@ -2833,6 +2925,9 @@ function isAuditEventProtected(
   event: AuditEvent,
   protectedIds: Required<Record<keyof SqliteAuditHotRetentionProtection, Set<string>>>,
 ): boolean {
+  if (isHeartbeatAuditEvent(event)) {
+    return false;
+  }
   if (event.proposalId && protectedIds.proposalIds.has(event.proposalId)) {
     return true;
   }
@@ -2844,9 +2939,6 @@ function isAuditEventProtected(
     case "validation":
       return protectedIds.validationIds.has(event.targetId);
     case "worker":
-      if (event.action === "worker.heartbeat") {
-        return false;
-      }
       return protectedIds.workerIds.has(event.targetId);
     case "task":
       return protectedIds.taskIds.has(event.targetId);
@@ -2857,6 +2949,25 @@ function isAuditEventProtected(
     case "broker":
       return false;
   }
+}
+
+function isHeartbeatAuditEvent(event: Pick<AuditEvent, "action" | "targetType">): boolean {
+  return (
+    (event.action === "worker.heartbeat" && event.targetType === "worker") ||
+    (event.action === "task.heartbeat" && event.targetType === "task")
+  );
+}
+
+function getHeartbeatAuditEventId(
+  event: Pick<AuditEvent, "action" | "targetType" | "targetId">,
+): string | null {
+  if (event.action === "worker.heartbeat" && event.targetType === "worker") {
+    return `worker-heartbeat:${event.targetId}`;
+  }
+  if (event.action === "task.heartbeat" && event.targetType === "task") {
+    return `task-heartbeat:${event.targetId}`;
+  }
+  return null;
 }
 
 function isTerminalTaskStatus(status: TaskRecord["status"]): boolean {

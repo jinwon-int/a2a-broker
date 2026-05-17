@@ -141,7 +141,16 @@ export interface BrokerRetentionPolicy {
   inactiveWorkerRetentionMs: number;
   maxInactiveWorkers: number;
   auditRetentionMs: number;
+  /**
+   * Maximum meaningful, non-heartbeat audit events retained after the age
+   * window. Heartbeat audit rows use maxHeartbeatAuditEvents instead so
+   * liveness chatter cannot evict terminal/proposal/approval evidence.
+   */
   maxAuditEvents: number;
+  /** Maximum heartbeat audit rows retained after the age window. */
+  maxHeartbeatAuditEvents: number;
+  /** Minimum interval for recording identical task heartbeat audit evidence. */
+  heartbeatAuditSampleIntervalMs: number;
 }
 
 export interface InMemoryA2ABrokerOptions {
@@ -233,6 +242,7 @@ export const DEFAULT_MAX_REQUEUE_ATTEMPTS = 5;
  * at most once per minute; in-memory liveness remains updated on every request.
  */
 export const DEFAULT_WORKER_HEARTBEAT_PERSIST_INTERVAL_MS = 60_000;
+export const DEFAULT_HEARTBEAT_AUDIT_SAMPLE_INTERVAL_MS = 60_000;
 
 export const REQUEUE_EXHAUSTED_ERROR_CODE = "exceeded_requeue_limit";
 
@@ -245,6 +255,8 @@ export const DEFAULT_BROKER_RETENTION_POLICY: BrokerRetentionPolicy = {
   maxInactiveWorkers: 500,
   auditRetentionMs: 7 * 24 * 60 * 60 * 1000,
   maxAuditEvents: 5_000,
+  maxHeartbeatAuditEvents: 500,
+  heartbeatAuditSampleIntervalMs: DEFAULT_HEARTBEAT_AUDIT_SAMPLE_INTERVAL_MS,
 };
 
 export type TaskUpdateReason =
@@ -360,6 +372,7 @@ export class InMemoryA2ABroker {
   private readonly pendingHotArtifacts = new Map<string, ArtifactRecord>();
   private readonly pendingHotValidations = new Map<string, ValidationResult>();
   private readonly lastPersistedWorkerHeartbeatAtMs = new Map<string, number>();
+  private readonly lastPersistedTaskHeartbeatAuditAtMs = new Map<string, number>();
   private readonly stateListeners = new Set<BrokerStateListener>();
   private readonly profilingListeners = new Set<BrokerProfilingListener>();
   private readonly maxBufferedEventsPerTask: number;
@@ -2401,6 +2414,7 @@ export class InMemoryA2ABroker {
       nowMs,
       auditRetentionMs: this.retentionPolicy.auditRetentionMs,
       maxAuditEvents: this.retentionPolicy.maxAuditEvents,
+      maxHeartbeatAuditEvents: this.retentionPolicy.maxHeartbeatAuditEvents,
       retainedProposalIds,
       retainedTaskIds,
       retainedExchangeIds,
@@ -2748,9 +2762,7 @@ export class InMemoryA2ABroker {
     proposalId?: string;
     note?: string;
   }): AuditEvent {
-    const eventId = input.action === "worker.heartbeat" && input.targetType === "worker"
-      ? `worker-heartbeat:${input.targetId}`
-      : randomUUID();
+    const eventId = getHeartbeatAuditEventId(input) ?? randomUUID();
     const event: AuditEvent = {
       id: eventId,
       actorId: input.actorId,
@@ -3058,17 +3070,25 @@ export class InMemoryA2ABroker {
     this.assertTaskStatus(task.status, ["claimed", "running"], "heartbeat");
 
     const now = isoNow();
+    const nowMs = Date.parse(now);
     task.lastHeartbeatAt = now;
     task.updatedAt = now;
     this.setTaskRecord(task);
-    this.appendAuditEvent({
-      actorId: workerId,
-      action: "task.heartbeat",
-      targetType: "task",
-      targetId: task.id,
-      proposalId: task.proposalId,
-      note: "task heartbeat",
-    });
+    const lastPersistedAtMs = this.lastPersistedTaskHeartbeatAuditAtMs.get(task.id) ?? 0;
+    const shouldPersistHeartbeatAudit =
+      this.retentionPolicy.heartbeatAuditSampleIntervalMs === 0 ||
+      nowMs - lastPersistedAtMs >= this.retentionPolicy.heartbeatAuditSampleIntervalMs;
+    if (shouldPersistHeartbeatAudit) {
+      this.appendAuditEvent({
+        actorId: workerId,
+        action: "task.heartbeat",
+        targetType: "task",
+        targetId: task.id,
+        proposalId: task.proposalId,
+        note: "task heartbeat",
+      });
+      this.lastPersistedTaskHeartbeatAuditAtMs.set(task.id, nowMs);
+    }
     this.persistState();
     this.emitTaskUpdate(task, "started"); // re-emit so subscribers see the heartbeat
     return task;
@@ -4481,6 +4501,10 @@ function normalizeTaskResult(result: TaskResult | undefined): TaskResult {
 function normalizeBrokerRetentionPolicy(
   overrides?: Partial<BrokerRetentionPolicy>,
 ): BrokerRetentionPolicy {
+  const maxAuditEvents = normalizeNonNegativeInteger(
+    overrides?.maxAuditEvents,
+    DEFAULT_BROKER_RETENTION_POLICY.maxAuditEvents,
+  );
   return {
     terminalRetentionMs: normalizeNonNegativeInteger(
       overrides?.terminalRetentionMs,
@@ -4510,9 +4534,14 @@ function normalizeBrokerRetentionPolicy(
       overrides?.auditRetentionMs,
       DEFAULT_BROKER_RETENTION_POLICY.auditRetentionMs,
     ),
-    maxAuditEvents: normalizeNonNegativeInteger(
-      overrides?.maxAuditEvents,
-      DEFAULT_BROKER_RETENTION_POLICY.maxAuditEvents,
+    maxAuditEvents,
+    maxHeartbeatAuditEvents: normalizeNonNegativeInteger(
+      overrides?.maxHeartbeatAuditEvents,
+      Math.min(maxAuditEvents, DEFAULT_BROKER_RETENTION_POLICY.maxHeartbeatAuditEvents),
+    ),
+    heartbeatAuditSampleIntervalMs: normalizeNonNegativeInteger(
+      overrides?.heartbeatAuditSampleIntervalMs,
+      DEFAULT_BROKER_RETENTION_POLICY.heartbeatAuditSampleIntervalMs,
     ),
   };
 }
@@ -4663,6 +4692,7 @@ function selectRetainedAuditEventIds(params: {
   nowMs: number;
   auditRetentionMs: number;
   maxAuditEvents: number;
+  maxHeartbeatAuditEvents: number;
   retainedProposalIds: Set<string>;
   retainedTaskIds: Set<string>;
   retainedExchangeIds: Set<string>;
@@ -4673,6 +4703,7 @@ function selectRetainedAuditEventIds(params: {
 }): Set<string> {
   const retainedIds = new Set<string>();
   const retentionCandidates: Array<{ id: string; timestampMs: number }> = [];
+  const heartbeatCandidates: Array<{ id: string; timestampMs: number }> = [];
   const cutoffMs = params.nowMs - params.auditRetentionMs;
 
   for (const event of params.auditEvents) {
@@ -4681,16 +4712,29 @@ function selectRetainedAuditEventIds(params: {
       retainedIds.add(event.id);
       continue;
     }
-    retentionCandidates.push({ id: event.id, timestampMs });
+    const entry = { id: event.id, timestampMs };
+    if (isHeartbeatAuditEvent(event)) {
+      heartbeatCandidates.push(entry);
+    } else {
+      retentionCandidates.push(entry);
+    }
   }
 
-  sortedCopy(
-    retentionCandidates,
-    (a, b) => b.timestampMs - a.timestampMs || a.id.localeCompare(b.id),
-  )
-    .filter((entry) => entry.timestampMs >= cutoffMs)
-    .slice(0, params.maxAuditEvents)
-    .forEach((entry) => retainedIds.add(entry.id));
+  const retainRecentCandidates = (
+    candidates: Array<{ id: string; timestampMs: number }>,
+    maxEvents: number,
+  ) => {
+    sortedCopy(
+      candidates,
+      (a, b) => b.timestampMs - a.timestampMs || a.id.localeCompare(b.id),
+    )
+      .filter((entry) => entry.timestampMs >= cutoffMs)
+      .slice(0, maxEvents)
+      .forEach((entry) => retainedIds.add(entry.id));
+  };
+
+  retainRecentCandidates(retentionCandidates, params.maxAuditEvents);
+  retainRecentCandidates(heartbeatCandidates, params.maxHeartbeatAuditEvents);
 
   return retainedIds;
 }
@@ -4707,6 +4751,9 @@ function isAuditEventRetained(
     retainedWorkerIds: Set<string>;
   },
 ): boolean {
+  if (isHeartbeatAuditEvent(event)) {
+    return false;
+  }
   if (event.proposalId && params.retainedProposalIds.has(event.proposalId)) {
     return true;
   }
@@ -4719,9 +4766,6 @@ function isAuditEventRetained(
     case "validation":
       return params.retainedValidationIds.has(event.targetId);
     case "worker":
-      if (event.action === "worker.heartbeat") {
-        return false;
-      }
       return params.retainedWorkerIds.has(event.targetId);
     case "task":
       return params.retainedTaskIds.has(event.targetId);
@@ -4732,6 +4776,25 @@ function isAuditEventRetained(
     default:
       return false;
   }
+}
+
+function isHeartbeatAuditEvent(event: Pick<AuditEvent, "action" | "targetType">): boolean {
+  return (
+    (event.action === "worker.heartbeat" && event.targetType === "worker") ||
+    (event.action === "task.heartbeat" && event.targetType === "task")
+  );
+}
+
+function getHeartbeatAuditEventId(
+  event: Pick<AuditEvent, "action" | "targetType" | "targetId">,
+): string | null {
+  if (event.action === "worker.heartbeat" && event.targetType === "worker") {
+    return `worker-heartbeat:${event.targetId}`;
+  }
+  if (event.action === "task.heartbeat" && event.targetType === "task") {
+    return `task-heartbeat:${event.targetId}`;
+  }
+  return null;
 }
 
 function pruneMapEntries<T>(items: Map<string, T>, retainedIds: Set<string>): void {

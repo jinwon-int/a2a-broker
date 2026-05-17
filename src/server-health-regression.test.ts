@@ -633,10 +633,18 @@ test("/health response shape is stable across repeated calls (no field drift)", 
     // Audit diagnostics shape must be stable.
     const auditKeys = Object.keys((responses[0] as Record<string, unknown>).auditDiagnostics as Record<string, unknown>).sort();
     const expectedAuditKeys = [
+      "heartbeat",
+      "heartbeatRatio",
+      "recentHeartbeat",
+      "recentHeartbeatRatio",
+      "recentTaskHeartbeat",
+      "recentTaskHeartbeatRatio",
       "recentTotal",
       "recentWindowMs",
       "recentWorkerHeartbeat",
       "recentWorkerHeartbeatRatio",
+      "taskHeartbeat",
+      "taskHeartbeatRatio",
       "total",
       "warnings",
       "workerHeartbeat",
