@@ -26,6 +26,7 @@
     "receipt_gate_canary": "node scripts/receipt-gate-canary.mjs",
     "terminal_receipt_gap_matrix": "node scripts/terminal-receipt-gap-matrix.mjs",
     "terminal_outbox_backlog_classifier": "node scripts/terminal-receipt-closeout-report.mjs",
+    "terminal_outbox_cleanup_dryrun": "node scripts/terminal-receipt-closeout-report.mjs",
     "lifecycle_proof_evidence": "node scripts/broker-lifecycle-proof-evidence.mjs",
     "migration_health_gate": "node scripts/broker-migration-health-gate.mjs",
     "terminal_receipt_closeout_report": "node scripts/terminal-receipt-closeout-report.mjs",

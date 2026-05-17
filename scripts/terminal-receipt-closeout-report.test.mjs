@@ -19,6 +19,8 @@ function createDb() {
       payload TEXT NOT NULL
     );
   `);
+  db.exec('CREATE TABLE broker_tasks (id TEXT PRIMARY KEY, status TEXT NOT NULL, intent TEXT, target_node_id TEXT, assigned_worker_id TEXT, task_origin TEXT, updated_at TEXT NOT NULL, payload TEXT NOT NULL)');
+  db.exec('CREATE TABLE broker_audit_events (id TEXT PRIMARY KEY, action TEXT NOT NULL, target_type TEXT NOT NULL, target_id TEXT NOT NULL, created_at TEXT NOT NULL, payload TEXT NOT NULL)');
   return { db, file };
 }
 
@@ -47,6 +49,16 @@ function insertOutbox(db, { id, taskEventId, acknowledgedAt = null, createdAt, p
     .run(id, taskEventId, acknowledgedAt, createdAt, payload);
 }
 
+function insertTask(db, { id, status = 'succeeded', worker = 'sogyo', updatedAt = '2026-05-04T07:30:00.000Z' }) {
+  db.prepare('INSERT INTO broker_tasks (id, status, intent, target_node_id, assigned_worker_id, task_origin, updated_at, payload) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+    .run(id, status, 'analyze', worker, worker, 'operator', updatedAt, JSON.stringify({ id, status, assignedWorkerId: worker }));
+}
+
+function insertAudit(db, { id, action, targetId, createdAt }) {
+  db.prepare('INSERT INTO broker_audit_events (id, action, target_type, target_id, created_at, payload) VALUES (?, ?, ?, ?, ?, ?)')
+    .run(id, action, 'task', targetId, createdAt, JSON.stringify({ id, action, targetType: 'task', targetId, createdAt }));
+}
+
 describe('terminal receipt closeout report', () => {
   it('groups current post-cutoff gaps separately from legacy residue and confirmed receipts', () => {
     const { db, file } = createDb();
@@ -67,6 +79,9 @@ describe('terminal receipt closeout report', () => {
       createdAt: '2026-05-04T07:30:00.000Z',
       payload: terminalPayload({ id: 'terminal-current', taskEventId: 2 }),
     });
+    insertTask(db, { id: 'task-1', status: 'succeeded', worker: 'sogyo' });
+    insertAudit(db, { id: 'audit-created', action: 'task.created', targetId: 'task-1', createdAt: '2026-05-04T07:29:00.000Z' });
+    insertAudit(db, { id: 'audit-succeeded', action: 'task.succeeded', targetId: 'task-1', createdAt: '2026-05-04T07:30:00.000Z' });
     insertOutbox(db, {
       id: 'terminal-confirmed',
       taskEventId: 3,
@@ -109,6 +124,14 @@ describe('terminal receipt closeout report', () => {
     assert.deepEqual(report.classifications.allUnacked.byEvidenceClass, { accepted_or_provider_send_only: 2 });
     assert.deepEqual(report.classifications.allUnacked.byOrigin, { local: 2 });
     assert.deepEqual(report.classifications.currentPostCutoff.sampleIds, ['terminal-current']);
+    assert.equal(report.cleanupDryRun.autoAckCandidates, 0);
+    assert.equal(report.cleanupDryRun.autoPruneCandidates, 0);
+    assert.equal(report.cleanupDryRun.byDisposition.current_trace_required_before_canary, 1);
+    assert.equal(report.cleanupDryRun.byDisposition.legacy_prune_only_candidate_after_backup_approval, 1);
+    assert.equal(report.currentTrace.length, 1);
+    assert.equal(report.currentTrace[0].taskFound, true);
+    assert.deepEqual(report.currentTrace[0].auditActions, ['task.created', 'task.succeeded']);
+    assert.match(report.currentTrace[0].conclusion, /no operator-visible\/provider-delivery ACK evidence/);
     assert.match(report.currentPostCutoff[0].remediationHint, /operator-visible\/provider-delivery receipt evidence/);
   });
 
@@ -173,7 +196,11 @@ describe('terminal receipt closeout report', () => {
     });
     assert.deepEqual(report.classifications.allUnacked.byAgeBucket, { '6-24h': 1, '<1h': 1 });
     assert.equal(report.classifications.allUnacked.sampleIds.length, 1);
+    assert.deepEqual(report.cleanupDryRun.byDisposition, {
+      current_trace_required_before_canary: 2,
+    });
     assert.match(renderMarkdown(report), /Classifier: all unacked gaps/);
+    assert.match(renderMarkdown(report), /Cleanup dry-run plan/);
   });
 
   it('keeps report output operator-safe without raw payload, secrets, or filesystem paths', () => {
