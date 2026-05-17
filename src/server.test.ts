@@ -207,6 +207,26 @@ test("server surfaces env-injected broker version/build revision on health and d
   });
 });
 
+test("server exposes lightweight liveness without persistence diagnostics", async () => {
+  const server = await startTestServer({
+    edgeSecret: "test-edge-secret",
+  });
+  try {
+    const res = await fetch(`${server.baseUrl}/livez`);
+    assert.equal(res.status, 200);
+    assert.equal(res.headers.get("cache-control"), "no-store");
+    const body = await res.json();
+    assert.equal(body.ok, true);
+    assert.equal(body.service, "a2a-broker");
+    assert.equal(typeof body.uptimeSec, "number");
+    assert.equal(body.persistence, undefined);
+    assert.equal(body.auditDiagnostics, undefined);
+    assert.equal(body.terminalOutboxDiagnostics, undefined);
+  } finally {
+    await server.close();
+  }
+});
+
 test("server exposes durable broker identity on health and worker registration", async () => {
   await withEnv({ A2A_BROKER_ID: "broker-env-1", BROKER_ID: undefined }, async () => {
     const envServer = await startTestServer();
@@ -2297,6 +2317,9 @@ test("server requires x-a2a-edge-secret on non-health routes when configured", a
   try {
     const healthRes = await fetch(`${server.baseUrl}/health`);
     assert.equal(healthRes.status, 200);
+
+    const livezRes = await fetch(`${server.baseUrl}/livez`);
+    assert.equal(livezRes.status, 200);
 
     const agentCardRes = await fetch(`${server.baseUrl}/.well-known/agent-card.json`);
     assert.equal(agentCardRes.status, 200);

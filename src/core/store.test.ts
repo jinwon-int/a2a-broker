@@ -1622,6 +1622,60 @@ test("SqliteBrokerStateStore save hints update dirty task and audit rows while p
   }
 });
 
+test("SqliteBrokerStateStore incremental hints leave unrelated hot tables untouched", () => {
+  const temp = withTempFile("state.sqlite");
+  try {
+    const store = new SqliteBrokerStateStore(temp.filePath);
+    const task = makeTask("task-stable", "succeeded", "worker-a");
+    const outbox = makeTerminalOutboxEvent("outbox-stable", "task-stable", "2026-04-27T00:03:00.000Z");
+    const worker = makeWorker("worker-a");
+    const audit = makeAuditEvent("audit-stable", "task.succeeded", "task-stable");
+    store.save({
+      ...emptySnapshot(),
+      tasks: [task],
+      workers: [worker],
+      auditEvents: [audit],
+      terminalOutbox: [outbox],
+    });
+
+    const heartbeat = {
+      ...worker,
+      updatedAt: "2026-04-27T00:04:00.000Z",
+      lastSeenAt: "2026-04-27T00:04:00.000Z",
+    };
+    const heartbeatAudit = {
+      ...makeAuditEvent("worker-heartbeat:worker-a", "worker.heartbeat", "worker-a", "2026-04-27T00:04:00.000Z"),
+      targetType: "worker",
+    } satisfies BrokerSnapshot["auditEvents"][number];
+
+    store.save(
+      {
+        ...emptySnapshot(),
+        tasks: [task],
+        workers: [heartbeat],
+        auditEvents: [audit, heartbeatAudit],
+        terminalOutbox: [outbox],
+      },
+      {
+        hotWorkers: [heartbeat],
+        hotAuditEvents: [heartbeatAudit],
+      },
+    );
+
+    assert.deepEqual(store.readHotTasks().map((row) => row.id), ["task-stable"]);
+    assert.deepEqual(store.readHotTerminalOutbox().map((row) => row.id), ["outbox-stable"]);
+    assert.equal(store.readHotWorkers({ nodeId: "worker-a" })[0]?.lastSeenAt, heartbeat.lastSeenAt);
+    assert.deepEqual(
+      store.readHotAuditEvents().map((row) => row.id).sort(),
+      ["audit-stable", "worker-heartbeat:worker-a"],
+    );
+    assert.equal(store.getPersistenceInfo().lastPersistSkippedFullSnapshot, true);
+    store.close();
+  } finally {
+    temp.cleanup();
+  }
+});
+
 test("SqliteBrokerStateStore plans task hot-table retention from DB rows", () => {
   const temp = withTempFile("state.sqlite");
   try {
@@ -2982,4 +3036,3 @@ test("SqliteBrokerStateStore getPersistenceInfo returns incremental persist diag
     temp.cleanup();
   }
 });
-

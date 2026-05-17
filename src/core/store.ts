@@ -1881,6 +1881,51 @@ export class SqliteBrokerStateStore implements BrokerStateStore {
     const hotAuditHints = hints?.hotAuditEvents;
     const hotWorkerHints = hints?.hotWorkers;
     const hotTerminalOutboxHints = hints?.hotTerminalOutboxEvents;
+    const incrementalHotWrite = hintsHasAnyEntries(hints);
+    if (incrementalHotWrite) {
+      if (hotExchangeHints !== undefined) {
+        this.applyCanonicalHotRetentionPlan("broker_exchanges", snapshot.exchanges.map((exchange) => exchange.id));
+        this.upsertHotExchangesUnsafe(hotExchangeHints);
+      }
+      if (hotExchangeMessageHints !== undefined) {
+        this.applyCanonicalHotRetentionPlan("broker_exchange_messages", snapshot.exchangeMessages.map((message) => message.id));
+        this.upsertHotExchangeMessagesUnsafe(hotExchangeMessageHints);
+      }
+      if (hotProposalHints !== undefined) {
+        this.applyCanonicalHotRetentionPlan("broker_proposals", snapshot.proposals.map((proposal) => proposal.id));
+        this.upsertHotProposalsUnsafe(hotProposalHints);
+      }
+      if (hotArtifactHints !== undefined) {
+        this.applyCanonicalHotRetentionPlan("broker_artifacts", snapshot.artifacts.map((artifact) => artifact.id));
+        this.upsertHotArtifactsUnsafe(hotArtifactHints);
+      }
+      if (hotValidationHints !== undefined) {
+        this.applyCanonicalHotRetentionPlan("broker_validations", snapshot.validations.map((validation) => validation.id));
+        this.upsertHotValidationsUnsafe(hotValidationHints);
+      }
+      if (hotTaskHints !== undefined) {
+        this.applyCanonicalHotRetentionPlan("broker_tasks", snapshot.tasks.map((task) => task.id));
+        this.upsertHotTasksUnsafe(hotTaskHints);
+      }
+      if (hotTombstoneHints !== undefined) {
+        this.applyCanonicalHotRetentionPlan("broker_tombstones", (snapshot.tombstones ?? []).map((tombstone) => tombstone.taskId));
+        this.upsertHotTombstonesUnsafe(hotTombstoneHints);
+      }
+      if (hotAuditHints !== undefined) {
+        this.applyCanonicalHotRetentionPlan("broker_audit_events", snapshot.auditEvents.map((event) => event.id));
+        this.upsertHotAuditEventsUnsafe(hotAuditHints);
+      }
+      if (hotWorkerHints !== undefined) {
+        this.applyCanonicalHotRetentionPlan("broker_workers", snapshot.workers.map((worker) => worker.nodeId));
+        this.upsertHotWorkersUnsafe(hotWorkerHints);
+      }
+      if (hotTerminalOutboxHints !== undefined) {
+        this.applyCanonicalHotRetentionPlan("broker_terminal_outbox", (snapshot.terminalOutbox ?? []).map((event) => event.id));
+        this.upsertHotTerminalOutboxUnsafe(hotTerminalOutboxHints);
+      }
+      return;
+    }
+
     if (hotExchangeHints) {
       this.applyCanonicalHotRetentionPlan("broker_exchanges", snapshot.exchanges.map((exchange) => exchange.id));
     } else {
