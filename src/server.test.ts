@@ -4502,6 +4502,40 @@ test("SSE /a2a/operator/events replays missed alert opened and resolved events w
   }
 });
 
+test("SSE /a2a/operator/events does not buffer idle summary projections without subscribers", async () => {
+  const server = await startTestServer({
+    edgeSecret: "test-edge-secret",
+  });
+  try {
+    await registerTestWorker(server.baseUrl, "worker-a", "analyst", "test-edge-secret");
+
+    const replayController = new AbortController();
+    const replayRes = await fetch(`${server.baseUrl}/a2a/operator/events`, {
+      signal: replayController.signal,
+      headers: {
+        "x-a2a-edge-secret": "test-edge-secret",
+        "x-a2a-requester-id": "ops",
+        "x-a2a-requester-role": "operator",
+        accept: "text/event-stream",
+        "Last-Event-ID": "operator:0",
+      },
+    });
+    assert.equal(replayRes.status, 200);
+
+    const events = await readSseEventsUntil(
+      replayRes,
+      (seen) => seen.some((event) => event.event === "operator-snapshot"),
+    );
+    replayController.abort();
+
+    assert.deepEqual(events.map((event) => event.event), ["operator-snapshot"]);
+    const snapshot = JSON.parse(events[0]!.data);
+    assert.equal(snapshot.summary.workers.total, 1);
+  } finally {
+    await server.close();
+  }
+});
+
 test("SSE /a2a/operator/events falls back to a fresh snapshot when Last-Event-ID is outside the replay buffer", async () => {
   const server = await startTestServer({
     edgeSecret: "test-edge-secret",
