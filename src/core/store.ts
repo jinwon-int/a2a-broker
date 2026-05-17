@@ -1527,36 +1527,9 @@ export class SqliteBrokerStateStore implements BrokerStateStore {
   }
 
   pruneHotAuditEventsToMax(maxRecords: number): SqliteHotRetentionApplyResult {
-    const max = Math.max(0, Math.floor(maxRecords));
     let result: SqliteHotRetentionApplyResult | undefined;
     this.runImmediateTransaction(() => {
-      const before = this.readTableCount("broker_audit_events");
-      if (before <= max) {
-        result = {
-          table: "broker_audit_events",
-          retainedCount: before,
-          requestedPruneCount: 0,
-          prunedCount: 0,
-          remainingCount: before,
-        };
-        return;
-      }
-      const deleteResult = this.db.prepare(
-        `DELETE FROM broker_audit_events
-         WHERE id IN (
-           SELECT id FROM broker_audit_events
-           ORDER BY created_at DESC, id DESC
-           LIMIT -1 OFFSET ?
-         )`,
-      ).run(max);
-      const remaining = this.readTableCount("broker_audit_events");
-      result = {
-        table: "broker_audit_events",
-        retainedCount: max,
-        requestedPruneCount: before - max,
-        prunedCount: Number(deleteResult.changes ?? 0),
-        remainingCount: remaining,
-      };
+      result = this.pruneHotAuditEventsToMaxUnsafe(maxRecords);
     });
     return result!;
   }
@@ -1912,8 +1885,16 @@ export class SqliteBrokerStateStore implements BrokerStateStore {
         this.upsertHotTombstonesUnsafe(hotTombstoneHints);
       }
       if (hotAuditHints !== undefined) {
-        this.applyCanonicalHotRetentionPlan("broker_audit_events", snapshot.auditEvents.map((event) => event.id));
+        const onlyWorkerHeartbeatHints =
+          hotAuditHints.length > 0 &&
+          hotAuditHints.every((event) => event.action === "worker.heartbeat" && event.targetType === "worker");
+        if (!onlyWorkerHeartbeatHints) {
+          this.applyCanonicalHotRetentionPlan("broker_audit_events", snapshot.auditEvents.map((event) => event.id));
+        }
         this.upsertHotAuditEventsUnsafe(hotAuditHints);
+        if (onlyWorkerHeartbeatHints) {
+          this.pruneHotAuditEventsToMaxUnsafe(this.maxHotRuntimeAuditEvents);
+        }
       }
       if (hotWorkerHints !== undefined) {
         this.applyCanonicalHotRetentionPlan("broker_workers", snapshot.workers.map((worker) => worker.nodeId));
@@ -2208,6 +2189,36 @@ export class SqliteBrokerStateStore implements BrokerStateStore {
         JSON.stringify(audit),
       );
     }
+  }
+
+  private pruneHotAuditEventsToMaxUnsafe(maxRecords: number): SqliteHotRetentionApplyResult {
+    const max = Math.max(0, Math.floor(maxRecords));
+    const before = this.readTableCount("broker_audit_events");
+    if (before <= max) {
+      return {
+        table: "broker_audit_events",
+        retainedCount: before,
+        requestedPruneCount: 0,
+        prunedCount: 0,
+        remainingCount: before,
+      };
+    }
+    const deleteResult = this.db.prepare(
+      `DELETE FROM broker_audit_events
+       WHERE id IN (
+         SELECT id FROM broker_audit_events
+         ORDER BY created_at DESC, id DESC
+         LIMIT -1 OFFSET ?
+       )`,
+    ).run(max);
+    const remaining = this.readTableCount("broker_audit_events");
+    return {
+      table: "broker_audit_events",
+      retainedCount: max,
+      requestedPruneCount: before - max,
+      prunedCount: Number(deleteResult.changes ?? 0),
+      remainingCount: remaining,
+    };
   }
 
   private upsertHotWorkersUnsafe(workers: WorkerRecord[]): void {
