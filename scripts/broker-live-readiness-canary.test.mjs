@@ -56,6 +56,24 @@ describe('broker live-readiness canary', () => {
     assert.match(check.detail, /invalid receipt evidence: provider_sent/);
   });
 
+  it('classifies receipt-confirmed legacy rows without evidence as non-blocking', () => {
+    const check = evaluateEvidenceAcceptance({
+      events: [
+        {
+          id: 'legacy-receipt-confirmed',
+          ack: { status: 'receipt_confirmed', evidence: 'operator_visible', acknowledgedAt: '2026-05-13T00:00:00.000Z' },
+          receipt: { status: 'operator_visible', evidence: 'operator_visible', updatedAt: '2026-05-13T00:00:00.000Z' },
+          payload: { worker: 'gwakga', status: 'succeeded' },
+        },
+      ],
+    }, 200);
+
+    assert.equal(check.ok, true);
+    assert.equal(check.acceptedCount, 0);
+    assert.equal(check.legacyReceiptConfirmedWithoutEvidenceCount, 1);
+    assert.match(check.detail, /classified non-blocking/);
+  });
+
   it('blocks one-shot live eligibility until manual receipt-confirmed ACK exists', async () => {
     const fetchImpl = async (url) => {
       const parsed = new URL(String(url));
@@ -198,5 +216,54 @@ describe('broker live-readiness canary', () => {
     assert.equal(queueCheck?.ok, false);
     assert.match(queueCheck?.detail ?? '', /queued=1/);
     assert.match(queueCheck?.detail ?? '', /stale=1/);
+  });
+
+  it('blocks live readiness when health reports terminal-outbox unacked backlog', async () => {
+    const fetchImpl = async (url) => {
+      const parsed = new URL(String(url));
+      if (parsed.pathname === '/health') {
+        return jsonResponse({
+          ok: true,
+          service: 'a2a-broker',
+          version: '0.1.0',
+          build: { revision: 'test-build' },
+          terminalOutboxDiagnostics: {
+            total: 608,
+            acked: 299,
+            unacked: 309,
+            oldestUnackedCreatedAt: '2026-05-07T00:43:18.793Z',
+            warnings: ['oldest unacked terminal outbox entry is 11 days old'],
+          },
+        });
+      }
+      if (parsed.pathname === '/workers') {
+        return jsonResponse({ items: [{ nodeId: 'sogyo', status: 'online' }] });
+      }
+      if (parsed.pathname === '/tasks/diagnostics') {
+        return jsonResponse({ tasks: { byStatus: { queued: 0, claimed: 0, running: 0 }, stale: 0 } });
+      }
+      if (parsed.pathname === '/a2a/tasks/terminal-outbox') {
+        return jsonResponse({
+          kind: 'task.terminal.outbox',
+          events: [{
+            id: 'legacy-confirmed-no-evidence',
+            ack: { status: 'receipt_confirmed', evidence: 'operator_visible' },
+            receipt: { status: 'operator_visible', evidence: 'operator_visible' },
+            payload: { worker: 'gwakga', status: 'succeeded' },
+          }],
+        });
+      }
+      throw new Error(`unexpected path ${parsed.pathname}`);
+    };
+
+    const report = await runLiveReadinessCanary({ baseUrl: 'http://broker.local', fetchImpl });
+    const backlog = report.checks.find((check) => check.check === 'terminal-outbox backlog diagnostic');
+    const evidence = report.checks.find((check) => check.check === 'canonical PR/Done/Block evidence acceptance');
+
+    assert.equal(report.ok, false);
+    assert.equal(backlog?.ok, false);
+    assert.match(backlog?.detail ?? '', /unacked=309/);
+    assert.equal(evidence?.ok, true);
+    assert.equal(evidence?.legacyReceiptConfirmedWithoutEvidenceCount, 1);
   });
 });

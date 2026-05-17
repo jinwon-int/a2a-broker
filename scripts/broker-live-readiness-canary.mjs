@@ -137,10 +137,18 @@ function firstEvidenceUrl(payload) {
   return null;
 }
 
+function healthRevision(body) {
+  const build = body?.build;
+  if (build && typeof build === 'object' && !Array.isArray(build)) {
+    return build.revision ?? build.version ?? build.tag ?? null;
+  }
+  return build ?? body?.revision ?? body?.version ?? null;
+}
+
 function evaluateHealth(body, status) {
   if (status !== 200) return fail('health revision', `expected HTTP 200, got ${status}`);
   if (!(body?.ok === true || body?.status === 'ok')) return fail('health revision', 'health payload did not report ok');
-  const revision = body.build ?? body.revision ?? body.version ?? null;
+  const revision = healthRevision(body);
   if (!revision) return fail('health revision', 'missing build/version revision in /health payload');
   return ok('health revision', `healthy revision=${revision}`, {
     service: body.service ?? null,
@@ -181,6 +189,36 @@ function statusCountsFromDiagnostics(body) {
     running: countStatus('running'),
     stale: Number(body?.tasks?.stale ?? body?.stale ?? items.filter((item) => item?.diagnosticStatus === 'stale' || item?.status === 'stale').length ?? 0),
   };
+}
+
+function evaluateTerminalOutboxDiagnostics(body, status) {
+  if (status !== 200) return fail('terminal-outbox backlog diagnostic', `expected HTTP 200, got ${status}`);
+  const diagnostics = body?.terminalOutboxDiagnostics;
+  if (!diagnostics || typeof diagnostics !== 'object') {
+    return ok('terminal-outbox backlog diagnostic', 'health payload has no terminal-outbox diagnostics; skipped');
+  }
+  const total = Number(diagnostics.total ?? 0);
+  const acked = Number(diagnostics.acked ?? 0);
+  const unacked = Number(diagnostics.unacked ?? 0);
+  const oldestUnackedCreatedAt = diagnostics.oldestUnackedCreatedAt ?? null;
+  const warnings = Array.isArray(diagnostics.warnings) ? diagnostics.warnings : [];
+  const detail = `total=${total}, acked=${acked}, unacked=${unacked}${oldestUnackedCreatedAt ? `, oldestUnacked=${oldestUnackedCreatedAt}` : ''}`;
+  if (unacked > 0) {
+    return fail('terminal-outbox backlog diagnostic', `${detail}; live canary must stay blocked until stale unacked rows are isolated, ACKed with approved evidence, or pruned under an approved plan`, {
+      total,
+      acked,
+      unacked,
+      oldestUnackedCreatedAt,
+      warnings,
+    });
+  }
+  return ok('terminal-outbox backlog diagnostic', detail, {
+    total,
+    acked,
+    unacked,
+    oldestUnackedCreatedAt,
+    warnings,
+  });
 }
 
 function evaluateQueue(body, status) {
@@ -226,6 +264,10 @@ function oneShotEligibilityFromChecks(checks) {
   return checks.find((check) => check.check === 'one-shot live eligibility manual receipt gate') ?? {};
 }
 
+function receiptConfirmed(event) {
+  return event?.ack?.status === 'receipt_confirmed';
+}
+
 function summarizeOutboxEvent(event) {
   const payload = event?.payload ?? event?.output ?? {};
   return {
@@ -241,14 +283,31 @@ export function evaluateEvidenceAcceptance(body, status) {
   if (status !== 200) return fail('canonical PR/Done/Block evidence acceptance', `expected HTTP 200, got ${status}`);
   const events = Array.isArray(body?.events) ? body.events : [];
   const blockers = [];
+  const legacyReceiptConfirmedWithoutEvidence = [];
+  const acceptedEvents = [];
   for (const event of events) {
     const payload = event?.payload ?? event?.output ?? {};
-    if (!firstEvidenceUrl(payload)) blockers.push(`${event?.id ?? '<missing-id>'}: missing canonical HTTP PR/Done/Block evidence`);
+    const evidenceUrl = firstEvidenceUrl(payload);
+    if (!evidenceUrl) {
+      if (receiptConfirmed(event)) {
+        legacyReceiptConfirmedWithoutEvidence.push(event?.id ?? '<missing-id>');
+      } else {
+        blockers.push(`${event?.id ?? '<missing-id>'}: missing canonical HTTP PR/Done/Block evidence`);
+      }
+    } else {
+      acceptedEvents.push(event);
+    }
     blockers.push(...validateReceiptFields(payload).map((reason) => `${event?.id ?? '<missing-id>'}: ${reason}`));
   }
   if (blockers.length > 0) return fail('canonical PR/Done/Block evidence acceptance', blockers.join('; '), { eventCount: events.length });
-  return ok('canonical PR/Done/Block evidence acceptance', `${events.length} terminal event(s) carry canonical evidence`, {
+  const legacySuffix = legacyReceiptConfirmedWithoutEvidence.length > 0
+    ? `; ${legacyReceiptConfirmedWithoutEvidence.length} receipt-confirmed legacy row(s) without evidence classified non-blocking`
+    : '';
+  return ok('canonical PR/Done/Block evidence acceptance', `${acceptedEvents.length}/${events.length} terminal event(s) carry canonical evidence${legacySuffix}`, {
     eventCount: events.length,
+    acceptedCount: acceptedEvents.length,
+    legacyReceiptConfirmedWithoutEvidenceCount: legacyReceiptConfirmedWithoutEvidence.length,
+    legacyReceiptConfirmedWithoutEvidence: legacyReceiptConfirmedWithoutEvidence.slice(0, 20),
     events: events.map(summarizeOutboxEvent),
   });
 }
@@ -310,6 +369,7 @@ export function runNoLiveCanary(options = {}) {
   const checks = [
     ok('run mode', 'no-live synthetic proof; no broker HTTP request, deploy, Gateway restart, Telegram send, DB mutation, or terminal ACK attempted'),
     evaluateHealth(sample.health.body, sample.health.status),
+    evaluateTerminalOutboxDiagnostics(sample.health.body, sample.health.status),
     evaluateWorkers(sample.workers.body, sample.workers.status, options.expectedWorkers ?? ['bangtong', 'dungae', 'sogyo', 'nosuk', 'yukson']),
     evaluateQueue(sample.diagnostics.body, sample.diagnostics.status),
     evaluateEvidenceAcceptance(sample.outbox.body, sample.outbox.status),
@@ -345,6 +405,7 @@ export async function runLiveReadinessCanary(options = {}) {
   ]);
   const checks = [
     evaluateHealth(health.body, health.status),
+    evaluateTerminalOutboxDiagnostics(health.body, health.status),
     evaluateWorkers(workers.body, workers.status, options.expectedWorkers ?? []),
     evaluateQueue(diagnostics.body, diagnostics.status),
     evaluateEvidenceAcceptance(outbox.body, outbox.status),
