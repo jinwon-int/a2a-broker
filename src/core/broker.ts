@@ -242,6 +242,7 @@ export const DEFAULT_MAX_REQUEUE_ATTEMPTS = 5;
  * at most once per minute; in-memory liveness remains updated on every request.
  */
 export const DEFAULT_WORKER_HEARTBEAT_PERSIST_INTERVAL_MS = 60_000;
+const HOT_PERSIST_FULL_RETENTION_INTERVAL_MS = 5 * 60_000;
 export const DEFAULT_HEARTBEAT_AUDIT_SAMPLE_INTERVAL_MS = 60_000;
 
 export const REQUEUE_EXHAUSTED_ERROR_CODE = "exceeded_requeue_limit";
@@ -300,6 +301,9 @@ export interface BrokerProfilingSample {
   operation: BrokerProfilingOperation;
   startedAt: string;
   durationMs: number;
+  persistenceMode?: "full" | "hot";
+  retentionApplied?: boolean;
+  snapshotExported?: boolean;
   saveHints?: {
     hotExchanges: number;
     hotExchangeMessages: number;
@@ -394,6 +398,7 @@ export class InMemoryA2ABroker {
   private readonly brokerId?: string;
   private readonly teamId?: string;
   private readonly workerHeartbeatPersistIntervalMs: number;
+  private lastFullRetentionPersistAtMs = Date.now();
 
   constructor(
     private readonly stateStore?: BrokerStateStore,
@@ -2601,7 +2606,31 @@ export class InMemoryA2ABroker {
   private persistState(): void {
     const startedAtMs = Date.now();
     const startedAt = new Date(startedAtMs).toISOString();
+    const hotSave = this.stateStore?.saveHotEntities;
+    if (
+      hotSave &&
+      this.hasPendingStateSaveHints() &&
+      startedAtMs - this.lastFullRetentionPersistAtMs < HOT_PERSIST_FULL_RETENTION_INTERVAL_MS
+    ) {
+      const hints = this.consumeStateSaveHintsWithoutSnapshot();
+      if (hints) {
+        hotSave.call(this.stateStore, hints);
+        this.emitStateChange();
+        this.emitProfilingSample({
+          operation: "persistState",
+          startedAt,
+          durationMs: Date.now() - startedAtMs,
+          persistenceMode: "hot",
+          retentionApplied: false,
+          snapshotExported: false,
+          saveHints: countStateSaveHints(hints),
+        });
+        return;
+      }
+    }
+
     this.applyRetentionPolicy();
+    this.lastFullRetentionPersistAtMs = startedAtMs;
     const snapshot = this.exportSnapshot();
     const hints = this.consumeStateSaveHints(snapshot);
     this.stateStore?.save(snapshot, hints);
@@ -2610,6 +2639,9 @@ export class InMemoryA2ABroker {
       operation: "persistState",
       startedAt,
       durationMs: Date.now() - startedAtMs,
+      persistenceMode: "full",
+      retentionApplied: true,
+      snapshotExported: true,
       saveHints: hints ? countStateSaveHints(hints) : undefined,
     });
   }
@@ -2664,6 +2696,63 @@ export class InMemoryA2ABroker {
     this.persistState();
   }
 
+  private hasPendingStateSaveHints(): boolean {
+    return (
+      this.pendingHotExchanges.size > 0 ||
+      this.pendingHotExchangeMessages.size > 0 ||
+      this.pendingHotProposals.size > 0 ||
+      this.pendingHotArtifacts.size > 0 ||
+      this.pendingHotValidations.size > 0 ||
+      this.pendingHotTasks.size > 0 ||
+      this.pendingHotTombstones.size > 0 ||
+      this.pendingHotAuditEvents.size > 0 ||
+      this.pendingHotWorkers.size > 0 ||
+      this.pendingHotTerminalOutboxEvents.size > 0
+    );
+  }
+
+  private consumeStateSaveHintsWithoutSnapshot(): BrokerStateSaveHints | undefined {
+    if (!this.hasPendingStateSaveHints()) {
+      return undefined;
+    }
+    const hotExchanges = [...this.pendingHotExchanges.values()];
+    const hotExchangeMessages = [...this.pendingHotExchangeMessages.values()];
+    const hotProposals = [...this.pendingHotProposals.values()];
+    const hotArtifacts = [...this.pendingHotArtifacts.values()];
+    const hotValidations = [...this.pendingHotValidations.values()];
+    const hotTasks = [...this.pendingHotTasks.values()];
+    const hotTombstones = [...this.pendingHotTombstones.values()];
+    const hotAuditEvents = [...this.pendingHotAuditEvents.values()];
+    const hotWorkers = [...this.pendingHotWorkers.values()];
+    const hotTerminalOutboxEvents = [...this.pendingHotTerminalOutboxEvents.values()];
+    this.clearPendingStateSaveHints();
+    return {
+      ...(hotExchanges.length ? { hotExchanges } : {}),
+      ...(hotExchangeMessages.length ? { hotExchangeMessages } : {}),
+      ...(hotProposals.length ? { hotProposals } : {}),
+      ...(hotArtifacts.length ? { hotArtifacts } : {}),
+      ...(hotValidations.length ? { hotValidations } : {}),
+      ...(hotTasks.length ? { hotTasks } : {}),
+      ...(hotTombstones.length ? { hotTombstones } : {}),
+      ...(hotAuditEvents.length ? { hotAuditEvents } : {}),
+      ...(hotWorkers.length ? { hotWorkers } : {}),
+      ...(hotTerminalOutboxEvents.length ? { hotTerminalOutboxEvents } : {}),
+    };
+  }
+
+  private clearPendingStateSaveHints(): void {
+    this.pendingHotExchanges.clear();
+    this.pendingHotExchangeMessages.clear();
+    this.pendingHotProposals.clear();
+    this.pendingHotArtifacts.clear();
+    this.pendingHotValidations.clear();
+    this.pendingHotTasks.clear();
+    this.pendingHotTombstones.clear();
+    this.pendingHotAuditEvents.clear();
+    this.pendingHotWorkers.clear();
+    this.pendingHotTerminalOutboxEvents.clear();
+  }
+
   private consumeStateSaveHints(snapshot: BrokerSnapshot): BrokerStateSaveHints | undefined {
     if (
       this.pendingHotExchanges.size === 0 &&
@@ -2699,16 +2788,7 @@ export class InMemoryA2ABroker {
     const hotAuditEvents = [...this.pendingHotAuditEvents.values()].filter((event) => retainedAuditEventIds.has(event.id));
     const hotWorkers = [...this.pendingHotWorkers.values()].filter((worker) => retainedWorkerIds.has(worker.nodeId));
     const hotTerminalOutboxEvents = [...this.pendingHotTerminalOutboxEvents.values()].filter((event) => retainedTerminalOutboxIds.has(event.id));
-    this.pendingHotExchanges.clear();
-    this.pendingHotExchangeMessages.clear();
-    this.pendingHotProposals.clear();
-    this.pendingHotArtifacts.clear();
-    this.pendingHotValidations.clear();
-    this.pendingHotTasks.clear();
-    this.pendingHotTombstones.clear();
-    this.pendingHotAuditEvents.clear();
-    this.pendingHotWorkers.clear();
-    this.pendingHotTerminalOutboxEvents.clear();
+    this.clearPendingStateSaveHints();
     return {
       ...(hotExchanges.length ? { hotExchanges } : {}),
       ...(hotExchangeMessages.length ? { hotExchangeMessages } : {}),
