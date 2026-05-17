@@ -2322,6 +2322,38 @@ test("broker retention coalesces worker heartbeat audit rows without pruning wor
   assert.equal(auditActions.filter((action) => action === "worker.heartbeat").length, 1);
 });
 
+test("broker retention coalesces task heartbeat audit rows without pruning task lifecycle proof", () => {
+  const broker = new InMemoryA2ABroker(undefined, undefined, {
+    retention: {
+      auditRetentionMs: 60 * 60 * 1000,
+      maxAuditEvents: 4,
+      maxHeartbeatAuditEvents: 1,
+      heartbeatAuditSampleIntervalMs: 0,
+    },
+  });
+  registerWorker(broker, "worker-task-heartbeat-cap");
+  const task = createWorkerTask(broker, "task-heartbeat-cap", "worker-task-heartbeat-cap");
+  broker.claimTask(task.id, "worker-task-heartbeat-cap");
+  broker.startTask(task.id, "worker-task-heartbeat-cap");
+
+  broker.heartbeatTask(task.id, "worker-task-heartbeat-cap");
+  broker.heartbeatTask(task.id, "worker-task-heartbeat-cap");
+  broker.heartbeatTask(task.id, "worker-task-heartbeat-cap");
+
+  const auditEvents = broker.exportSnapshot().auditEvents;
+  const auditActions = auditEvents.map((event) => event.action);
+
+  assert.equal(auditActions.filter((action) => action === "task.created").length, 1);
+  assert.equal(auditActions.filter((action) => action === "task.claimed").length, 1);
+  assert.equal(auditActions.filter((action) => action === "task.started").length, 1);
+  assert.deepEqual(
+    auditEvents
+      .filter((event) => event.action === "task.heartbeat")
+      .map((event) => event.id),
+    [`task-heartbeat:${task.id}`],
+  );
+});
+
 test("subscribeToTask streams lifecycle updates and marks terminal events final", () => {
   const broker = new InMemoryA2ABroker();
   registerWorker(broker, "worker-a");

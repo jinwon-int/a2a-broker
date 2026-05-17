@@ -620,12 +620,20 @@ test("server reports SQLite persistence metadata when SQLite backend is enabled"
     });
     assert.deepEqual(health.auditDiagnostics, {
       total: 0,
+      heartbeat: 0,
+      heartbeatRatio: 0,
       workerHeartbeat: 0,
       workerHeartbeatRatio: 0,
+      taskHeartbeat: 0,
+      taskHeartbeatRatio: 0,
       recentWindowMs: 600_000,
       recentTotal: 0,
+      recentHeartbeat: 0,
+      recentHeartbeatRatio: 0,
       recentWorkerHeartbeat: 0,
       recentWorkerHeartbeatRatio: 0,
+      recentTaskHeartbeat: 0,
+      recentTaskHeartbeatRatio: 0,
       warnings: [],
     });
   } finally {

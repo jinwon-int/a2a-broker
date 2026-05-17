@@ -32,6 +32,7 @@ import {
   CURRENT_BROKER_STATE_VERSION,
   DEFAULT_BROKER_STATE_MAX_BYTES,
   DEFAULT_HOT_RUNTIME_MAX_AUDIT_EVENTS,
+  DEFAULT_HOT_RUNTIME_MAX_HEARTBEAT_AUDIT_EVENTS,
   DEFAULT_HOT_RUNTIME_MAX_NON_TERMINAL_TASKS,
   DEFAULT_HOT_RUNTIME_MAX_TERMINAL_OUTBOX_EVENTS,
   DEFAULT_HOT_RUNTIME_MAX_TERMINAL_TASKS,
@@ -395,8 +396,10 @@ export interface BrokerServerOptions {
   maxHotRuntimeNonTerminalTasks?: number;
   /** Max terminal task rows to hydrate from SQLite hot tables; active tasks always hydrate. Env: `BROKER_HOT_RUNTIME_MAX_TERMINAL_TASKS`. */
   maxHotRuntimeTerminalTasks?: number;
-  /** Max audit rows to hydrate from SQLite hot tables. Env: `BROKER_HOT_RUNTIME_MAX_AUDIT_EVENTS`. */
+  /** Max audit rows to hydrate from SQLite hot tables. Env: BROKER_HOT_RUNTIME_MAX_AUDIT_EVENTS. */
   maxHotRuntimeAuditEvents?: number;
+  /** Max heartbeat audit rows retained in SQLite hot tables. Env: BROKER_HOT_RUNTIME_MAX_HEARTBEAT_AUDIT_EVENTS. */
+  maxHotRuntimeHeartbeatAuditEvents?: number;
   /** Max terminal outbox rows to hydrate from SQLite hot tables. Env: `BROKER_HOT_RUNTIME_MAX_TERMINAL_OUTBOX_EVENTS`. */
   maxHotRuntimeTerminalOutboxEvents?: number;
   trustedProxy?: boolean;
@@ -487,6 +490,7 @@ export interface BrokerServerRuntime {
     maxHotRuntimeNonTerminalTasks: number;
     maxHotRuntimeTerminalTasks: number;
     maxHotRuntimeAuditEvents: number;
+    maxHotRuntimeHeartbeatAuditEvents: number;
     maxHotRuntimeTerminalOutboxEvents: number;
     trustedProxy: boolean;
     staleReaperEnabled: boolean;
@@ -531,6 +535,7 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
   const maxHotRuntimeNonTerminalTasks = hotRuntimeLimits.maxNonTerminalTasks;
   const maxHotRuntimeTerminalTasks = hotRuntimeLimits.maxTerminalTasks;
   const maxHotRuntimeAuditEvents = hotRuntimeLimits.maxAuditEvents;
+  const maxHotRuntimeHeartbeatAuditEvents = hotRuntimeLimits.maxHeartbeatAuditEvents;
   const maxHotRuntimeTerminalOutboxEvents = hotRuntimeLimits.maxTerminalOutboxEvents;
   const staleReaperEnabled =
     options.staleReaperEnabled ?? resolveBooleanEnv(process.env.STALE_REAPER_ENABLED, true);
@@ -1958,6 +1963,7 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
       maxHotRuntimeNonTerminalTasks,
       maxHotRuntimeTerminalTasks,
       maxHotRuntimeAuditEvents,
+      maxHotRuntimeHeartbeatAuditEvents,
       maxHotRuntimeTerminalOutboxEvents,
       trustedProxy,
       staleReaperEnabled,
@@ -1977,6 +1983,7 @@ export interface BrokerHotRuntimeLimits {
   maxNonTerminalTasks: number;
   maxTerminalTasks: number;
   maxAuditEvents: number;
+  maxHeartbeatAuditEvents: number;
   maxTerminalOutboxEvents: number;
 }
 
@@ -1984,6 +1991,7 @@ const DEFAULT_BROKER_HOT_RUNTIME_LIMITS: BrokerHotRuntimeLimits = {
   maxNonTerminalTasks: DEFAULT_HOT_RUNTIME_MAX_NON_TERMINAL_TASKS,
   maxTerminalTasks: DEFAULT_HOT_RUNTIME_MAX_TERMINAL_TASKS,
   maxAuditEvents: DEFAULT_HOT_RUNTIME_MAX_AUDIT_EVENTS,
+  maxHeartbeatAuditEvents: DEFAULT_HOT_RUNTIME_MAX_HEARTBEAT_AUDIT_EVENTS,
   maxTerminalOutboxEvents: DEFAULT_HOT_RUNTIME_MAX_TERMINAL_OUTBOX_EVENTS,
 };
 
@@ -2015,6 +2023,17 @@ function resolveHotRuntimeLimits(
         DEFAULT_BROKER_HOT_RUNTIME_LIMITS.maxAuditEvents,
       ),
     ),
+    maxHeartbeatAuditEvents: Math.max(
+      0,
+      resolveIntegerOption(
+        options.maxHotRuntimeHeartbeatAuditEvents,
+        process.env.BROKER_HOT_RUNTIME_MAX_HEARTBEAT_AUDIT_EVENTS,
+        Math.min(
+          DEFAULT_BROKER_HOT_RUNTIME_LIMITS.maxAuditEvents,
+          DEFAULT_BROKER_HOT_RUNTIME_LIMITS.maxHeartbeatAuditEvents,
+        ),
+      ),
+    ),
     maxTerminalOutboxEvents: Math.max(
       0,
       resolveIntegerOption(
@@ -2029,6 +2048,11 @@ function resolveHotRuntimeLimits(
 function resolveBrokerRetentionPolicy(
   overrides?: Partial<BrokerRetentionPolicy>,
 ): BrokerRetentionPolicy {
+  const maxAuditEvents = resolvePolicyNumber(
+    overrides?.maxAuditEvents,
+    process.env.BROKER_MAX_AUDIT_EVENTS,
+    DEFAULT_BROKER_RETENTION_POLICY.maxAuditEvents,
+  );
   return {
     terminalRetentionMs: resolvePolicyNumber(
       overrides?.terminalRetentionMs,
@@ -2065,10 +2089,16 @@ function resolveBrokerRetentionPolicy(
       process.env.BROKER_AUDIT_RETENTION_MS,
       DEFAULT_BROKER_RETENTION_POLICY.auditRetentionMs,
     ),
-    maxAuditEvents: resolvePolicyNumber(
-      overrides?.maxAuditEvents,
-      process.env.BROKER_MAX_AUDIT_EVENTS,
-      DEFAULT_BROKER_RETENTION_POLICY.maxAuditEvents,
+    maxAuditEvents,
+    maxHeartbeatAuditEvents: resolvePolicyNumber(
+      overrides?.maxHeartbeatAuditEvents,
+      process.env.BROKER_MAX_HEARTBEAT_AUDIT_EVENTS,
+      Math.min(maxAuditEvents, DEFAULT_BROKER_RETENTION_POLICY.maxHeartbeatAuditEvents),
+    ),
+    heartbeatAuditSampleIntervalMs: resolvePolicyNumber(
+      overrides?.heartbeatAuditSampleIntervalMs,
+      process.env.BROKER_HEARTBEAT_AUDIT_SAMPLE_INTERVAL_MS,
+      DEFAULT_BROKER_RETENTION_POLICY.heartbeatAuditSampleIntervalMs,
     ),
   };
 }
@@ -2275,6 +2305,7 @@ function createDefaultStateStore(params: {
       maxHotRuntimeNonTerminalTasks: params.hotRuntimeLimits?.maxNonTerminalTasks,
       maxHotRuntimeTerminalTasks: params.hotRuntimeLimits?.maxTerminalTasks,
       maxHotRuntimeAuditEvents: params.hotRuntimeLimits?.maxAuditEvents,
+      maxHotRuntimeHeartbeatAuditEvents: params.hotRuntimeLimits?.maxHeartbeatAuditEvents,
       maxHotRuntimeTerminalOutboxEvents: params.hotRuntimeLimits?.maxTerminalOutboxEvents,
     });
   }

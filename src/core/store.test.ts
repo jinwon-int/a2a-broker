@@ -1309,6 +1309,18 @@ test("SqliteAuditRuntimeRepository coalesces worker heartbeats and enforces hot-
       repository.listAuditEvents({ action: "worker.heartbeat" }).map((event) => [event.id, event.createdAt]),
       [["worker-heartbeat:worker-runtime", "2026-04-27T00:01:00.000Z"]],
     );
+    repository.appendAuditEvent({
+      ...makeAuditEvent("task-heartbeat-1", "task.heartbeat", "task-runtime", "2026-04-27T00:01:30.000Z"),
+      actorId: "worker-runtime",
+    });
+    repository.appendAuditEvent({
+      ...makeAuditEvent("task-heartbeat-2", "task.heartbeat", "task-runtime", "2026-04-27T00:01:45.000Z"),
+      actorId: "worker-runtime",
+    });
+    assert.deepEqual(
+      repository.listAuditEvents({ action: "task.heartbeat" }).map((event) => [event.id, event.createdAt]),
+      [["task-heartbeat:task-runtime", "2026-04-27T00:01:45.000Z"]],
+    );
 
     repository.appendAuditEvent(makeAuditEvent("audit-runtime-created", "task.created", "task-runtime", "2026-04-27T00:02:00.000Z"));
     repository.appendAuditEvent(makeAuditEvent("audit-runtime-started", "task.started", "task-runtime", "2026-04-27T00:03:00.000Z"));
@@ -1324,14 +1336,55 @@ test("SqliteAuditRuntimeRepository coalesces worker heartbeats and enforces hot-
     );
     assert.deepEqual(store.readHotAuditDiagnostics(), {
       total: 3,
+      heartbeat: 0,
+      heartbeatRatio: 0,
       workerHeartbeat: 0,
       workerHeartbeatRatio: 0,
+      taskHeartbeat: 0,
+      taskHeartbeatRatio: 0,
       recentWindowMs: 600_000,
       recentTotal: 0,
+      recentHeartbeat: 0,
+      recentHeartbeatRatio: 0,
       recentWorkerHeartbeat: 0,
       recentWorkerHeartbeatRatio: 0,
+      recentTaskHeartbeat: 0,
+      recentTaskHeartbeatRatio: 0,
       warnings: [],
     });
+    store.close();
+  } finally {
+    temp.cleanup();
+  }
+});
+
+test("SqliteAuditRuntimeRepository caps heartbeat audit rows separately from meaningful audit rows", () => {
+  const temp = withTempFile("state.sqlite");
+  try {
+    const store = new SqliteBrokerStateStore(temp.filePath);
+    const repository = new SqliteAuditRuntimeRepository(store, {
+      maxHotAuditEvents: 20,
+      maxHotHeartbeatAuditEvents: 3,
+    });
+
+    for (let i = 0; i < 8; i += 1) {
+      repository.appendAuditEvent({
+        ...makeAuditEvent(`task-heartbeat-${i}`, "task.heartbeat", `task-${i}`, `2026-04-27T00:0${i}:00.000Z`),
+        actorId: `worker-${i}`,
+      });
+    }
+    for (let i = 0; i < 4; i += 1) {
+      repository.appendAuditEvent(makeAuditEvent(`audit-meaningful-${i}`, "task.created", `meaningful-${i}`, `2026-04-27T00:1${i}:00.000Z`));
+    }
+
+    assert.deepEqual(
+      repository.listAuditEvents({ action: "task.heartbeat" }).map((event) => event.id),
+      ["task-heartbeat:task-7", "task-heartbeat:task-6", "task-heartbeat:task-5"],
+    );
+    assert.deepEqual(
+      repository.listAuditEvents({ action: "task.created" }).map((event) => event.id),
+      ["audit-meaningful-3", "audit-meaningful-2", "audit-meaningful-1", "audit-meaningful-0"],
+    );
     store.close();
   } finally {
     temp.cleanup();
@@ -1357,7 +1410,10 @@ test("hot audit diagnostics separate historical heartbeat residue from recent ch
 
     const historical = store.readHotAuditDiagnostics();
     assert.equal(historical.total, 25);
+    assert.equal(historical.heartbeat, 24);
     assert.equal(historical.workerHeartbeat, 24);
+    assert.equal(historical.taskHeartbeat, 0);
+    assert.equal(historical.recentHeartbeat, 0);
     assert.equal(historical.recentWorkerHeartbeat, 0);
     assert.deepEqual(historical.warnings, [], "historical heartbeat-heavy residue should not look like active churn");
 
@@ -1377,9 +1433,11 @@ test("hot audit diagnostics separate historical heartbeat residue from recent ch
     });
 
     const active = store.readHotAuditDiagnostics();
+    assert.equal(active.recentHeartbeat, 20);
     assert.equal(active.recentWorkerHeartbeat, 20);
+    assert.ok(active.recentHeartbeatRatio > 0.8);
     assert.ok(active.recentWorkerHeartbeatRatio > 0.8);
-    assert.match(active.warnings.join("\n"), /worker\.heartbeat audit events are \d+% of broker_audit_events in the last 10 minutes/);
+    assert.match(active.warnings.join("\n"), /heartbeat audit events are \d+% of broker_audit_events in the last 10 minutes/);
     store.close();
   } finally {
     temp.cleanup();
@@ -1790,6 +1848,37 @@ test("SqliteBrokerStateStore caps recent worker heartbeat audit rows even when w
 
     assert.deepEqual(plan.pruneIds, ["heartbeat-1"]);
     assert.deepEqual(plan.retainedIds, ["heartbeat-2", "heartbeat-3", "worker-registered"]);
+    store.close();
+  } finally {
+    temp.cleanup();
+  }
+});
+
+test("SqliteBrokerStateStore caps recent task heartbeat audit rows even when task is protected", () => {
+  const temp = withTempFile("state.sqlite");
+  try {
+    const taskId = "task-hot";
+    const heartbeats = [
+      makeAuditEvent("task-heartbeat-1", "task.heartbeat", taskId, "2026-04-27T00:00:01.000Z"),
+      makeAuditEvent("task-heartbeat-2", "task.heartbeat", taskId, "2026-04-27T00:00:02.000Z"),
+      makeAuditEvent("task-heartbeat-3", "task.heartbeat", taskId, "2026-04-27T00:00:03.000Z"),
+    ];
+    const created = makeAuditEvent("task-created", "task.created", taskId, "2026-04-27T00:00:00.000Z");
+    const store = new SqliteBrokerStateStore(temp.filePath);
+    store.save({
+      ...emptySnapshot(),
+      auditEvents: [created, ...heartbeats],
+    });
+
+    const plan = store.planHotAuditRetention({
+      nowMs: Date.parse("2026-04-27T00:01:00.000Z"),
+      retentionMs: 60 * 60 * 1000,
+      maxRecords: 2,
+      protectedIds: { taskIds: [taskId] },
+    });
+
+    assert.deepEqual(plan.pruneIds, ["task-heartbeat-1"]);
+    assert.deepEqual(plan.retainedIds, ["task-created", "task-heartbeat-2", "task-heartbeat-3"]);
     store.close();
   } finally {
     temp.cleanup();
