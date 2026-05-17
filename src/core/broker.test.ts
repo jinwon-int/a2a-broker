@@ -501,6 +501,52 @@ test("broker passes dirty task, audit, and worker hints to state store saves", (
   assert.deepEqual(claimHints?.hotAuditEvents?.map((item) => item.action), ["task.claimed"]);
 });
 
+test("broker hot persistence path avoids full snapshot export for task lifecycle and terminal ACK writes", () => {
+  const hotSaves: BrokerStateSaveHints[] = [];
+  const store: BrokerStateStore = {
+    load: () => emptySnapshot(),
+    save: () => {
+      throw new Error("full snapshot save should not run for hot persistence");
+    },
+    saveHotEntities: (hints) => {
+      hotSaves.push(hints);
+    },
+  };
+  const broker = new InMemoryA2ABroker(store, store.load());
+  registerWorker(broker, "worker-hot-fast");
+
+  const task = createWorkerTask(broker, "task-hot-fast", "worker-hot-fast");
+  broker.claimTask(task.id, "worker-hot-fast");
+  broker.startTask(task.id, "worker-hot-fast");
+  hotSaves.length = 0;
+  (broker as { exportSnapshot: () => BrokerSnapshot }).exportSnapshot = () => {
+    throw new Error("exportSnapshot should not run for hot persistence");
+  };
+
+  broker.completeTask(task.id, "worker-hot-fast", { summary: "done" });
+  const completeHints = hotSaves.at(-1);
+  assert.deepEqual(completeHints?.hotTasks?.map((item) => [item.id, item.status]), [[task.id, "succeeded"]]);
+  assert.deepEqual(completeHints?.hotAuditEvents?.map((item) => item.action), ["task.succeeded"]);
+  assert.equal(completeHints?.hotTerminalOutboxEvents?.[0]?.payload.taskId, task.id);
+
+  const event = broker.getTerminalTaskEventOutbox().subscribe()[0]!;
+  broker.recordTerminalTaskOutboxReceiptStatus(event.id, {
+    status: "operator_visible",
+    updatedAt: "2026-05-17T12:00:00.000Z",
+  });
+  const receiptHints = hotSaves.at(-1);
+  assert.equal(receiptHints?.hotTerminalOutboxEvents?.[0]?.receipt.status, "operator_visible");
+
+  broker.acknowledgeTerminalTaskOutboxEvent(event.id, {
+    evidence: "operator_visible",
+    acknowledgedAt: "2026-05-17T12:00:01.000Z",
+    receiptId: "telegram:message-1",
+  });
+  const ackHints = hotSaves.at(-1);
+  assert.equal(ackHints?.hotTerminalOutboxEvents?.[0]?.ack?.status, "receipt_confirmed");
+  assert.equal(ackHints?.hotTerminalOutboxEvents?.[0]?.ack?.evidence, "operator_visible");
+});
+
 test("broker task lifecycle mutations can use the SQLite runtime repository without JSON hot hints", () => {
   const dir = mkdtempSync(join(tmpdir(), "a2a-broker-task-repo-"));
   const sqliteStore = new SqliteBrokerStateStore(join(dir, "state.sqlite"));

@@ -3079,6 +3079,42 @@ test("SqliteBrokerStateStore incremental persist skips full snapshot serializati
   }
 });
 
+test("SqliteBrokerStateStore saves hot entity hints without a snapshot", () => {
+  const temp = withTempFile("hot-only-persist.db");
+  try {
+    const store = new SqliteBrokerStateStore(temp.filePath, { maxBytes: 128 });
+    const dirtyTask = {
+      ...makeTask("task-hot-only", "queued", "worker-hot-only"),
+      payload: { large: "x".repeat(1024) },
+    };
+    const audit = makeAuditEvent("audit-hot-only", "task.created", dirtyTask.id);
+
+    store.saveHotEntities({
+      hotTasks: [dirtyTask],
+      hotAuditEvents: [audit],
+      hotWorkers: [makeWorker("worker-hot-only")],
+      hotTerminalOutboxEvents: [
+        makeTerminalOutboxEvent("outbox-hot-only", dirtyTask.id, "2026-04-27T00:00:00.000Z"),
+      ],
+    });
+
+    const info = store.getPersistenceInfo();
+    assert.equal(info.lastPersistSkippedFullSnapshot, true);
+    assert.equal(info.lastHotHintCounts?.hotTasks, 1);
+    assert.equal(info.lastHotHintCounts?.hotAuditEvents, 1);
+    assert.equal(info.lastHotHintCounts?.hotWorkers, 1);
+    assert.equal(info.lastHotHintCounts?.hotTerminalOutboxEvents, 1);
+    assert.equal(store.readHotTasks({ id: dirtyTask.id })[0]?.payload.large, "x".repeat(1024));
+    assert.equal(store.readHotAuditEvents({ targetId: dirtyTask.id })[0]?.id, audit.id);
+    assert.equal(store.readHotWorkers({ nodeId: "worker-hot-only" })[0]?.nodeId, "worker-hot-only");
+    assert.equal(store.readHotTerminalOutbox().find((event) => event.id === "outbox-hot-only")?.payload.taskId, dirtyTask.id);
+
+    store.close();
+  } finally {
+    temp.cleanup();
+  }
+});
+
 test("SqliteBrokerStateStore getPersistenceInfo returns incremental persist diagnostics", () => {
   const temp = withTempFile("persist-diag.db");
   try {

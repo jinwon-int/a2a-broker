@@ -57,6 +57,12 @@ export interface BrokerSnapshot {
 export interface BrokerStateStore {
   load(): BrokerSnapshot;
   save(snapshot: BrokerSnapshot, hints?: BrokerStateSaveHints): void;
+  /**
+   * Persist dirty hot-table rows without requiring the caller to build a full
+   * BrokerSnapshot first. Stores that cannot support granular writes should
+   * leave this undefined so callers can fall back to save().
+   */
+  saveHotEntities?(hints: BrokerStateSaveHints): void;
   getPersistenceInfo?(): BrokerPersistenceInfo;
 }
 
@@ -928,6 +934,10 @@ export class SqliteBrokerStateStore implements BrokerStateStore {
 
   save(snapshot: BrokerSnapshot, hints?: BrokerStateSaveHints): void {
     this.saveSnapshot(snapshot, hints);
+  }
+
+  saveHotEntities(hints: BrokerStateSaveHints): void {
+    this.saveHotEntityHints(hints);
   }
 
   readHotRuntimeSnapshot(): BrokerSnapshot {
@@ -1812,6 +1822,15 @@ export class SqliteBrokerStateStore implements BrokerStateStore {
     });
   }
 
+  private saveHotEntityHints(hints: BrokerStateSaveHints): void {
+    const updatedAt = new Date().toISOString();
+    this.runImmediateTransaction(() => {
+      this.writeHotEntityHintRows(hints);
+      this.writeMetadata("state_version", String(CURRENT_BROKER_STATE_VERSION));
+      this.writePersistDiagnostics(updatedAt, hints, { skipFullSnapshot: true });
+    });
+  }
+
   private writeSnapshotRow(
     snapshot: BrokerSnapshot,
     updatedAt: string,
@@ -2025,6 +2044,43 @@ export class SqliteBrokerStateStore implements BrokerStateStore {
     this.upsertHotAuditEventsUnsafe(hotAuditHints ?? snapshot.auditEvents);
 
     this.upsertHotTerminalOutboxUnsafe(hotTerminalOutboxHints ?? snapshot.terminalOutbox ?? []);
+  }
+
+  private writeHotEntityHintRows(hints: BrokerStateSaveHints): void {
+    if (hints.hotExchanges !== undefined) {
+      this.upsertHotExchangesUnsafe(hints.hotExchanges);
+    }
+    if (hints.hotExchangeMessages !== undefined) {
+      this.upsertHotExchangeMessagesUnsafe(hints.hotExchangeMessages);
+    }
+    if (hints.hotProposals !== undefined) {
+      this.upsertHotProposalsUnsafe(hints.hotProposals);
+    }
+    if (hints.hotArtifacts !== undefined) {
+      this.upsertHotArtifactsUnsafe(hints.hotArtifacts);
+    }
+    if (hints.hotValidations !== undefined) {
+      this.upsertHotValidationsUnsafe(hints.hotValidations);
+    }
+    if (hints.hotTasks !== undefined) {
+      this.upsertHotTasksUnsafe(hints.hotTasks);
+    }
+    if (hints.hotTombstones !== undefined) {
+      this.upsertHotTombstonesUnsafe(hints.hotTombstones);
+    }
+    if (hints.hotAuditEvents !== undefined) {
+      this.upsertHotAuditEventsUnsafe(hints.hotAuditEvents);
+      if (hints.hotAuditEvents.some(isHeartbeatAuditEvent)) {
+        this.pruneHotHeartbeatAuditEventsToMaxUnsafe(this.maxHotRuntimeHeartbeatAuditEvents);
+      }
+      this.pruneHotAuditEventsToMaxUnsafe(this.maxHotRuntimeAuditEvents);
+    }
+    if (hints.hotWorkers !== undefined) {
+      this.upsertHotWorkersUnsafe(hints.hotWorkers);
+    }
+    if (hints.hotTerminalOutboxEvents !== undefined) {
+      this.upsertHotTerminalOutboxUnsafe(hints.hotTerminalOutboxEvents);
+    }
   }
 
   private applyCanonicalHotRetentionPlan(
