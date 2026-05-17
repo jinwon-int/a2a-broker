@@ -776,14 +776,29 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
   };
 
   const publishOperatorEvents = (): void => {
+    if (operatorListeners.size === 0) {
+      // Keep alert replay state fresh while avoiding the heavier operator dashboard
+      // projection when nobody is subscribed to the SSE stream.
+      const alerts = buildAlertScan({
+        broker,
+        workerHeartbeatMissedAfterMs: workerOfflineAfterSec * 1000,
+      });
+      publishOperatorAlertChanges(alerts);
+      return;
+    }
+
     const snapshot = currentOperatorSnapshot();
     emitOperatorEvent("operator-summary-update", {
       summary: snapshot.summary,
       alerts: snapshot.alerts,
     });
 
-    const nextAlertsById = new Map(snapshot.alerts.alerts.map((alert) => [alert.id, alert] as const));
-    const openedAlerts = snapshot.alerts.alerts
+    publishOperatorAlertChanges(snapshot.alerts);
+  };
+
+  const publishOperatorAlertChanges = (alerts: AlertScanResult): void => {
+    const nextAlertsById = new Map(alerts.alerts.map((alert) => [alert.id, alert] as const));
+    const openedAlerts = alerts.alerts
       .filter((alert) => !operatorAlertsById.has(alert.id))
       .sort((left, right) => left.id.localeCompare(right.id));
     const resolvedAlerts = [...operatorAlertsById.values()]
