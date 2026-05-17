@@ -777,13 +777,9 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
 
   const publishOperatorEvents = (): void => {
     if (operatorListeners.size === 0) {
-      // Keep alert replay state fresh while avoiding the heavier operator dashboard
-      // projection when nobody is subscribed to the SSE stream.
-      const alerts = buildAlertScan({
-        broker,
-        workerHeartbeatMissedAfterMs: workerOfflineAfterSec * 1000,
-      });
-      publishOperatorAlertChanges(alerts);
+      // Do not run operator projections on every broker state change while
+      // the SSE stream is idle. A new subscriber gets a fresh snapshot on
+      // connect, and active subscribers still receive buffered updates.
       return;
     }
 

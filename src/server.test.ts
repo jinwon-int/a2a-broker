@@ -4425,7 +4425,7 @@ test("SSE /a2a/operator/events streams snapshot with current worker heartbeat al
   }
 });
 
-test("SSE /a2a/operator/events replays missed alert opened and resolved events with Last-Event-ID", async () => {
+test("SSE /a2a/operator/events skips idle alert replay work and returns a fresh snapshot on subscribe", async () => {
   const server = await startTestServer({
     edgeSecret: "test-edge-secret",
     workerOfflineAfterSec: 1,
@@ -4477,21 +4477,11 @@ test("SSE /a2a/operator/events replays missed alert opened and resolved events w
 
     const replayEvents = await readSseEventsUntil(
       replayRes,
-      (events) =>
-        events.some((event) => event.event === "operator-alert-opened") &&
-        events.some((event) => event.event === "operator-alert-resolved") &&
-        events.some((event) => event.event === "operator-snapshot"),
+      (events) => events.some((event) => event.event === "operator-snapshot"),
     );
     replayController.abort();
 
-    const opened = replayEvents.find((event) => event.event === "operator-alert-opened");
-    assert.ok(opened, "expected replayed operator-alert-opened event");
-    assert.equal(JSON.parse(opened!.data).alert.kind, "worker.heartbeat_missed");
-
-    const resolved = replayEvents.find((event) => event.event === "operator-alert-resolved");
-    assert.ok(resolved, "expected replayed operator-alert-resolved event");
-    assert.equal(JSON.parse(resolved!.data).alert.workerId, "worker-a");
-
+    assert.deepEqual(replayEvents.map((event) => event.event), ["operator-snapshot"]);
     const replaySnapshot = JSON.parse(replayEvents.find((event) => event.event === "operator-snapshot")!.data);
     assert.equal(
       replaySnapshot.alerts.alerts.some((alert: { kind: string }) => alert.kind === "worker.heartbeat_missed"),
