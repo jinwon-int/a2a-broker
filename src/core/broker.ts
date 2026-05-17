@@ -2770,7 +2770,10 @@ export class InMemoryA2ABroker {
       if (task) {
         const taskEvent = this.taskEventStream.push(event, task);
         if (taskEvent) {
-          this.terminalTaskEventOutbox.enqueue(taskEvent, task);
+          const terminalEvent = this.terminalTaskEventOutbox.enqueue(taskEvent, task);
+          if (terminalEvent) {
+            this.pendingHotTerminalOutboxEvents.set(terminalEvent.id, structuredClone(terminalEvent));
+          }
         }
       }
     }

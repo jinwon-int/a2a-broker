@@ -859,7 +859,8 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
     try {
       requesterIdentity = extractRequesterIdentity(req);
       const isPublicDiscoveryRoute = req.method === "GET" && path === "/.well-known/agent-card.json";
-      if (path !== "/health" && !isPublicDiscoveryRoute) {
+      const isPublicLivenessRoute = req.method === "GET" && path === "/livez";
+      if (path !== "/health" && !isPublicLivenessRoute && !isPublicDiscoveryRoute) {
         assertEdgeSecret(req, edgeSecret);
 
         const bucket = classifyRateLimitBucket(req, url);
@@ -874,6 +875,17 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
           res.setHeader("retry-after", String(decision.retryAfterSec));
           throw new BrokerError("rate_limited", "rate limit exceeded");
         }
+      }
+
+      if (req.method === "GET" && path === "/livez") {
+        return sendJson(res, 200, {
+          ok: true,
+          service: serviceName,
+          brokerId,
+          uptimeSec: Math.round(process.uptime()),
+        }, {
+          "cache-control": "no-store",
+        });
       }
 
       if (req.method === "GET" && path === "/health") {
