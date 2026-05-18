@@ -104,6 +104,14 @@ import type {
   A2AWorkerEnvironment,
   A2APartyRole,
 } from "./core/types.js";
+import type { DecisionDialecticPatchV1, DecisionDialecticPhase } from "./decision-dialectic/types.js";
+import {
+  applyDecisionDialecticPatch,
+  buildDecisionDialecticPhaseTaskRequest,
+  DecisionDialecticExecutionError,
+  extractDecisionDialecticTaskInput,
+  nextDecisionDialecticPhase,
+} from "./decision-dialectic/execution.js";
 import {
   projectDecisionDialecticReadModel,
   DecisionDialecticReadModelError,
@@ -1642,6 +1650,109 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
         } catch (error) {
           if (error instanceof DecisionDialecticReadModelError) {
             const code = error.code === "missing_contract" || error.code === "wrong_kind" ? "not_found" : "bad_request";
+            throw new BrokerError(code, error.message);
+          }
+          throw error;
+        }
+      }
+
+      if (
+        req.method === "POST" &&
+        segments[0] === "tasks" &&
+        segments[1] &&
+        segments[2] === "decision-dialectic" &&
+        segments[3] === "advance" &&
+        segments.length === 4
+      ) {
+        const body = (await readJson<{ id?: string; phase?: DecisionDialecticPhase }>(req)) ?? {};
+        if (enforceRequesterIdentity) {
+          assertRequesterHasRole(requesterIdentity, ["hub", "operator"], "decision-dialectic.advance");
+        }
+        const task = broker.getTask(segments[1]);
+        if (!task) {
+          throw new BrokerError("not_found", "task not found");
+        }
+        try {
+          const { phase, request } = buildDecisionDialecticPhaseTaskRequest(task, {
+            id: body.id,
+            phase: body.phase,
+            requesterId: requesterIdentity?.id,
+          });
+          const childTask = broker.createTask(request);
+          return sendJson(res, 201, {
+            phase,
+            parentTaskId: task.id,
+            childTask,
+          });
+        } catch (error) {
+          if (error instanceof DecisionDialecticExecutionError) {
+            const code =
+              error.code === "missing_contract" || error.code === "wrong_kind"
+                ? "not_found"
+                : "bad_request";
+            throw new BrokerError(code, error.message);
+          }
+          throw error;
+        }
+      }
+
+      if (
+        req.method === "POST" &&
+        segments[0] === "tasks" &&
+        segments[1] &&
+        segments[2] === "decision-dialectic" &&
+        segments[3] === "patch" &&
+        segments.length === 4
+      ) {
+        const body = await readJson<DecisionDialecticPatchV1>(req);
+        if (!body) {
+          throw new BrokerError("bad_request", "request body is required");
+        }
+        if (enforceRequesterIdentity) {
+          const requesterRole = requesterIdentity?.role;
+          if (requesterRole === "hub" || requesterRole === "operator") {
+            assertRequesterHasRole(requesterIdentity, ["hub", "operator"], "decision-dialectic.patch");
+          } else {
+            assertRequesterMatchesParty(requesterIdentity, { id: body.authorAgent }, "decision-dialectic.patch");
+          }
+        }
+        const task = broker.getTask(segments[1]);
+        if (!task) {
+          throw new BrokerError("not_found", "task not found");
+        }
+        try {
+          const input = extractDecisionDialecticTaskInput(task.payload);
+          const updatedTask = applyDecisionDialecticPatch(input.contract.task, body);
+          const nextPhase = nextDecisionDialecticPhase(updatedTask) ?? input.contract.phase;
+          const updated = broker.updateTaskPayload(
+            task.id,
+            {
+              ...task.payload,
+              contract: {
+                ...input.contract,
+                phase: nextPhase,
+                task: updatedTask,
+              },
+            },
+            {
+              actor: {
+                id: requesterIdentity?.id ?? body.authorAgent,
+                kind: "node",
+                role: requesterIdentity?.role,
+              },
+              note: "decision.dialectic patch " + body.op,
+            },
+          );
+          const readModel = projectDecisionDialecticReadModel(updated);
+          return sendJson(res, 200, readModel);
+        } catch (error) {
+          if (error instanceof DecisionDialecticExecutionError) {
+            const code =
+              error.code === "missing_contract" || error.code === "wrong_kind"
+                ? "not_found"
+                : error.code === "invalid_contract"
+                  ? "bad_request"
+                  : "invalid_transition";
             throw new BrokerError(code, error.message);
           }
           throw error;

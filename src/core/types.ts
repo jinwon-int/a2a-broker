@@ -159,6 +159,7 @@ export type AuditAction =
   | "task.succeeded"
   | "task.failed"
   | "task.canceled"
+  | "task.updated"
   | "task.tombstoned"
   | "task.wake.planned"
   | "task.wake.scheduled"
