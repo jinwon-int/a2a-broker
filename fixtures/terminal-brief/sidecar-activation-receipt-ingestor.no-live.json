@@ -1,0 +1,121 @@
+{
+  "sidecarActivationApproval": {
+    "kind": "a2a-broker.terminal-brief-sidecar-activation-approval.packet",
+    "version": 1,
+    "generatedAt": "2026-05-18T15:00:00.000Z",
+    "mode": "read-only/no-live",
+    "parentRoundId": "round-716",
+    "state": "approval_request_draft_ready",
+    "dryRunOnly": true,
+    "sourceOnlyNoLive": true,
+    "idempotencyKey": "tb-sidecar-activation-approval:fixture-716",
+    "source": {
+      "gateState": "ready_for_operator_approval",
+      "gateIdempotencyKey": "tb-sidecar-dry-run-gate:fixture-716",
+      "sourceCriteriaMet": true,
+      "alwaysOnDryRunCandidate": true,
+      "requiredRowsReady": 5,
+      "requiredRows": 5,
+      "sidecarDecision": "candidate",
+      "finalizerStatus": "ready_for_finalizer_review"
+    },
+    "requestDraft": {
+      "status": "draft_not_sent",
+      "requestedAction": "approve_supervised_terminal_brief_sidecar_dry_run_start",
+      "requestedBy": "broker-finalizer",
+      "operatorTarget": "operator-a",
+      "approvalExpiresAt": "2026-05-18T15:30:00.000Z",
+      "dispatchRequired": true,
+      "dispatchPermitted": false,
+      "transcriptDraft": "Request: approve supervised Terminal Brief sidecar dry-run start."
+    },
+    "activationPlan": {
+      "supervisedDryRunOnly": true,
+      "cursorPersisted": true,
+      "boundedPolling": true,
+      "pollIntervalMs": 15000,
+      "maxBatch": 20,
+      "gatewayReady": true,
+      "eventLoopDegraded": false,
+      "queueBacklog": 0,
+      "abortQueueBacklog": 1000,
+      "abortConditions": [
+        "Gateway readiness is false or unavailable"
+      ],
+      "rollbackInstructions": [
+        "stop the supervised sidecar process before any default-on or live send change"
+      ]
+    },
+    "readiness": {
+      "approvalRequestDraftReady": true,
+      "sidecarStartPermitted": false,
+      "defaultOnPermitted": false,
+      "liveActivationPermitted": false,
+      "approvalGrantPermitted": false,
+      "providerSendPermitted": false,
+      "terminalAckPermitted": false,
+      "executionPermitted": false,
+      "missingEvidence": [],
+      "blockers": [],
+      "nextAction": "dispatch this draft through the selected harness adapter and ingest explicit operator approval evidence before any sidecar start"
+    },
+    "blockers": [],
+    "nextActions": [],
+    "approvalSensitiveActionsExcluded": [],
+    "integrationContract": {
+      "transport": "json",
+      "approvalPacketVersion": 1,
+      "harnessNeutral": true,
+      "openclawMessageSendRequired": false,
+      "hermesAdapterCompatible": true,
+      "gongyungAdapterCompatible": true,
+      "consumesSidecarDryRunGate": true,
+      "producesApprovalRequestDraft": true,
+      "sendsApprovalRequest": false,
+      "grantsApproval": false,
+      "startsSidecar": false,
+      "enablesDefaultOn": false,
+      "executesAction": false
+    },
+    "semantics": {
+      "approvalRequestDraftOnly": true,
+      "sourceOnlyNoLive": true,
+      "requestDraftIsNotSend": true,
+      "approvalRequestIsNotApprovalGrant": true,
+      "sidecarStartRequiresSeparateApprovedExecutor": true,
+      "defaultOnNotEnabledByThisPacket": true,
+      "providerAcceptedIsVisibilityProof": false,
+      "terminalAckEligibleDoesNotPermitAck": true,
+      "routeIsReadOnly": true,
+      "brokerFinalizerRequired": true,
+      "performsGitHubMutation": false,
+      "performsProviderSend": false,
+      "performsTerminalAck": false,
+      "performsRuntimeRestartOrDeploy": false,
+      "performsDbMutation": false,
+      "createsTaskFlowRecords": false,
+      "performsHistoricalReplay": false,
+      "performsReleaseOrPublish": false,
+      "movesSecretsOrCredentials": false
+    }
+  },
+  "activationReceiptEvidence": [
+    {
+      "kind": "provider_accepted",
+      "observedAt": "2026-05-18T14:59:30.000Z",
+      "providerMessageId": "provider-message-1"
+    },
+    {
+      "kind": "current_session_visible",
+      "observedAt": "2026-05-18T14:59:35.000Z",
+      "currentSessionId": "session-visible-1"
+    },
+    {
+      "kind": "approval_grant",
+      "observedAt": "2026-05-18T14:59:40.000Z",
+      "approvedAction": "approve_supervised_terminal_brief_sidecar_dry_run_start",
+      "approvedTarget": "round-716",
+      "operatorId": "operator-a"
+    }
+  ]
+}

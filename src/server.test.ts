@@ -6758,3 +6758,149 @@ test("POST /terminal-brief/sidecar/activation-approval returns no-live approval 
     await server.close();
   }
 });
+
+test("POST /terminal-brief/sidecar/activation-receipt returns no-live activation receipt evidence", async () => {
+  const server = await startTestServer({ edgeSecret: "test-edge-secret" });
+  try {
+    const sidecarActivationApproval = {
+      kind: "a2a-broker.terminal-brief-sidecar-activation-approval.packet",
+      version: 1,
+      generatedAt: "2026-05-18T15:00:00.000Z",
+      mode: "read-only/no-live",
+      parentRoundId: "round-716",
+      state: "approval_request_draft_ready",
+      dryRunOnly: true,
+      sourceOnlyNoLive: true,
+      idempotencyKey: "tb-sidecar-activation-approval:fixture-716",
+      source: {
+        gateState: "ready_for_operator_approval",
+        gateIdempotencyKey: "tb-sidecar-dry-run-gate:fixture-716",
+        sourceCriteriaMet: true,
+        alwaysOnDryRunCandidate: true,
+        requiredRowsReady: 5,
+        requiredRows: 5,
+        sidecarDecision: "candidate",
+        finalizerStatus: "ready_for_finalizer_review",
+      },
+      requestDraft: {
+        status: "draft_not_sent",
+        requestedAction: "approve_supervised_terminal_brief_sidecar_dry_run_start",
+        requestedBy: "broker-finalizer",
+        operatorTarget: "operator-a",
+        approvalExpiresAt: "2026-05-18T15:30:00.000Z",
+        dispatchRequired: true,
+        dispatchPermitted: false,
+        transcriptDraft: "Request: approve supervised Terminal Brief sidecar dry-run start.",
+      },
+      activationPlan: {
+        supervisedDryRunOnly: true,
+        cursorPersisted: true,
+        boundedPolling: true,
+        pollIntervalMs: 15000,
+        maxBatch: 20,
+        gatewayReady: true,
+        eventLoopDegraded: false,
+        queueBacklog: 0,
+        abortQueueBacklog: 1000,
+        abortConditions: [],
+        rollbackInstructions: [],
+      },
+      readiness: {
+        approvalRequestDraftReady: true,
+        sidecarStartPermitted: false,
+        defaultOnPermitted: false,
+        liveActivationPermitted: false,
+        approvalGrantPermitted: false,
+        providerSendPermitted: false,
+        terminalAckPermitted: false,
+        executionPermitted: false,
+        missingEvidence: [],
+        blockers: [],
+        nextAction: "dispatch this draft through the selected harness adapter and ingest explicit operator approval evidence before any sidecar start",
+      },
+      blockers: [],
+      nextActions: [],
+      approvalSensitiveActionsExcluded: [],
+      integrationContract: {
+        transport: "json",
+        approvalPacketVersion: 1,
+        harnessNeutral: true,
+        openclawMessageSendRequired: false,
+        hermesAdapterCompatible: true,
+        gongyungAdapterCompatible: true,
+        consumesSidecarDryRunGate: true,
+        producesApprovalRequestDraft: true,
+        sendsApprovalRequest: false,
+        grantsApproval: false,
+        startsSidecar: false,
+        enablesDefaultOn: false,
+        executesAction: false,
+      },
+      semantics: {
+        approvalRequestDraftOnly: true,
+        sourceOnlyNoLive: true,
+        requestDraftIsNotSend: true,
+        approvalRequestIsNotApprovalGrant: true,
+        sidecarStartRequiresSeparateApprovedExecutor: true,
+        defaultOnNotEnabledByThisPacket: true,
+        providerAcceptedIsVisibilityProof: false,
+        terminalAckEligibleDoesNotPermitAck: true,
+        routeIsReadOnly: true,
+        brokerFinalizerRequired: true,
+        performsGitHubMutation: false,
+        performsProviderSend: false,
+        performsTerminalAck: false,
+        performsRuntimeRestartOrDeploy: false,
+        performsDbMutation: false,
+        createsTaskFlowRecords: false,
+        performsHistoricalReplay: false,
+        performsReleaseOrPublish: false,
+        movesSecretsOrCredentials: false,
+      },
+    };
+
+    const res = await fetch(
+      server.baseUrl + "/terminal-brief/sidecar/activation-receipt",
+      {
+        method: "POST",
+        headers: jsonHeaders({
+          "x-a2a-edge-secret": "test-edge-secret",
+          "x-a2a-requester-id": "operator-a",
+          "x-a2a-requester-role": "operator",
+        }),
+        body: JSON.stringify({
+          sidecarActivationApproval,
+          activationReceiptEvidence: [
+            { kind: "current_session_visible", observedAt: new Date().toISOString() },
+            {
+              kind: "approval_grant",
+              observedAt: new Date().toISOString(),
+              approvedAction: "approve_supervised_terminal_brief_sidecar_dry_run_start",
+              approvedTarget: "round-716",
+              operatorId: "operator-a",
+            },
+          ],
+        }),
+      },
+    );
+
+    assert.equal(res.status, 200);
+    assert.equal(res.headers.get("cache-control"), "no-store");
+    const body = await res.json();
+    assert.equal(body.kind, "a2a-broker.terminal-brief-sidecar-activation-receipt-ingestor.packet");
+    assert.equal(body.state, "accepted");
+    assert.equal(body.receiptEvidenceAccepted, true);
+    assert.equal(body.approvalEvidenceAccepted, true);
+    assert.equal(body.classification.providerAcceptedIsVisibilityProof, false);
+    assert.equal(body.readiness.sidecarStartPermitted, false);
+    assert.equal(body.readiness.defaultOnPermitted, false);
+    assert.equal(body.readiness.approvalGrantPermitted, false);
+    assert.equal(body.readiness.providerSendPermitted, false);
+    assert.equal(body.readiness.terminalAckPermitted, false);
+    assert.equal(body.integrationContract.grantsApproval, false);
+    assert.equal(body.integrationContract.startsSidecar, false);
+    assert.equal(body.semantics.receiptIngestorOnly, true);
+  } finally {
+    await server.close();
+  }
+});
