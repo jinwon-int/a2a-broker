@@ -14,10 +14,14 @@ modify code.
 
 - **Intent:** `analyze`
 - **Mode (payload.mode):** `analysis-only`, `read-only-analysis`, or `analyze-only`
+- **A2A evidence aliases:** `analyze` tasks with `payload.noLive=true`,
+  `payload.sourceOnly=true`, and an A2A/evidence/analysis-shaped mode, phase,
+  or role are also treated as read-only analysis tasks.
 
-The mode name is the gating factor: an `analyze` intent combined with any other
-mode falls through to the generic builtin handler and is treated as a
-conventional noop success without evidence tracking.
+The explicit mode name remains the normal gating factor. Unknown analyze modes
+still fall through to the generic builtin handler unless the payload is clearly
+marked as no-live/source-only A2A evidence. This prevents ordinary generic tasks
+from pretending that analysis occurred.
 
 ### Evidence Contract
 
@@ -29,16 +33,32 @@ conventional noop success without evidence tracking.
 | `startCommentUrl`    | Optional  | URL pointing to a Start marker comment                     |
 | `findings`           | Optional  | Array of analysis findings                                 |
 | `risks`              | Optional  | Array of identified risks                                  |
+| `recommendations`    | Optional  | Array of recommended next steps                            |
+| `evidenceRefs`       | Optional  | Array of task, issue, run, log, or artifact references      |
 | `artifacts`          | Optional  | Array of analysis artifact references                      |
 | `analysisSummary`    | Recommended | Human-readable summary of the analysis                  |
 
 When `blockCommentUrl` is present, the task outcome is reported as **Blocked**
 rather than **Done**.
 
+### Optional OpenClaw Analysis Bridge
+
+By default, analysis tasks use the builtin structured handler and only transform
+task payload data into evidence output. Operators can explicitly opt in to a
+task-scoped OpenClaw bridge by setting `A2A_OPENCLAW_ANALYSIS_ENABLED=1` and
+configuring `OPENCLAW_BIN` or the normal OpenClaw bridge environment.
+
+The bridge is still read-only: it receives a JSON-only analysis prompt and is
+told not to modify files, deploy, restart services, send live provider messages,
+acknowledge terminals, mutate databases, or move credentials. If the bridge
+times out, fails, or does not return parseable JSON, the task fails closed
+instead of returning generic acceptance.
+
 ### Safety Properties
 
 1. **Read-only by design:** No code changes, no workspace modifications, no file
-   writes. The handler produces structured output from payload data only.
+   writes. The builtin handler produces structured output from payload data only;
+   the optional OpenClaw bridge is explicitly gated and task-scoped.
 2. **No PR bypass:** The analysis-only path is logically separate from
    `propose_patch`. Tasks with intent `propose_patch` continue to require
    executor evidence (docker runner or OpenClaw bridge).
@@ -63,6 +83,8 @@ rather than **Done**.
     "startCommentUrl": "https://github.com/owner/repo/issues/1#issuecomment-456",
     "findings": ["bullish divergence on 4H", "volume confirmation"],
     "risks": ["weekend liquidity thinning"],
+    "recommendations": ["watch funding reset before entering"],
+    "evidenceRefs": ["issue-1", "task-abc"],
     "artifacts": ["analysis-20260509.json"]
   }
 }
@@ -86,6 +108,8 @@ rather than **Done**.
       "startCommentUrl": "https://github.com/owner/repo/issues/1#issuecomment-456",
       "findings": ["bullish divergence on 4H", "volume confirmation"],
       "risks": ["weekend liquidity thinning"],
+      "recommendations": ["watch funding reset before entering"],
+      "evidenceRefs": ["issue-1", "task-abc"],
       "artifacts": ["analysis-20260509.json"]
     }
   }
@@ -119,6 +143,8 @@ Tests cover:
 | Handler produces Block evidence | `src/openclaw-handler-artifact.test.ts` |
 | Handler preserves Start marker URL | `src/openclaw-handler-artifact.test.ts` |
 | Alias modes (`read-only-analysis`) work | `src/openclaw-handler-artifact.test.ts` |
+| No-live/source-only A2A evidence tasks avoid generic acceptance-only output | `src/openclaw-handler-artifact.test.ts` |
+| Optional OpenClaw analysis bridge returns structured analysis evidence | `src/openclaw-handler-artifact.test.ts` |
 | Unknown mode falls through to generic | `src/openclaw-handler-artifact.test.ts` |
 | Propose_patch evidence is preserved | `src/openclaw-handler-artifact.test.ts` |
 | `validateTaskCompletionEvidence` skips analysis-only | `src/openclaw-handler-artifact.test.ts` |

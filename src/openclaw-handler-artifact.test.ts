@@ -59,7 +59,7 @@ test("versioned OpenClaw handler exposes credential-free build metadata", () => 
   assert.equal(result.status, 0, result.stderr);
   const payload = JSON.parse(result.stdout);
   assert.equal(payload.result.handler.name, "openclaw-a2a-task-handler");
-  assert.equal(payload.result.handler.version, "0.2.10");
+  assert.equal(payload.result.handler.version, "0.2.11");
   assert.match(payload.result.handler.sourceSha256, /^[a-f0-9]{64}$/);
   assert.equal(payload.result.handler.credentialFree, true);
   assert.equal(payload.result.handler.hostNeutral, true);
@@ -1727,6 +1727,113 @@ test("analysis-only mode with read-only-analysis alias works identically", () =>
   assert.match(payload.result.summary, /analysis-only completed/);
   assert.equal(payload.result.lifecycle.mode, "read-only-analysis");
   assert.equal(payload.result.output.analysisSummary, "read-only market scan");
+});
+
+test("no-live source-only A2A evidence task produces structured analysis output", () => {
+  const task = githubTask();
+  task.intent = "analyze";
+  task.message = "Assess #687 worker analysis evidence quality";
+  task.payload = {
+    mode: "a2a-489-phase2-evidence",
+    noLive: true,
+    sourceOnly: true,
+    role: "thesis",
+    phase: "phase2",
+    summary: "worker should return useful evidence",
+    findings: ["generic acceptance is insufficient"],
+    risks: ["false green closeout"],
+    recommendations: ["emit structured analysis fields"],
+    evidenceRefs: ["gh:jinwon-int/a2a-broker#687"],
+  };
+
+  const result = spawnSync(process.execPath, [handlerPath], {
+    input: JSON.stringify(task),
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      A2A_EXECUTOR_MODE: "builtin",
+    },
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  const payload = JSON.parse(result.stdout);
+  assert.doesNotMatch(payload.result.summary, /accepted by versioned OpenClaw A2A handler/);
+  assert.match(payload.result.summary, /analysis-only completed/);
+  assert.equal(payload.result.output.analysisKind, "builtin_structured");
+  assert.equal(payload.result.output.analysisSummary, "worker should return useful evidence");
+  assert.equal(payload.result.output.role, "thesis");
+  assert.equal(payload.result.output.phase, "phase2");
+  assert.equal(payload.result.output.noLive, true);
+  assert.equal(payload.result.output.sourceOnly, true);
+  assert.deepEqual(payload.result.output.recommendations, ["emit structured analysis fields"]);
+  assert.deepEqual(payload.result.output.evidenceRefs, ["gh:jinwon-int/a2a-broker#687"]);
+});
+
+test("analysis-only task can use OpenClaw analysis bridge when explicitly enabled", () => {
+  const tempDir = mkdtempSync(join(tmpdir(), "handler-analysis-bridge-test-"));
+  const fakeOpenClawPath = join(tempDir, "fake-openclaw-analysis.mjs");
+  const argsPath = join(tempDir, "args.json");
+  try {
+    writeFileSync(fakeOpenClawPath, [
+      "#!/usr/bin/env node",
+      "import { writeFileSync } from \"node:fs\";",
+      "writeFileSync(process.env.CAPTURE_ARGS_PATH, JSON.stringify(process.argv));",
+      "if (!process.argv.includes(\"agent\")) throw new Error(\"expected agent subcommand\");",
+      "if (!process.argv.includes(\"--json\")) throw new Error(\"expected json output flag\");",
+      "const sessionIndex = process.argv.indexOf(\"--session-id\");",
+      "if (sessionIndex < 0 || process.argv[sessionIndex + 1] === \"main\") throw new Error(\"expected task-scoped session\");",
+      "console.log(JSON.stringify({",
+      "  payloads: [{",
+      "    text: JSON.stringify({",
+      "      status: \"done\",",
+      "      summary: \"bridge analysis complete\",",
+      "      findings: [\"worker produced substantive analysis\"],",
+      "      risks: [\"requires bridge enablement\"],",
+      "      recommendations: [\"keep generic fallback explicit\"],",
+      "      evidenceRefs: [\"gh:jinwon-int/a2a-broker#687\"]",
+      "    })",
+      "  }]",
+      "}));",
+      "",
+    ].join("\n"));
+    chmodSync(fakeOpenClawPath, 0o755);
+
+    const task = githubTask();
+    task.intent = "analyze";
+    task.payload = {
+      mode: "analysis-only",
+      summary: "fallback summary should be replaced",
+      noLive: true,
+      sourceOnly: true,
+    };
+
+    const result = spawnSync(process.execPath, [handlerPath], {
+      input: JSON.stringify(task),
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        A2A_EXECUTOR_MODE: "builtin",
+        A2A_OPENCLAW_ANALYSIS_ENABLED: "1",
+        OPENCLAW_BIN: fakeOpenClawPath,
+        A2A_NODE_ID: "worker-a",
+        CAPTURE_ARGS_PATH: argsPath,
+      },
+    });
+
+    assert.equal(result.status, 0, result.stderr);
+    const payload = JSON.parse(result.stdout);
+    assert.match(payload.result.summary, /analysis bridge done/);
+    assert.equal(payload.result.output.analysisKind, "openclaw_bridge");
+    assert.equal(payload.result.output.analysisSummary, "bridge analysis complete");
+    assert.deepEqual(payload.result.output.findings, ["worker produced substantive analysis"]);
+    assert.deepEqual(payload.result.output.recommendations, ["keep generic fallback explicit"]);
+    assert.equal(payload.result.output.nodeId, "worker-a");
+    const args = JSON.parse(readFileSync(argsPath, "utf8"));
+    const sessionId = args[args.indexOf("--session-id") + 1];
+    assert.match(sessionId, /^a2a-worker-a-task-fixture-1-analysis$/);
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
 });
 
 test("GitHub propose_patch evidence requirements are preserved when intent is not analyze", () => {

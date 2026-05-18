@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
-const HANDLER_VERSION = "0.2.10";
+const HANDLER_VERSION = "0.2.11";
 const SOURCE_PATH = fileURLToPath(import.meta.url);
 const sourceSha256 = createHash("sha256").update(readFileSync(SOURCE_PATH)).digest("hex");
 
@@ -222,7 +222,179 @@ function isReadOnlyAnalysisTask(task) {
   const mode = taskMode(task).toLowerCase();
   // Explicit mode match: payload.mode must name a recognized analysis-only mode.
   if (intent === "analyze" && READ_ONLY_ANALYSIS_MODES.has(mode)) return true;
+  if (isNoLiveSourceOnlyAnalysisTask(task)) return true;
   return false;
+}
+
+function isNoLiveSourceOnlyAnalysisTask(task) {
+  const intent = safeText(task?.intent, "").toLowerCase();
+  if (intent !== "analyze") return false;
+  const payload = taskPayload(task);
+  const mode = taskMode(task).toLowerCase();
+  const noLive = payload.noLive === true || payload.no_live === true;
+  const sourceOnly = payload.sourceOnly === true || payload.source_only === true;
+  if (!noLive || !sourceOnly) return false;
+  const phase = safeText(payload.phase, "").toLowerCase();
+  const role = safeText(payload.role, "").toLowerCase();
+  return mode.startsWith("a2a-") || mode.includes("analysis") || mode.includes("evidence") || Boolean(phase || role);
+}
+
+function shouldUseOpenClawAnalysisBridge(task, env = process.env) {
+  if (!isReadOnlyAnalysisTask(task)) return false;
+  if (isTruthyEnv(env.A2A_OPENCLAW_ANALYSIS_DISABLED)) return false;
+  if (!isTruthyEnv(env.A2A_OPENCLAW_ANALYSIS_ENABLED)) return false;
+  return isOpenClawBridgeConfigured(env);
+}
+
+function normalizedBridgeAnalysisStatus(value) {
+  const status = safeText(value, "done").toLowerCase();
+  return status === "blocked" || status === "block" ? "blocked" : "done";
+}
+
+function runOpenClawAnalysisBridge(task, env = process.env) {
+  const payload = taskPayload(task);
+  const nodeId = safeText(env.A2A_NODE_ID || env.NODE_ID || env.WORKER_ID, "unknown-node");
+  const timeoutSec = String(Math.max(1, Number(env.A2A_OPENCLAW_ANALYSIS_TIMEOUT_SEC || env.A2A_OPENCLAW_TIMEOUT_SEC || 600)));
+  const sessionId = safeText(
+    env.A2A_OPENCLAW_ANALYSIS_SESSION_ID,
+    `a2a-${nodeId}-${safeText(task.id, String(Date.now()))}-analysis`,
+  );
+  const prompt = [
+    `You are A2A worker ${nodeId}. Complete this read-only A2A analysis task.`,
+    "Do not modify files, deploy, restart services, send providers, acknowledge terminal rows, mutate databases, or move credentials.",
+    "Use only the evidence provided in the task unless an approved read-only tool result is present in the payload.",
+    "If the task cannot be analyzed from the provided material, return status=blocked with the exact missing evidence.",
+    "Return JSON only, no markdown, with exactly this shape:",
+    '{"status":"done|blocked","summary":"...","findings":["..."],"risks":["..."],"recommendations":["..."],"evidenceRefs":["..."],"doneCommentUrl":"optional","blockCommentUrl":"optional","startCommentUrl":"optional"}',
+    "All human-readable text should be Korean unless quoting code/test output.",
+    `Task id: ${safeText(task.id, "unknown")}`,
+    `Intent: ${safeText(task.intent, "unknown")}`,
+    `Mode: ${taskMode(task)}`,
+    `Assigned worker: ${safeText(task.assignedWorkerId, "")}`,
+    `Task message:\n${safeText(task.message, "")}`,
+    `Payload JSON:\n${jsonForPrompt(payload, 16000)}`,
+  ].join("\n\n");
+
+  const command = safeText(env.OPENCLAW_BIN, "openclaw");
+  const args = [
+    "agent",
+    "--local",
+    "--agent", safeText(env.A2A_OPENCLAW_ANALYSIS_AGENT_ID || env.A2A_OPENCLAW_AGENT_ID, "main"),
+    "--session-id", sessionId,
+    "--message", prompt,
+    "--thinking", safeText(env.A2A_OPENCLAW_ANALYSIS_THINKING || env.A2A_OPENCLAW_THINKING, "low"),
+    "--timeout", timeoutSec,
+    "--json",
+  ];
+
+  const watchdogMs = env.A2A_OPENCLAW_ANALYSIS_WATCHDOG_MS
+    ? Number(env.A2A_OPENCLAW_ANALYSIS_WATCHDOG_MS)
+    : (Number(timeoutSec) + 30) * 1000;
+
+  const child = spawnSync(command, args, {
+    cwd: safeText(env.A2A_HANDLER_CWD, process.cwd()),
+    env,
+    encoding: "utf8",
+    maxBuffer: 50 * 1024 * 1024,
+    timeout: watchdogMs,
+    killSignal: "SIGKILL",
+  });
+
+  if (child.error) {
+    const isTimeout = child.error.code === "ETIMEDOUT";
+    return {
+      error: {
+        code: isTimeout ? "openclaw_analysis_timeout" : "openclaw_analysis_spawn_failed",
+        message: child.error.message,
+        details: { signal: child.signal ?? undefined, buildInfo: BUILD_INFO },
+      },
+    };
+  }
+  if (child.status !== 0) {
+    return {
+      error: {
+        code: child.signal ? "openclaw_analysis_timeout" : "openclaw_analysis_failed",
+        message: safeText(child.stderr, safeText(child.stdout, `openclaw exited with ${child.status ?? "unknown"}`)),
+        details: { exitCode: child.status, signal: child.signal ?? undefined, buildInfo: BUILD_INFO },
+      },
+    };
+  }
+
+  let envelope;
+  try {
+    envelope = parseOpenClawEnvelope(child.stdout, child.stderr);
+  } catch {
+    return {
+      error: {
+        code: "openclaw_analysis_no_final_json",
+        message: "OpenClaw analysis bridge produced no parseable output envelope",
+        details: { buildInfo: BUILD_INFO },
+      },
+    };
+  }
+
+  const text = extractOpenClawText(envelope);
+  if (!text) {
+    return {
+      error: {
+        code: "openclaw_analysis_no_final_json",
+        message: "OpenClaw analysis bridge returned no visible text output",
+        details: { buildInfo: BUILD_INFO },
+      },
+    };
+  }
+
+  let response;
+  try {
+    response = parseJsonFromLooseText(text);
+  } catch {
+    return {
+      error: {
+        code: "openclaw_analysis_no_final_json",
+        message: "OpenClaw analysis bridge response text contained no valid JSON",
+        details: { buildInfo: BUILD_INFO },
+      },
+    };
+  }
+
+  const status = normalizedBridgeAnalysisStatus(response.status);
+  const analysisSummary = safeText(response.summary, safeText(task.message, "analysis completed"));
+  const output = {
+    analysisSummary,
+    analysisKind: "openclaw_bridge",
+    analysisStatus: status,
+    findings: normalizeStringArray(response.findings),
+    risks: normalizeStringArray(response.risks),
+    recommendations: normalizeStringArray(response.recommendations),
+    evidenceRefs: normalizeStringArray(response.evidenceRefs),
+    doneCommentUrl: safeText(response.doneCommentUrl, undefined),
+    blockCommentUrl: safeText(response.blockCommentUrl, undefined),
+    startCommentUrl: safeText(response.startCommentUrl, undefined),
+    nodeId,
+    taskId: safeText(task.id, undefined),
+    mode: taskMode(task),
+    role: safeText(payload.role, undefined),
+    phase: safeText(payload.phase, undefined),
+    noLive: payload.noLive === true || payload.no_live === true || undefined,
+    sourceOnly: payload.sourceOnly === true || payload.source_only === true || undefined,
+    payloadKeys: Object.keys(payload).sort(),
+  };
+
+  return {
+    result: {
+      summary: `analysis bridge ${status}: ${analysisSummary}`,
+      note: "read-only A2A analysis completed through OpenClaw bridge",
+      handler: BUILD_INFO,
+      lifecycle: {
+        intent: "analyze",
+        mode: taskMode(task),
+        taskId: safeText(task.id, "unknown"),
+        proposalId: safeText(task.proposalId, undefined),
+        exchangeId: safeText(task.exchangeId, undefined),
+      },
+      output,
+    },
+  };
 }
 
 
@@ -816,7 +988,11 @@ function handleBuiltinTask(task, env = process.env) {
     const startCommentUrl = safeText(payload.startCommentUrl, "");
     const findings = Array.isArray(payload.findings) ? [...payload.findings] : [];
     const risks = Array.isArray(payload.risks) ? [...payload.risks] : [];
+    const recommendations = Array.isArray(payload.recommendations) ? [...payload.recommendations] : [];
+    const evidenceRefs = Array.isArray(payload.evidenceRefs) ? [...payload.evidenceRefs] : [];
     const artifacts = Array.isArray(payload.artifacts) ? [...payload.artifacts] : [];
+    const noLive = payload.noLive === true || payload.no_live === true || undefined;
+    const sourceOnly = payload.sourceOnly === true || payload.source_only === true || undefined;
 
     if (blockCommentUrl) {
       return {
@@ -833,11 +1009,18 @@ function handleBuiltinTask(task, env = process.env) {
           },
           output: {
             analysisSummary,
+            analysisKind: "builtin_structured",
             blockCommentUrl,
             startCommentUrl: startCommentUrl || undefined,
             findings,
             risks,
+            recommendations,
+            evidenceRefs,
             artifacts,
+            role: safeText(payload.role, undefined),
+            phase: safeText(payload.phase, undefined),
+            noLive,
+            sourceOnly,
             payloadKeys: Object.keys(payload).sort(),
           },
         },
@@ -858,11 +1041,18 @@ function handleBuiltinTask(task, env = process.env) {
         },
         output: {
           analysisSummary,
+          analysisKind: "builtin_structured",
           doneCommentUrl: doneCommentUrl || undefined,
           startCommentUrl: startCommentUrl || undefined,
           findings,
           risks,
+          recommendations,
+          evidenceRefs,
           artifacts,
+          role: safeText(payload.role, undefined),
+          phase: safeText(payload.phase, undefined),
+          noLive,
+          sourceOnly,
           payloadKeys: Object.keys(payload).sort(),
         },
       },
@@ -903,6 +1093,10 @@ export function handleTask(task, env = process.env) {
 
   if (shouldUseOpenClawBridge(task, env)) {
     return runOpenClawBridge(task, env);
+  }
+
+  if (shouldUseOpenClawAnalysisBridge(task, env)) {
+    return runOpenClawAnalysisBridge(task, env);
   }
 
   return handleBuiltinTask(task, env);
