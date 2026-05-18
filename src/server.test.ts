@@ -7351,6 +7351,48 @@ test("POST /terminal-brief/sidecar/operator-review-table returns source-only rev
   }
 });
 
+test("POST /terminal-brief/sidecar/review-decision returns source-only decision evidence", async () => {
+  const server = await startTestServer({ edgeSecret: "test-edge-secret" });
+  try {
+    const fixture = JSON.parse(readFileSync("fixtures/terminal-brief/sidecar-review-decision-ingestor.no-live.json", "utf8"));
+    const res = await fetch(
+      server.baseUrl + "/terminal-brief/sidecar/review-decision",
+      {
+        method: "POST",
+        headers: jsonHeaders({
+          "x-a2a-edge-secret": "test-edge-secret",
+          "x-a2a-requester-id": "operator-a",
+          "x-a2a-requester-role": "operator",
+        }),
+        body: JSON.stringify(fixture),
+      },
+    );
+
+    assert.equal(res.status, 200);
+    assert.equal(res.headers.get("cache-control"), "no-store");
+    const body = await res.json();
+    assert.equal(body.kind, "a2a-broker.terminal-brief-sidecar-review-decision-ingestor.packet");
+    assert.equal(body.state, "approved_evidence");
+    assert.equal(body.decisionEvidence.acceptedApprovalEvidence, true);
+    assert.equal(body.readiness.reviewDecisionEvidenceAccepted, true);
+    assert.equal(body.readiness.approvalRequestDispatchPermitted, false);
+    assert.equal(body.readiness.approvalGrantPermitted, false);
+    assert.equal(body.readiness.providerSendPermitted, false);
+    assert.equal(body.readiness.terminalAckPermitted, false);
+    assert.equal(body.readiness.executionPermitted, false);
+    assert.equal(body.readiness.dbMutationPermitted, false);
+    assert.equal(body.integrationContract.classifiesOperatorDecisionEvidence, true);
+    assert.equal(body.integrationContract.sendsApprovalRequest, false);
+    assert.equal(body.integrationContract.grantsApproval, false);
+    assert.equal(body.integrationContract.invokesExecutor, false);
+    assert.equal(body.integrationContract.startsSidecar, false);
+    assert.equal(body.semantics.reviewDecisionIngestorOnly, true);
+    assert.equal(body.semantics.acceptedDecisionEvidenceDoesNotGrantApproval, true);
+  } finally {
+    await server.close();
+  }
+});
+
 test("POST /terminal-brief/sidecar/dry-run-start-canary-plan returns draft-only no-live canary plan", async () => {
   const server = await startTestServer({ edgeSecret: "test-edge-secret" });
   try {
