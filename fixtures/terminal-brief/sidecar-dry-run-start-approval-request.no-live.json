@@ -1,0 +1,116 @@
+{
+  "preflightChainReviewPacket": {
+    "kind": "a2a-broker.terminal-brief-sidecar-preflight-chain-review.packet",
+    "version": 1,
+    "generatedAt": "2026-05-19T00:20:00.000Z",
+    "mode": "read-only/no-live",
+    "parentRoundId": "round-731",
+    "state": "ready_for_supervised_dry_run_chain_review",
+    "dryRunOnly": true,
+    "sourceOnlyNoLive": true,
+    "idempotencyKey": "tb-sidecar-preflight-chain-review:fixture-731",
+    "source": {
+      "preflightCollectorState": "ready_for_supervised_dry_run_preflight_review",
+      "preflightCollectorIdempotencyKey": "tb-sidecar-preflight-evidence:fixture-729",
+      "dryRunStartCanaryPlanState": "ready_for_dry_run_start_approval_request",
+      "dryRunStartCanaryPlanIdempotencyKey": "tb-sidecar-dry-run-start-canary-plan:fixture-726",
+      "requestedAction": "approve_supervised_terminal_brief_sidecar_dry_run_start_canary",
+      "operatorTarget": "operator-a",
+      "executorName": "gongyung-sidecar-dry-run-executor",
+      "adapterName": "gongyung",
+      "finalizer": "seoseo"
+    },
+    "chain": {
+      "readyPacketIds": [
+        "tb-sidecar-dry-run-start-canary-plan:fixture-726",
+        "tb-sidecar-preflight-evidence:fixture-729"
+      ],
+      "sourceRowsReady": 6,
+      "sourceRowsRequired": 6,
+      "collectorRequiredRowsReady": 10,
+      "collectorRequiredRows": 10,
+      "collectorMissingEvidence": []
+    },
+    "table": {
+      "rows": [],
+      "requiredRowsReady": 6,
+      "requiredRows": 6,
+      "readyRows": 6,
+      "totalRows": 7
+    },
+    "readiness": {
+      "sourceCriteriaMet": true,
+      "chainReviewReady": true,
+      "approvalRequestDispatchPermitted": false,
+      "approvalGrantPermitted": false,
+      "startExecutorDispatchPermitted": false,
+      "executorInvocationPermitted": false,
+      "processSpawnPermitted": false,
+      "sidecarStartPermitted": false,
+      "defaultOnPermitted": false,
+      "liveActivationPermitted": false,
+      "providerSendPermitted": false,
+      "terminalAckPermitted": false,
+      "executionPermitted": false,
+      "dbMutationPermitted": false,
+      "missingEvidence": [],
+      "blockers": [
+        "chain review does not permit approval dispatch, executor invocation, process spawn, sidecar start, default-on, provider send, terminal ACK, DB mutation, restart/deploy, or historical replay",
+        "supervised dry-run start requires a separate explicit operator approval and executor runtime"
+      ],
+      "nextAction": "broker finalizer can use this chain review to prepare a separate explicit supervised dry-run start approval request"
+    },
+    "blockers": [],
+    "nextActions": [],
+    "approvalSensitiveActionsExcluded": [],
+    "integrationContract": {
+      "transport": "json",
+      "chainReviewVersion": 1,
+      "harnessNeutral": true,
+      "openclawMessageSendRequired": false,
+      "hermesAdapterCompatible": true,
+      "gongyungAdapterCompatible": true,
+      "consumesPreflightEvidenceCollectorPacket": true,
+      "collectsLiveEvidence": false,
+      "probesGateway": false,
+      "sendsApprovalRequest": false,
+      "grantsApproval": false,
+      "dispatchesStartExecutor": false,
+      "invokesExecutor": false,
+      "spawnsProcess": false,
+      "startsSidecar": false,
+      "enablesDefaultOn": false,
+      "executesAction": false
+    },
+    "semantics": {
+      "preflightChainReviewOnly": true,
+      "sourceOnlyNoLive": true,
+      "suppliedPacketOnly": true,
+      "chainReviewDoesNotMutateState": true,
+      "routeIsReadOnly": true,
+      "brokerFinalizerRequired": true,
+      "dryRunStartRequiresSeparateApproval": true,
+      "providerAcceptedIsVisibilityProof": false,
+      "terminalAckEligibleDoesNotPermitAck": true,
+      "executionNotPermitted": true,
+      "processSpawnNotPermitted": true,
+      "sidecarStartNotPermitted": true,
+      "defaultOnNotEnabledByThisPacket": true,
+      "performsGitHubMutation": false,
+      "performsProviderSend": false,
+      "performsTerminalAck": false,
+      "performsRuntimeRestartOrDeploy": false,
+      "performsDbMutation": false,
+      "createsTaskFlowRecords": false,
+      "performsHistoricalReplay": false,
+      "performsReleaseOrPublish": false,
+      "movesSecretsOrCredentials": false
+    }
+  },
+  "dryRunStartApprovalRequest": {
+    "now": "2026-05-19T00:20:00.000Z",
+    "requestedBy": "seoseo",
+    "operatorTarget": "operator-a",
+    "approvalWindowMinutes": 20
+  }
+}
