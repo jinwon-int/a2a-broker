@@ -192,6 +192,11 @@ import {
   extractTerminalBriefSidecarPreflightChainReviewOptions,
 } from "./core/terminal-brief-sidecar-preflight-chain-review.js";
 import {
+  buildTerminalBriefSidecarDryRunStartApprovalRequest,
+  extractTerminalBriefSidecarDryRunStartApprovalRequestChainReview,
+  extractTerminalBriefSidecarDryRunStartApprovalRequestOptions,
+} from "./core/terminal-brief-sidecar-dry-run-start-approval-request.js";
+import {
   buildBrokerCleanupPlan,
   executeBrokerCleanupPlan,
   validateCleanupExecution,
@@ -1630,6 +1635,27 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
         const report = buildTerminalBriefSidecarPreflightChainReview(
           preflightCollector,
           extractTerminalBriefSidecarPreflightChainReviewOptions(body),
+        );
+        return sendJson(res, 200, report, {
+          "cache-control": "no-store",
+        });
+      }
+
+      if (req.method === "POST" && path === "/terminal-brief/sidecar/dry-run-start-approval-request") {
+        if (enforceRequesterIdentity) {
+          assertRequesterHasRole(requesterIdentity, ["hub", "operator"], "terminal_brief.sidecar_dry_run_start_approval_request.read");
+        }
+        const body = await readJson<Record<string, unknown>>(req);
+        let chainReview;
+        try {
+          chainReview = extractTerminalBriefSidecarDryRunStartApprovalRequestChainReview(body);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "invalid sidecar dry-run start approval request input";
+          throw new BrokerError("bad_request", message);
+        }
+        const report = buildTerminalBriefSidecarDryRunStartApprovalRequest(
+          chainReview,
+          extractTerminalBriefSidecarDryRunStartApprovalRequestOptions(body),
         );
         return sendJson(res, 200, report, {
           "cache-control": "no-store",

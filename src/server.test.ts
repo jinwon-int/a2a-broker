@@ -7440,3 +7440,57 @@ test("POST /terminal-brief/sidecar/preflight-chain-review returns final no-live 
     await server.close();
   }
 });
+
+test("POST /terminal-brief/sidecar/dry-run-start-approval-request returns source-only approval draft", async () => {
+  const server = await startTestServer({ edgeSecret: "test-edge-secret" });
+  try {
+    const input = JSON.parse(readFileSync(
+      join(process.cwd(), "fixtures/terminal-brief/sidecar-dry-run-start-approval-request.no-live.json"),
+      "utf8",
+    )) as Record<string, unknown>;
+
+    const res = await fetch(
+      server.baseUrl + "/terminal-brief/sidecar/dry-run-start-approval-request",
+      {
+        method: "POST",
+        headers: jsonHeaders({
+          "x-a2a-edge-secret": "test-edge-secret",
+          "x-a2a-requester-id": "operator-a",
+          "x-a2a-requester-role": "operator",
+        }),
+        body: JSON.stringify(input),
+      },
+    );
+
+    assert.equal(res.status, 200);
+    assert.equal(res.headers.get("cache-control"), "no-store");
+    const body = await res.json();
+    assert.equal(body.kind, "a2a-broker.terminal-brief-sidecar-dry-run-start-approval-request.packet");
+    assert.equal(body.state, "approval_request_draft_ready");
+    assert.equal(body.readiness.approvalRequestDraftReady, true);
+    assert.equal(body.approvalRequestDraft.status, "draft_not_sent");
+    assert.equal(body.approvalRequestDraft.dispatchPermitted, false);
+    assert.equal(body.approvalRequestDraft.approvalGrantPermitted, false);
+    assert.equal(body.approvalRequestDraft.executionPermitted, false);
+    assert.equal(body.readiness.approvalRequestDispatchPermitted, false);
+    assert.equal(body.readiness.startExecutorDispatchPermitted, false);
+    assert.equal(body.readiness.executorInvocationPermitted, false);
+    assert.equal(body.readiness.processSpawnPermitted, false);
+    assert.equal(body.readiness.sidecarStartPermitted, false);
+    assert.equal(body.readiness.defaultOnPermitted, false);
+    assert.equal(body.readiness.providerSendPermitted, false);
+    assert.equal(body.readiness.terminalAckPermitted, false);
+    assert.equal(body.readiness.dbMutationPermitted, false);
+    assert.equal(body.integrationContract.openclawMessageSendRequired, false);
+    assert.equal(body.integrationContract.sendsApprovalRequest, false);
+    assert.equal(body.integrationContract.startsSidecar, false);
+    assert.equal(body.supervisedDryRunBoundary.separateOperatorApprovalRequired, true);
+    assert.equal(body.semantics.requestDraftIsNotSend, true);
+    assert.equal(body.semantics.performsProviderSend, false);
+    assert.equal(body.semantics.performsTerminalAck, false);
+    assert.equal(body.semantics.performsRuntimeRestartOrDeploy, false);
+    assert.equal(body.semantics.performsDbMutation, false);
+  } finally {
+    await server.close();
+  }
+});
