@@ -7393,6 +7393,52 @@ test("POST /terminal-brief/sidecar/review-decision returns source-only decision 
   }
 });
 
+test("POST /terminal-brief/sidecar/approval-grant-proposal returns source-only grant proposal", async () => {
+  const server = await startTestServer({ edgeSecret: "test-edge-secret" });
+  try {
+    const fixture = JSON.parse(readFileSync("fixtures/terminal-brief/sidecar-approval-grant-proposal.no-live.json", "utf8"));
+    const res = await fetch(
+      server.baseUrl + "/terminal-brief/sidecar/approval-grant-proposal",
+      {
+        method: "POST",
+        headers: jsonHeaders({
+          "x-a2a-edge-secret": "test-edge-secret",
+          "x-a2a-requester-id": "operator-a",
+          "x-a2a-requester-role": "operator",
+        }),
+        body: JSON.stringify(fixture),
+      },
+    );
+
+    assert.equal(res.status, 200);
+    assert.equal(res.headers.get("cache-control"), "no-store");
+    const body = await res.json();
+    assert.equal(body.kind, "a2a-broker.terminal-brief-sidecar-approval-grant-proposal.packet");
+    assert.equal(body.state, "ready_for_grant_proposal_review");
+    assert.equal(body.readiness.grantProposalReady, true);
+    assert.equal(body.grantProposal.proposalOnly, true);
+    assert.equal(body.grantProposal.grantWouldRemainSeparateAction, true);
+    assert.equal(body.readiness.approvalRequestDispatchPermitted, false);
+    assert.equal(body.readiness.approvalGrantPermitted, false);
+    assert.equal(body.readiness.approvalGrantExecutionPermitted, false);
+    assert.equal(body.readiness.startExecutorDispatchPermitted, false);
+    assert.equal(body.readiness.executorInvocationPermitted, false);
+    assert.equal(body.readiness.processSpawnPermitted, false);
+    assert.equal(body.readiness.sidecarStartPermitted, false);
+    assert.equal(body.readiness.providerSendPermitted, false);
+    assert.equal(body.readiness.terminalAckPermitted, false);
+    assert.equal(body.readiness.executionPermitted, false);
+    assert.equal(body.integrationContract.preparesGrantProposal, true);
+    assert.equal(body.integrationContract.grantsApproval, false);
+    assert.equal(body.integrationContract.executesApprovalGrant, false);
+    assert.equal(body.integrationContract.startsSidecar, false);
+    assert.equal(body.semantics.proposalDoesNotGrantApproval, true);
+    assert.equal(body.semantics.approvalGrantRequiresSeparateOperatorAction, true);
+  } finally {
+    await server.close();
+  }
+});
+
 test("POST /terminal-brief/sidecar/dry-run-start-canary-plan returns draft-only no-live canary plan", async () => {
   const server = await startTestServer({ edgeSecret: "test-edge-secret" });
   try {
