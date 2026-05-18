@@ -1,0 +1,127 @@
+{
+  "startExecutorGate": {
+    "kind": "a2a-broker.terminal-brief-sidecar-start-executor-gate.packet",
+    "version": 1,
+    "generatedAt": "2026-05-18T18:00:00.000Z",
+    "mode": "read-only/no-live",
+    "parentRoundId": "round-720",
+    "state": "ready_for_start_executor_review",
+    "dryRunOnly": true,
+    "sourceOnlyNoLive": true,
+    "idempotencyKey": "tb-sidecar-start-executor-gate:fixture-720",
+    "source": {
+      "receiptState": "accepted",
+      "receiptIdempotencyKey": "tb-sidecar-activation-receipt:fixture-720",
+      "receiptEvidenceAccepted": true,
+      "approvalEvidenceAccepted": true,
+      "terminalAckEligible": true,
+      "requestedAction": "approve_supervised_terminal_brief_sidecar_dry_run_start",
+      "operatorTarget": "operator-a"
+    },
+    "startPlan": {
+      "supervisedDryRunOnly": true,
+      "requestedExecutor": "gongyung-sidecar-dry-run-executor",
+      "operatorApprovalReference": "operator-visible-approval-720",
+      "dryRunReason": "sidecar-gongyung-spool-dry-run",
+      "commandShape": {
+        "kind": "metadata_only",
+        "commandName": "terminal-brief-sidecar",
+        "commandArgs": [
+          "--dry-run",
+          "--poll-ms",
+          "15000"
+        ],
+        "envKeys": [
+          "EDGE_SECRET"
+        ],
+        "commandExecutionPermitted": false,
+        "secretsIncluded": false
+      },
+      "abortQueueBacklog": 1000,
+      "abortConditions": [
+        "Gateway readiness is false",
+        "Gateway event loop is degraded before or during supervised dry-run",
+        "provider send or terminal ACK/replay is attempted by this path"
+      ],
+      "rollbackInstructions": [
+        "do not start the sidecar from this gate packet",
+        "preserve receipt and approval evidence before any separate executor review"
+      ]
+    },
+    "readiness": {
+      "sourceCriteriaMet": true,
+      "startExecutorReviewReady": true,
+      "startExecutorDispatchPermitted": false,
+      "sidecarStartPermitted": false,
+      "defaultOnPermitted": false,
+      "liveActivationPermitted": false,
+      "approvalGrantPermitted": false,
+      "providerSendPermitted": false,
+      "terminalAckPermitted": false,
+      "executionPermitted": false,
+      "missingEvidence": [],
+      "blockers": [],
+      "nextAction": "request explicit operator approval for a separate supervised dry-run start executor invocation"
+    },
+    "blockers": [],
+    "nextActions": [
+      "request explicit operator approval for a separate supervised dry-run start executor invocation",
+      "keep this gate read-only and do not dispatch or execute the start command from it"
+    ],
+    "approvalSensitiveActionsExcluded": [
+      "starting/enabling always-on sidecar",
+      "Terminal Brief default-on enablement",
+      "live provider/Hermes/Gongyung/Telegram/OpenClaw send",
+      "terminal ACK/replay or terminal receipt DB mutation"
+    ],
+    "integrationContract": {
+      "transport": "json",
+      "gateVersion": 1,
+      "harnessNeutral": true,
+      "openclawMessageSendRequired": false,
+      "hermesAdapterCompatible": true,
+      "gongyungAdapterCompatible": true,
+      "consumesActivationReceiptIngestorPacket": true,
+      "dispatchesStartExecutor": false,
+      "grantsApproval": false,
+      "startsSidecar": false,
+      "enablesDefaultOn": false,
+      "executesAction": false
+    },
+    "semantics": {
+      "startExecutorGateOnly": true,
+      "sourceOnlyNoLive": true,
+      "gateDoesNotMutateState": true,
+      "commandShapeIsMetadataOnly": true,
+      "providerAcceptedIsVisibilityProof": false,
+      "terminalAckEligibleDoesNotPermitAck": true,
+      "approvalGrantEvidenceDoesNotGrantApproval": true,
+      "sidecarStartRequiresSeparateApprovedExecutor": true,
+      "defaultOnNotEnabledByThisPacket": true,
+      "executionNotPermitted": true,
+      "routeIsReadOnly": true,
+      "brokerFinalizerRequired": true,
+      "performsGitHubMutation": false,
+      "performsProviderSend": false,
+      "performsTerminalAck": false,
+      "performsRuntimeRestartOrDeploy": false,
+      "performsDbMutation": false,
+      "createsTaskFlowRecords": false,
+      "performsHistoricalReplay": false,
+      "performsReleaseOrPublish": false,
+      "movesSecretsOrCredentials": false
+    }
+  },
+  "executorInvocationRehearsal": {
+    "adapterName": "gongyung",
+    "executorRuntime": "metadata-only",
+    "supervisor": "terminal-brief-sidecar-worker",
+    "healthCheckTarget": "/readyz",
+    "maxRuntimeSeconds": 300,
+    "expectedEvidence": [
+      "operator-reviewed metadata-only invocation plan",
+      "separate executor runtime evidence if a later approved dry-run start is performed",
+      "no provider send, terminal ACK/replay, default-on enablement, deploy/restart, or DB mutation evidence from this rehearsal"
+    ]
+  }
+}

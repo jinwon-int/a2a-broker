@@ -171,6 +171,11 @@ import {
   extractTerminalBriefSidecarStartExecutorGateReceipt,
 } from "./core/terminal-brief-sidecar-start-executor-gate.js";
 import {
+  buildTerminalBriefSidecarExecutorInvocationRehearsal,
+  extractTerminalBriefSidecarExecutorInvocationRehearsalGate,
+  extractTerminalBriefSidecarExecutorInvocationRehearsalOptions,
+} from "./core/terminal-brief-sidecar-executor-invocation-rehearsal.js";
+import {
   buildBrokerCleanupPlan,
   executeBrokerCleanupPlan,
   validateCleanupExecution,
@@ -1524,6 +1529,27 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
         const report = buildTerminalBriefSidecarStartExecutorGate(
           activationReceipt,
           extractTerminalBriefSidecarStartExecutorGateOptions(body),
+        );
+        return sendJson(res, 200, report, {
+          "cache-control": "no-store",
+        });
+      }
+
+      if (req.method === "POST" && path === "/terminal-brief/sidecar/executor-invocation-rehearsal") {
+        if (enforceRequesterIdentity) {
+          assertRequesterHasRole(requesterIdentity, ["hub", "operator"], "terminal_brief.sidecar_executor_invocation_rehearsal.read");
+        }
+        const body = await readJson<Record<string, unknown>>(req);
+        let startExecutorGate;
+        try {
+          startExecutorGate = extractTerminalBriefSidecarExecutorInvocationRehearsalGate(body);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "invalid sidecar executor invocation rehearsal input";
+          throw new BrokerError("bad_request", message);
+        }
+        const report = buildTerminalBriefSidecarExecutorInvocationRehearsal(
+          startExecutorGate,
+          extractTerminalBriefSidecarExecutorInvocationRehearsalOptions(body),
         );
         return sendJson(res, 200, report, {
           "cache-control": "no-store",

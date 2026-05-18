@@ -7046,3 +7046,143 @@ test("POST /terminal-brief/sidecar/start-executor-gate returns no-live start exe
     await server.close();
   }
 });
+
+test("POST /terminal-brief/sidecar/executor-invocation-rehearsal returns no-live invocation rehearsal", async () => {
+  const server = await startTestServer({ edgeSecret: "test-edge-secret" });
+  try {
+    const startExecutorGate = {
+      kind: "a2a-broker.terminal-brief-sidecar-start-executor-gate.packet",
+      version: 1,
+      generatedAt: "2026-05-18T18:00:00.000Z",
+      mode: "read-only/no-live",
+      parentRoundId: "round-720",
+      state: "ready_for_start_executor_review",
+      dryRunOnly: true,
+      sourceOnlyNoLive: true,
+      idempotencyKey: "tb-sidecar-start-executor-gate:fixture-720",
+      source: {
+        receiptState: "accepted",
+        receiptIdempotencyKey: "tb-sidecar-activation-receipt:fixture-720",
+        receiptEvidenceAccepted: true,
+        approvalEvidenceAccepted: true,
+        terminalAckEligible: true,
+        requestedAction: "approve_supervised_terminal_brief_sidecar_dry_run_start",
+        operatorTarget: "operator-a",
+      },
+      startPlan: {
+        supervisedDryRunOnly: true,
+        requestedExecutor: "gongyung-sidecar-dry-run-executor",
+        operatorApprovalReference: "operator-visible-approval-720",
+        dryRunReason: "sidecar-gongyung-spool-dry-run",
+        commandShape: {
+          kind: "metadata_only",
+          commandName: "terminal-brief-sidecar",
+          commandArgs: ["--dry-run", "--poll-ms", "15000"],
+          envKeys: ["EDGE_SECRET"],
+          commandExecutionPermitted: false,
+          secretsIncluded: false,
+        },
+        abortConditions: ["Gateway readiness is false"],
+        rollbackInstructions: ["do not start the sidecar from this gate packet"],
+      },
+      readiness: {
+        sourceCriteriaMet: true,
+        startExecutorReviewReady: true,
+        startExecutorDispatchPermitted: false,
+        sidecarStartPermitted: false,
+        defaultOnPermitted: false,
+        liveActivationPermitted: false,
+        approvalGrantPermitted: false,
+        providerSendPermitted: false,
+        terminalAckPermitted: false,
+        executionPermitted: false,
+        missingEvidence: [],
+        blockers: [],
+        nextAction: "request explicit operator approval for a separate supervised dry-run start executor invocation",
+      },
+      blockers: [],
+      nextActions: [],
+      approvalSensitiveActionsExcluded: [],
+      integrationContract: {
+        transport: "json",
+        gateVersion: 1,
+        harnessNeutral: true,
+        openclawMessageSendRequired: false,
+        hermesAdapterCompatible: true,
+        gongyungAdapterCompatible: true,
+        consumesActivationReceiptIngestorPacket: true,
+        dispatchesStartExecutor: false,
+        grantsApproval: false,
+        startsSidecar: false,
+        enablesDefaultOn: false,
+        executesAction: false,
+      },
+      semantics: {
+        startExecutorGateOnly: true,
+        sourceOnlyNoLive: true,
+        gateDoesNotMutateState: true,
+        commandShapeIsMetadataOnly: true,
+        providerAcceptedIsVisibilityProof: false,
+        terminalAckEligibleDoesNotPermitAck: true,
+        approvalGrantEvidenceDoesNotGrantApproval: true,
+        sidecarStartRequiresSeparateApprovedExecutor: true,
+        defaultOnNotEnabledByThisPacket: true,
+        executionNotPermitted: true,
+        routeIsReadOnly: true,
+        brokerFinalizerRequired: true,
+        performsGitHubMutation: false,
+        performsProviderSend: false,
+        performsTerminalAck: false,
+        performsRuntimeRestartOrDeploy: false,
+        performsDbMutation: false,
+        createsTaskFlowRecords: false,
+        performsHistoricalReplay: false,
+        performsReleaseOrPublish: false,
+        movesSecretsOrCredentials: false,
+      },
+    };
+
+    const res = await fetch(
+      server.baseUrl + "/terminal-brief/sidecar/executor-invocation-rehearsal",
+      {
+        method: "POST",
+        headers: jsonHeaders({
+          "x-a2a-edge-secret": "test-edge-secret",
+          "x-a2a-requester-id": "operator-a",
+          "x-a2a-requester-role": "operator",
+        }),
+        body: JSON.stringify({
+          startExecutorGate,
+          executorInvocationRehearsal: {
+            adapterName: "gongyung",
+            executorRuntime: "metadata-only",
+            supervisor: "terminal-brief-sidecar-worker",
+          },
+        }),
+      },
+    );
+
+    assert.equal(res.status, 200);
+    assert.equal(res.headers.get("cache-control"), "no-store");
+    const body = await res.json();
+    assert.equal(body.kind, "a2a-broker.terminal-brief-sidecar-executor-invocation-rehearsal.packet");
+    assert.equal(body.state, "ready_for_executor_invocation_rehearsal");
+    assert.equal(body.readiness.startExecutorDispatchPermitted, false);
+    assert.equal(body.readiness.executorInvocationPermitted, false);
+    assert.equal(body.readiness.processSpawnPermitted, false);
+    assert.equal(body.readiness.sidecarStartPermitted, false);
+    assert.equal(body.readiness.defaultOnPermitted, false);
+    assert.equal(body.readiness.providerSendPermitted, false);
+    assert.equal(body.readiness.terminalAckPermitted, false);
+    assert.equal(body.readiness.executionPermitted, false);
+    assert.equal(body.invocationPlan.commandShape.commandExecutionPermitted, false);
+    assert.equal(body.invocationPlan.commandShape.processSpawnPermitted, false);
+    assert.equal(body.invocationPlan.commandShape.secretsIncluded, false);
+    assert.equal(body.integrationContract.invokesExecutor, false);
+    assert.equal(body.integrationContract.spawnsProcess, false);
+    assert.equal(body.integrationContract.startsSidecar, false);
+    assert.equal(body.semantics.executorInvocationRehearsalOnly, true);
+  } finally {
+    await server.close();
+  }
+});
