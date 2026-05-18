@@ -136,6 +136,10 @@ import {
   extractTerminalBriefApprovalRequestPacket,
 } from "./core/terminal-brief-approval-executor.js";
 import {
+  buildTerminalBriefApprovalDispatchAdapter,
+  extractTerminalBriefApprovalExecutorPacket,
+} from "./core/terminal-brief-approval-dispatch-adapter.js";
+import {
   buildBrokerCleanupPlan,
   executeBrokerCleanupPlan,
   validateCleanupExecution,
@@ -1333,6 +1337,31 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
           selectedAction: optionalString(executorOptions.selectedAction ?? executorOptions.selected_action),
           selectedTarget: optionalString(executorOptions.selectedTarget ?? executorOptions.selected_target),
           attemptExecute: executorOptions.attemptExecute === true || executorOptions.attempt_execute === true,
+        });
+        return sendJson(res, 200, report, {
+          "cache-control": "no-store",
+        });
+      }
+
+      if (req.method === "POST" && path === "/terminal-brief/closeout/approval-dispatch") {
+        if (enforceRequesterIdentity) {
+          assertRequesterHasRole(requesterIdentity, ["hub", "operator"], "terminal_brief.approval_dispatch.read");
+        }
+        const body = await readJson<Record<string, unknown>>(req);
+        let approvalExecutor;
+        try {
+          approvalExecutor = extractTerminalBriefApprovalExecutorPacket(body);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "invalid approval dispatch input";
+          throw new BrokerError("bad_request", message);
+        }
+        const dispatchOptions = body ?? {};
+        const report = buildTerminalBriefApprovalDispatchAdapter(approvalExecutor, {
+          adapter: optionalString(dispatchOptions.adapter ?? dispatchOptions.adapter_type ?? dispatchOptions.adapterType),
+          target: optionalString(dispatchOptions.target),
+          channel: optionalString(dispatchOptions.channel),
+          requestedBy: optionalString(dispatchOptions.requestedBy ?? dispatchOptions.requested_by),
+          receiptId: optionalString(dispatchOptions.receiptId ?? dispatchOptions.receipt_id),
         });
         return sendJson(res, 200, report, {
           "cache-control": "no-store",

@@ -6171,3 +6171,130 @@ test("POST /terminal-brief/closeout/approval-executor returns no-live execute-bl
     await server.close();
   }
 });
+
+test("POST /terminal-brief/closeout/approval-dispatch returns no-live adapter transcript", async () => {
+  const server = await startTestServer({ edgeSecret: "test-edge-secret" });
+  try {
+    const approvalExecutor = {
+      kind: "a2a-broker.terminal-brief-approval-executor.packet",
+      version: 1,
+      generatedAt: "2026-05-18T21:00:00.000Z",
+      mode: "read-only/no-live",
+      parentRoundId: "round-706",
+      state: "dispatch_pending",
+      dryRunOnly: true,
+      dispatchPermitted: false,
+      approvalGrantPermitted: false,
+      executionPermitted: false,
+      idempotencyKey: "tb-approval-executor:fixture-706",
+      finalizer: {
+        brokerOfRecordId: "seoseo",
+        owner: "seoseo",
+        required: true,
+        singleFinalizerRequired: true,
+      },
+      source: {
+        approvalRequestDecision: "request_ready",
+        approvalRequestIdempotencyKey: "tb-approval-request:fixture-706",
+        targetIssueUrl: "https://github.com/jinwon-int/a2a-broker/issues/706",
+        targetPrUrl: "https://github.com/jinwon-int/a2a-broker/pull/707",
+        requestedActions: 2,
+        nonRequestableActions: 1,
+      },
+      dispatch: {
+        state: "dispatch_pending",
+        transport: "none",
+        requestDispatchPermitted: false,
+        requestDispatched: false,
+        requestSendPermitted: false,
+        reason: "dispatch is intentionally held",
+      },
+      approval: {
+        state: "none",
+        realApprovalGranted: false,
+        simulatedApprovalOnly: false,
+        reason: "no approval selection was supplied",
+      },
+      execution: {
+        state: "not_attempted",
+        executePermitted: false,
+        executed: false,
+        reason: "execution was not attempted and remains forbidden",
+      },
+      blockers: [],
+      nextActions: [],
+      integrationContract: {
+        transport: "json",
+        harnessNeutral: true,
+        openclawMessageSendRequired: false,
+        hermesAdapterCompatible: true,
+        sendsApprovalRequest: false,
+        grantsApproval: false,
+        executesAction: false,
+      },
+      semantics: {
+        approvalExecutorShellOnly: true,
+        dispatchNotPerformed: true,
+        approvalNotReallyGranted: true,
+        simulatedApprovalOnly: false,
+        executionNotPermitted: true,
+        routeIsReadOnly: true,
+        brokerFinalizerRequired: true,
+        singleFinalizerRequired: true,
+        performsGitHubMutation: false,
+        performsProviderSend: false,
+        performsTerminalAck: false,
+        performsRuntimeRestartOrDeploy: false,
+        performsDbMutation: false,
+        createsTaskFlowRecords: false,
+        performsHistoricalReplay: false,
+        performsReleaseOrPublish: false,
+        movesSecretsOrCredentials: false,
+      },
+    };
+
+    const res = await fetch(
+      server.baseUrl + "/terminal-brief/closeout/approval-dispatch",
+      {
+        method: "POST",
+        headers: jsonHeaders({
+          "x-a2a-edge-secret": "test-edge-secret",
+          "x-a2a-requester-id": "operator-a",
+          "x-a2a-requester-role": "operator",
+        }),
+        body: JSON.stringify({
+          approvalExecutor,
+          adapter: "gongyung",
+          target: "hermes://gongyung/approval",
+          channel: "operator",
+          requestedBy: "seoseo",
+        }),
+      },
+    );
+
+    assert.equal(res.status, 200);
+    assert.equal(res.headers.get("cache-control"), "no-store");
+    const body = await res.json();
+    assert.equal(body.kind, "a2a-broker.terminal-brief-approval-dispatch-adapter.packet");
+    assert.equal(body.state, "dispatch_draft_ready");
+    assert.equal(body.adapter.type, "gongyung");
+    assert.equal(body.adapter.requiresOpenClawMessageSend, false);
+    assert.equal(body.dispatchPermitted, false);
+    assert.equal(body.providerSendPermitted, false);
+    assert.equal(body.approvalGrantPermitted, false);
+    assert.equal(body.executionPermitted, false);
+    assert.equal(body.transcript.sent, false);
+    assert.equal(body.transcript.sendPermitted, false);
+    assert.equal(body.receiptDraft.providerAccepted, false);
+    assert.equal(body.receiptDraft.currentSessionVisible, false);
+    assert.equal(body.receiptDraft.terminalAck, false);
+    assert.equal(body.integrationContract.openclawMessageSendRequired, false);
+    assert.equal(body.integrationContract.hermesAdapterCompatible, true);
+    assert.equal(body.integrationContract.gongyungAdapterCompatible, true);
+    assert.equal(body.integrationContract.sendsApprovalRequest, false);
+    assert.equal(body.integrationContract.grantsApproval, false);
+    assert.equal(body.integrationContract.executesAction, false);
+  } finally {
+    await server.close();
+  }
+});
