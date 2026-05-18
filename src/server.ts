@@ -181,6 +181,11 @@ import {
   extractTerminalBriefSidecarRuntimePreflightApprovalRehearsal,
 } from "./core/terminal-brief-sidecar-runtime-preflight-approval.js";
 import {
+  buildTerminalBriefSidecarAdapterHandoffApproval,
+  extractTerminalBriefSidecarAdapterHandoffApprovalOptions,
+  extractTerminalBriefSidecarAdapterHandoffApprovalPacket,
+} from "./core/terminal-brief-sidecar-adapter-handoff-approval.js";
+import {
   buildTerminalBriefSidecarDryRunStartCanaryPlan,
   extractTerminalBriefSidecarDryRunStartCanaryPlanOptions,
   extractTerminalBriefSidecarDryRunStartCanaryPlanRehearsal,
@@ -1602,6 +1607,27 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
         const report = buildTerminalBriefSidecarRuntimePreflightApproval(
           executorInvocationRehearsal,
           extractTerminalBriefSidecarRuntimePreflightApprovalOptions(body),
+        );
+        return sendJson(res, 200, report, {
+          "cache-control": "no-store",
+        });
+      }
+
+      if (req.method === "POST" && path === "/terminal-brief/sidecar/adapter-handoff-approval") {
+        if (enforceRequesterIdentity) {
+          assertRequesterHasRole(requesterIdentity, ["hub", "operator"], "terminal_brief.sidecar_adapter_handoff_approval.read");
+        }
+        const body = await readJson<Record<string, unknown>>(req);
+        let runtimePreflightApproval;
+        try {
+          runtimePreflightApproval = extractTerminalBriefSidecarAdapterHandoffApprovalPacket(body);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "invalid sidecar adapter handoff approval input";
+          throw new BrokerError("bad_request", message);
+        }
+        const report = buildTerminalBriefSidecarAdapterHandoffApproval(
+          runtimePreflightApproval,
+          extractTerminalBriefSidecarAdapterHandoffApprovalOptions(body),
         );
         return sendJson(res, 200, report, {
           "cache-control": "no-store",

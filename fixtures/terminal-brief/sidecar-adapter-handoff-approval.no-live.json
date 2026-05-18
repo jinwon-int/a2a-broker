@@ -1,0 +1,181 @@
+{
+  "kind": "a2a-broker.terminal-brief-sidecar-runtime-preflight-approval.packet",
+  "version": 1,
+  "generatedAt": "2026-05-18T23:00:18.645Z",
+  "mode": "read-only/no-live",
+  "parentRoundId": "round-739",
+  "state": "approval_packet_ready",
+  "dryRunOnly": true,
+  "sourceOnlyNoLive": true,
+  "idempotencyKey": "tb-sidecar-runtime-preflight-approval:1565303b3664aad6269e10c3",
+  "source": {
+    "invocationRehearsalState": "ready_for_executor_invocation_rehearsal",
+    "invocationRehearsalIdempotencyKey": "tb-sidecar-executor-invocation-rehearsal:fixture-739",
+    "executorInvocationRehearsalReady": true,
+    "adapterContractReady": true,
+    "adapterContractVersion": 1,
+    "executorName": "gongyung-sidecar-dry-run-executor",
+    "adapterName": "gongyung",
+    "runtime": "metadata-only"
+  },
+  "approvalPacket": {
+    "draftOnly": true,
+    "requestedAction": "approve_terminal_brief_sidecar_supervised_runtime_preflight",
+    "requestedBy": "seoseo",
+    "operatorTarget": "round-739",
+    "approvalReference": "operator-visible-approval-739",
+    "dispatchRequired": true,
+    "dispatchPermitted": false,
+    "approvalGrantPermitted": false,
+    "runtimeExecutionPermitted": false
+  },
+  "runtimePreflight": {
+    "packetOnly": true,
+    "supervisedDryRunOnly": true,
+    "runtimeWindowMinutes": 10,
+    "maxRuntimeSeconds": 300,
+    "maxQueueBacklog": 1000,
+    "adapterContract": {
+      "version": 1,
+      "adapterName": "gongyung",
+      "transport": "json-stdin-stdout",
+      "input": {
+        "packetKind": "a2a-broker.terminal-brief-sidecar-executor-invocation-rehearsal.packet",
+        "commandShapeKind": "metadata_only",
+        "commandExecutionPermitted": false,
+        "processSpawnPermitted": false,
+        "envKeysOnly": true,
+        "secretsIncluded": false
+      },
+      "output": {
+        "statusValues": [
+          "ready",
+          "aborted",
+          "blocked"
+        ],
+        "mustReportAbortEvidence": true,
+        "providerAcceptedIsReceiptProof": false,
+        "terminalAckPermitted": false,
+        "sidecarStartProofRequiredForLaterRuntime": true
+      },
+      "abortEvidenceRequirements": [
+        "abort status must include a stable abortCode",
+        "abort status must include observedAt timestamp",
+        "abort status must identify which preflight or runtime guard failed",
+        "abort evidence must not include raw secrets, tokens, private keys, or session cookies"
+      ]
+    },
+    "requiredAbortEvidence": [
+      "abort status must include a stable abortCode",
+      "abort status must include observedAt timestamp",
+      "abort status must identify which preflight or runtime guard failed",
+      "abort evidence must not include raw secrets, tokens, private keys, or session cookies",
+      "rollback checklist reviewed before runtime approval",
+      "no provider send, terminal ACK/replay, DB mutation, restart/deploy, or secret movement attempted"
+    ],
+    "preflightChecks": [
+      "executor invocation rehearsal is ready_for_executor_invocation_rehearsal",
+      "adapter contract version 1 is ready",
+      "command input remains metadata-only with env key names only",
+      "abort evidence requirements are present before runtime approval",
+      "queue backlog is below 1000 before any later runtime action",
+      "operator approval is collected separately before executor dispatch or process spawn"
+    ],
+    "rollbackChecklist": [
+      "do not start the sidecar from this packet",
+      "discard runtime approval if adapter contract or source evidence changes",
+      "keep provider send, terminal ACK/replay, DB mutation, restart/deploy, and default-on disabled",
+      "rerun rehearsal and runtime preflight approval after any source evidence refresh"
+    ],
+    "expectedRuntimeEvidence": [
+      "separate operator approval reference for runtime action",
+      "adapter output status ready/aborted/blocked using json-stdin-stdout",
+      "abort evidence satisfying the adapter contract if runtime is not ready",
+      "no terminal ACK/replay evidence from this packet"
+    ]
+  },
+  "readiness": {
+    "sourceCriteriaMet": true,
+    "approvalPacketReady": true,
+    "approvalRequestDispatchPermitted": false,
+    "approvalGrantPermitted": false,
+    "startExecutorDispatchPermitted": false,
+    "executorInvocationPermitted": false,
+    "processSpawnPermitted": false,
+    "sidecarStartPermitted": false,
+    "defaultOnPermitted": false,
+    "liveActivationPermitted": false,
+    "providerSendPermitted": false,
+    "terminalAckPermitted": false,
+    "executionPermitted": false,
+    "dbMutationPermitted": false,
+    "missingEvidence": [],
+    "blockers": [
+      "approval request dispatch is not permitted by this runtime preflight approval packet",
+      "approval grant evidence does not grant approval in this packet",
+      "executor runtime action requires a later separate approved runtime path"
+    ],
+    "nextAction": "review the runtime preflight approval packet and request explicit operator approval before any runtime action"
+  },
+  "blockers": [],
+  "nextActions": [
+    "review the runtime preflight approval packet",
+    "request explicit operator approval before any separate executor dispatch, process spawn, or sidecar dry-run start"
+  ],
+  "approvalSensitiveActionsExcluded": [
+    "sending the approval request",
+    "granting approval or executing an approval grant",
+    "dispatching or invoking a start executor",
+    "spawning a process or starting/stopping the sidecar",
+    "Terminal Brief default-on enablement",
+    "live provider/Hermes/Gongyung/Telegram/OpenClaw send",
+    "terminal ACK/replay or terminal receipt DB mutation",
+    "GitHub PR merge, issue close, or comment post from the packet/route",
+    "TaskFlow record creation or broker DB mutation",
+    "production deploy/restart, historical replay, release, publish, or secret movement"
+  ],
+  "integrationContract": {
+    "transport": "json",
+    "runtimePreflightApprovalVersion": 1,
+    "harnessNeutral": true,
+    "openclawMessageSendRequired": false,
+    "hermesAdapterCompatible": true,
+    "gongyungAdapterCompatible": true,
+    "consumesExecutorInvocationRehearsalPacket": true,
+    "consumesAdapterContractVersion": 1,
+    "sendsApprovalRequest": false,
+    "grantsApproval": false,
+    "dispatchesStartExecutor": false,
+    "invokesExecutor": false,
+    "spawnsProcess": false,
+    "startsSidecar": false,
+    "enablesDefaultOn": false,
+    "executesAction": false
+  },
+  "semantics": {
+    "runtimePreflightApprovalPacketOnly": true,
+    "sourceOnlyNoLive": true,
+    "approvalPacketIsDraftOnly": true,
+    "preflightDoesNotMutateState": true,
+    "adapterContractOnly": true,
+    "adapterOutputDoesNotImplyReceiptProof": true,
+    "providerAcceptedIsVisibilityProof": false,
+    "terminalAckEligibleDoesNotPermitAck": true,
+    "approvalGrantEvidenceDoesNotGrantApproval": true,
+    "executionNotPermitted": true,
+    "processSpawnNotPermitted": true,
+    "sidecarStartNotPermitted": true,
+    "defaultOnNotEnabledByThisPacket": true,
+    "routeIsReadOnly": true,
+    "brokerFinalizerRequired": true,
+    "performsGitHubMutation": false,
+    "performsProviderSend": false,
+    "performsTerminalAck": false,
+    "performsRuntimeRestartOrDeploy": false,
+    "performsDbMutation": false,
+    "createsTaskFlowRecords": false,
+    "performsHistoricalReplay": false,
+    "performsReleaseOrPublish": false,
+    "movesSecretsOrCredentials": false
+  }
+}
