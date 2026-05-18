@@ -150,6 +150,12 @@ import {
   extractTerminalBriefFinalizerApprovalStatusDispatch,
 } from "./core/terminal-brief-finalizer-approval-status.js";
 import {
+  buildTerminalBriefSidecarDryRunGate,
+  extractTerminalBriefSidecarDryRunGateFinalizerStatus,
+  extractTerminalBriefSidecarDryRunGateRehearsal,
+  extractTerminalBriefSidecarDryRunOperatingEvidence,
+} from "./core/terminal-brief-sidecar-dry-run-gate.js";
+import {
   buildBrokerCleanupPlan,
   executeBrokerCleanupPlan,
   validateCleanupExecution,
@@ -1418,6 +1424,28 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
         const report = buildTerminalBriefFinalizerApprovalStatus(
           approvalDispatch,
           extractTerminalBriefFinalizerApprovalReceiptStatus(body),
+        );
+        return sendJson(res, 200, report, {
+          "cache-control": "no-store",
+        });
+      }
+
+      if (req.method === "POST" && path === "/terminal-brief/sidecar/dry-run-gate") {
+        if (enforceRequesterIdentity) {
+          assertRequesterHasRole(requesterIdentity, ["hub", "operator"], "terminal_brief.sidecar_dry_run_gate.read");
+        }
+        const body = await readJson<Record<string, unknown>>(req);
+        let sidecarRehearsal;
+        try {
+          sidecarRehearsal = extractTerminalBriefSidecarDryRunGateRehearsal(body);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "invalid sidecar dry-run gate input";
+          throw new BrokerError("bad_request", message);
+        }
+        const report = buildTerminalBriefSidecarDryRunGate(
+          sidecarRehearsal,
+          extractTerminalBriefSidecarDryRunGateFinalizerStatus(body),
+          extractTerminalBriefSidecarDryRunOperatingEvidence(body),
         );
         return sendJson(res, 200, report, {
           "cache-control": "no-store",

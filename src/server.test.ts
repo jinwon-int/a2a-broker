@@ -6533,3 +6533,93 @@ test("POST /terminal-brief/closeout/finalizer-approval-status returns no-live fi
     await server.close();
   }
 });
+
+test("POST /terminal-brief/sidecar/dry-run-gate returns no-live sidecar operating gate", async () => {
+  const server = await startTestServer({ edgeSecret: "test-edge-secret" });
+  try {
+    const sidecarRehearsal = {
+      kind: "a2a-broker.terminal-brief-sidecar-integration-rehearsal",
+      version: 1,
+      generatedAt: "2026-05-18T23:30:00.000Z",
+      mode: "read-only/no-live",
+      parentRoundId: "round-712",
+      decision: "candidate",
+      sidecar: {
+        spoolRecords: 3,
+        finalCountSignalsFromSpool: 3,
+        receiptDecisions: 1,
+        terminalReceiptStatuses: ["produced"],
+        providerSendAttempted: false,
+        terminalAckAttempted: false,
+        dryRunOnly: true,
+        unsafeSpoolRecords: [],
+      },
+      finalCountCandidate: {
+        decision: "candidate",
+        idempotencyKey: "tb-final-count:fixture-712",
+      },
+      blockers: [],
+    };
+    const finalizerApprovalStatus = {
+      kind: "a2a-broker.terminal-brief-finalizer-approval-status.packet",
+      version: 1,
+      generatedAt: "2026-05-18T23:30:00.000Z",
+      mode: "read-only/no-live",
+      parentRoundId: "round-712",
+      state: "ready_for_finalizer_review",
+      idempotencyKey: "tb-finalizer-approval-status:fixture-712",
+      defaultOnReadiness: {
+        sourceCriteriaMet: true,
+        defaultOnPermitted: false,
+        missingEvidence: [],
+      },
+      blockers: [],
+    };
+
+    const res = await fetch(
+      server.baseUrl + "/terminal-brief/sidecar/dry-run-gate",
+      {
+        method: "POST",
+        headers: jsonHeaders({
+          "x-a2a-edge-secret": "test-edge-secret",
+          "x-a2a-requester-id": "operator-a",
+          "x-a2a-requester-role": "operator",
+        }),
+        body: JSON.stringify({
+          sidecarRehearsal,
+          finalizerApprovalStatus,
+          operatingEvidence: {
+            observedAt: new Date().toISOString(),
+            cursorPersisted: true,
+            boundedPolling: true,
+            pollIntervalMs: 15000,
+            maxBatch: 20,
+            gatewayReady: true,
+            eventLoopDegraded: false,
+            queueBacklog: 0,
+            dryRunOnly: true,
+            operatorEventsCrossBrokersEnabled: false,
+            supervisedSidecar: true,
+          },
+        }),
+      },
+    );
+
+    assert.equal(res.status, 200);
+    assert.equal(res.headers.get("cache-control"), "no-store");
+    const body = await res.json();
+    assert.equal(body.kind, "a2a-broker.terminal-brief-sidecar-dry-run-gate.packet");
+    assert.equal(body.state, "ready_for_operator_approval");
+    assert.equal(body.table.requiredRowsReady, 5);
+    assert.equal(body.readiness.sourceCriteriaMet, true);
+    assert.equal(body.readiness.alwaysOnDryRunCandidate, true);
+    assert.equal(body.readiness.alwaysOnDryRunStartPermitted, false);
+    assert.equal(body.readiness.defaultOnPermitted, false);
+    assert.equal(body.readiness.liveActivationPermitted, false);
+    assert.equal(body.integrationContract.startsSidecar, false);
+    assert.equal(body.integrationContract.enablesDefaultOn, false);
+    assert.equal(body.semantics.performsRuntimeRestartOrDeploy, false);
+  } finally {
+    await server.close();
+  }
+});
