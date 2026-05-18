@@ -1,0 +1,107 @@
+{
+  "kind": "a2a-broker.terminal-brief-final-count-closeout.fixture",
+  "version": 1,
+  "mode": "read-only/no-live",
+  "parentRoundId": "round-690-no-live",
+  "expectedWorkers": ["bangtong", "sogyo", "nosuk"],
+  "expectedTotal": 3,
+  "finalCountSignals": [
+    {
+      "id": "telegram-terminal-brief-final-3-of-3",
+      "source": "envelope",
+      "parentRoundId": "round-690-no-live",
+      "worker": "nosuk",
+      "text": "A2A Terminal Brief: nosuk completed final worker (3/3)",
+      "createdAt": "2026-05-18T09:02:00.000Z"
+    }
+  ],
+  "events": [
+    {
+      "id": "task-bangtong-succeeded-20260518T090000Z",
+      "kind": "task.terminal",
+      "taskEventId": 1,
+      "payload": {
+        "taskId": "task-bangtong",
+        "status": "succeeded",
+        "parentRoundId": "round-690-no-live",
+        "originBrokerId": "seoseo",
+        "brokerOfRecordId": "seoseo",
+        "worker": "bangtong",
+        "repo": "jinwon-int/a2a-broker",
+        "issue": 690,
+        "taskBrief": "Terminal Brief final-count closeout fixture lane 1",
+        "prUrl": "https://github.com/jinwon-int/a2a-broker/pull/701",
+        "parentRoundProgress": 1,
+        "parentRoundTotal": 3,
+        "createdAt": "2026-05-18T09:00:00.000Z",
+        "updatedAt": "2026-05-18T09:00:00.000Z",
+        "completedAt": "2026-05-18T09:00:00.000Z"
+      },
+      "createdAt": "2026-05-18T09:00:00.000Z",
+      "receipt": {
+        "status": "provider_accepted",
+        "updatedAt": "2026-05-18T09:00:00.000Z",
+        "receiptId": "provider-message-1"
+      },
+      "attempts": 1
+    },
+    {
+      "id": "task-sogyo-succeeded-20260518T090100Z",
+      "kind": "task.terminal",
+      "taskEventId": 2,
+      "payload": {
+        "taskId": "task-sogyo",
+        "status": "succeeded",
+        "parentRoundId": "round-690-no-live",
+        "originBrokerId": "seoseo",
+        "brokerOfRecordId": "seoseo",
+        "worker": "sogyo",
+        "repo": "jinwon-int/a2a-broker",
+        "issue": 690,
+        "taskBrief": "Terminal Brief final-count closeout fixture lane 2",
+        "doneUrl": "https://github.com/jinwon-int/a2a-broker/issues/690#issuecomment-sogyo-done",
+        "parentRoundProgress": 2,
+        "parentRoundTotal": 3,
+        "createdAt": "2026-05-18T09:01:00.000Z",
+        "updatedAt": "2026-05-18T09:01:00.000Z",
+        "completedAt": "2026-05-18T09:01:00.000Z"
+      },
+      "createdAt": "2026-05-18T09:01:00.000Z",
+      "receipt": {
+        "status": "provider_accepted",
+        "updatedAt": "2026-05-18T09:01:00.000Z",
+        "receiptId": "provider-message-2"
+      },
+      "attempts": 1
+    },
+    {
+      "id": "task-nosuk-succeeded-20260518T090200Z",
+      "kind": "task.terminal",
+      "taskEventId": 3,
+      "payload": {
+        "taskId": "task-nosuk",
+        "status": "succeeded",
+        "parentRoundId": "round-690-no-live",
+        "originBrokerId": "seoseo",
+        "brokerOfRecordId": "seoseo",
+        "worker": "nosuk",
+        "repo": "jinwon-int/a2a-broker",
+        "issue": 690,
+        "taskBrief": "Terminal Brief final-count closeout fixture lane 3",
+        "prUrl": "https://github.com/jinwon-int/a2a-broker/pull/702",
+        "parentRoundProgress": 3,
+        "parentRoundTotal": 3,
+        "createdAt": "2026-05-18T09:02:00.000Z",
+        "updatedAt": "2026-05-18T09:02:00.000Z",
+        "completedAt": "2026-05-18T09:02:00.000Z"
+      },
+      "createdAt": "2026-05-18T09:02:00.000Z",
+      "receipt": {
+        "status": "provider_accepted",
+        "updatedAt": "2026-05-18T09:02:00.000Z",
+        "receiptId": "provider-message-3"
+      },
+      "attempts": 1
+    }
+  ]
+}
