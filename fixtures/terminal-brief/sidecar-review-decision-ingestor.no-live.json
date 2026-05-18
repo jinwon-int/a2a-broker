@@ -1,0 +1,281 @@
+{
+  "operatorReviewTablePacket": {
+    "kind": "a2a-broker.terminal-brief-sidecar-operator-review-table.packet",
+    "version": 1,
+    "generatedAt": "2026-05-18T23:23:59.568Z",
+    "mode": "read-only/no-live",
+    "parentRoundId": "round-739",
+    "state": "review_table_ready",
+    "dryRunOnly": true,
+    "sourceOnlyNoLive": true,
+    "idempotencyKey": "tb-sidecar-operator-review-table:a980c73739b0015113c4dba6",
+    "source": {
+      "adapterHandoffState": "handoff_packet_ready",
+      "adapterHandoffIdempotencyKey": "tb-sidecar-adapter-handoff-approval:8f6ee2ccd0f6944aa020d00a",
+      "adapterHandoffReady": true,
+      "adapterId": "gongyung",
+      "deliveryTargetClass": "operator-visible-approval-channel",
+      "operatorTarget": "round-739",
+      "evidenceBundleReferences": [
+        "tb-sidecar-runtime-preflight-approval:1565303b3664aad6269e10c3",
+        "tb-sidecar-executor-invocation-rehearsal:fixture-739",
+        "adapter-contract-v1",
+        "runtime-preflight-checklist",
+        "rollback-checklist"
+      ],
+      "operatorDecisionFields": [
+        "approve_supervised_dry_run_start",
+        "reject",
+        "request_more_evidence",
+        "approval_reference",
+        "operator_visible_confirmation"
+      ]
+    },
+    "operatorReview": {
+      "tableOnly": true,
+      "reviewOwner": "broker-finalizer",
+      "requiredDecision": "explicit operator approval before any dispatch",
+      "rows": [
+        {
+          "id": "source_handoff",
+          "label": "Source adapter handoff packet",
+          "status": "ready",
+          "evidence": [
+            "tb-sidecar-adapter-handoff-approval:8f6ee2ccd0f6944aa020d00a"
+          ],
+          "decisionRequired": false,
+          "permitted": false,
+          "notes": [
+            "handoff packet must be handoff_packet_ready"
+          ]
+        },
+        {
+          "id": "adapter",
+          "label": "Adapter and delivery target",
+          "status": "ready",
+          "evidence": [
+            "gongyung",
+            "operator-visible-approval-channel",
+            "round-739"
+          ],
+          "decisionRequired": true,
+          "permitted": false,
+          "notes": [
+            "operator must choose a separate approved sender before dispatch"
+          ]
+        },
+        {
+          "id": "message_draft",
+          "label": "Approval request message draft",
+          "status": "ready",
+          "evidence": [
+            "Terminal Brief sidecar supervised dry-run start approval request\nAction: {{requestedAction}}\nAdapter: {{adapterId}}\nEvidence bundle: {{evidenceBundleReferences}}\nReply with approve/reject/request_more_evidence plus approval_reference."
+          ],
+          "decisionRequired": true,
+          "permitted": false,
+          "notes": [
+            "message body is draft-only and must not be treated as sent"
+          ]
+        },
+        {
+          "id": "evidence_bundle",
+          "label": "Evidence bundle references",
+          "status": "ready",
+          "evidence": [
+            "tb-sidecar-runtime-preflight-approval:1565303b3664aad6269e10c3",
+            "tb-sidecar-executor-invocation-rehearsal:fixture-739",
+            "adapter-contract-v1",
+            "runtime-preflight-checklist",
+            "rollback-checklist"
+          ],
+          "decisionRequired": true,
+          "permitted": false,
+          "notes": [
+            "references only; raw secrets and private logs are not included"
+          ]
+        },
+        {
+          "id": "operator_decision",
+          "label": "Operator decision fields",
+          "status": "ready",
+          "evidence": [
+            "approve_supervised_dry_run_start",
+            "reject",
+            "request_more_evidence",
+            "approval_reference",
+            "operator_visible_confirmation"
+          ],
+          "decisionRequired": true,
+          "permitted": false,
+          "notes": [
+            "approval, rejection, or more-evidence request must happen outside this packet"
+          ]
+        },
+        {
+          "id": "approval_boundary",
+          "label": "Approval dispatch and grant boundary",
+          "status": "ready",
+          "evidence": [
+            "approvalRequestDispatchPermitted=false",
+            "approvalGrantPermitted=false",
+            "providerSendPermitted=false"
+          ],
+          "decisionRequired": true,
+          "permitted": false,
+          "notes": [
+            "provider accepted/send status is not visibility proof"
+          ]
+        },
+        {
+          "id": "runtime_boundary",
+          "label": "Runtime and terminal boundary",
+          "status": "ready",
+          "evidence": [
+            "executorInvocationPermitted=false",
+            "processSpawnPermitted=false",
+            "sidecarStartPermitted=false",
+            "terminalAckPermitted=false",
+            "executionPermitted=false"
+          ],
+          "decisionRequired": true,
+          "permitted": false,
+          "notes": [
+            "terminal ACK/replay and runtime execution require later separate approval"
+          ]
+        },
+        {
+          "id": "rollback",
+          "label": "Rollback and abort evidence",
+          "status": "ready",
+          "evidence": [
+            "sending the approval request",
+            "granting approval or executing an approval grant",
+            "dispatching or invoking a start executor",
+            "spawning a process or starting/stopping the sidecar",
+            "Terminal Brief default-on enablement",
+            "live provider/Hermes/Gongyung/Telegram/OpenClaw send",
+            "terminal ACK/replay or terminal receipt DB mutation",
+            "GitHub PR merge, issue close, or comment post from the packet/route",
+            "TaskFlow record creation or broker DB mutation",
+            "production deploy/restart, historical replay, release, publish, or secret movement"
+          ],
+          "decisionRequired": true,
+          "permitted": false,
+          "notes": [
+            "rollback remains procedural only; no state mutation is performed"
+          ]
+        }
+      ],
+      "readyRowCount": 8,
+      "blockedRowCount": 0,
+      "waitingRowCount": 0,
+      "dispatchPermitted": false,
+      "providerSendPermitted": false,
+      "approvalGrantPermitted": false,
+      "terminalAckPermitted": false,
+      "executionPermitted": false
+    },
+    "readiness": {
+      "sourceCriteriaMet": true,
+      "reviewTableReady": true,
+      "approvalRequestDispatchPermitted": false,
+      "approvalGrantPermitted": false,
+      "startExecutorDispatchPermitted": false,
+      "executorInvocationPermitted": false,
+      "processSpawnPermitted": false,
+      "sidecarStartPermitted": false,
+      "defaultOnPermitted": false,
+      "liveActivationPermitted": false,
+      "providerSendPermitted": false,
+      "terminalAckPermitted": false,
+      "executionPermitted": false,
+      "dbMutationPermitted": false,
+      "missingEvidence": [],
+      "blockers": [
+        "operator review table is not an approval request dispatch",
+        "operator review table does not grant approval or prove visibility",
+        "runtime execution requires later separate approved paths"
+      ],
+      "nextAction": "operator reviews the table and explicitly approves or rejects in a separate action"
+    },
+    "blockers": [],
+    "nextActions": [
+      "operator reviews table rows and explicitly approves, rejects, or requests more evidence in a separate action",
+      "do not dispatch approval request until a separate sender path is approved"
+    ],
+    "approvalSensitiveActionsExcluded": [
+      "sending the approval request",
+      "granting approval or executing an approval grant",
+      "dispatching or invoking a start executor",
+      "spawning a process or starting/stopping the sidecar",
+      "Terminal Brief default-on enablement",
+      "live provider/Hermes/Gongyung/Telegram/OpenClaw send",
+      "terminal ACK/replay or terminal receipt DB mutation",
+      "GitHub PR merge, issue close, or comment post from the packet/route",
+      "TaskFlow record creation or broker DB mutation",
+      "production deploy/restart, historical replay, release, publish, or secret movement"
+    ],
+    "integrationContract": {
+      "transport": "json",
+      "operatorReviewTableVersion": 1,
+      "harnessNeutral": true,
+      "openclawMessageSendRequired": false,
+      "hermesAdapterCompatible": true,
+      "gongyungAdapterCompatible": true,
+      "externalHarnessCompatible": true,
+      "consumesAdapterHandoffApprovalPacket": true,
+      "rendersOperatorReviewTable": true,
+      "sendsApprovalRequest": false,
+      "grantsApproval": false,
+      "dispatchesStartExecutor": false,
+      "invokesExecutor": false,
+      "spawnsProcess": false,
+      "startsSidecar": false,
+      "enablesDefaultOn": false,
+      "executesAction": false
+    },
+    "semantics": {
+      "operatorReviewTableOnly": true,
+      "sourceOnlyNoLive": true,
+      "reviewDoesNotMutateState": true,
+      "reviewDoesNotSendApprovalRequest": true,
+      "reviewDoesNotGrantApproval": true,
+      "messageBodyIsDraftOnly": true,
+      "evidenceBundleReferencesOnly": true,
+      "adapterOutputDoesNotImplyReceiptProof": true,
+      "providerAcceptedIsVisibilityProof": false,
+      "terminalAckEligibleDoesNotPermitAck": true,
+      "approvalGrantEvidenceDoesNotGrantApproval": true,
+      "executionNotPermitted": true,
+      "processSpawnNotPermitted": true,
+      "sidecarStartNotPermitted": true,
+      "defaultOnNotEnabledByThisPacket": true,
+      "routeIsReadOnly": true,
+      "brokerFinalizerRequired": true,
+      "performsGitHubMutation": false,
+      "performsProviderSend": false,
+      "performsTerminalAck": false,
+      "performsRuntimeRestartOrDeploy": false,
+      "performsDbMutation": false,
+      "createsTaskFlowRecords": false,
+      "performsHistoricalReplay": false,
+      "performsReleaseOrPublish": false,
+      "movesSecretsOrCredentials": false
+    }
+  },
+  "reviewDecisionEvidence": [
+    {
+      "type": "approve",
+      "operatorTarget": "round-739",
+      "reviewReference": "operator-review-745",
+      "approvalReference": "approval-visible-745",
+      "operatorVisibleConfirmation": true,
+      "observedAt": "2026-05-19T01:40:00.000Z",
+      "source": "manual_operator_confirmation"
+    }
+  ],
+  "reviewDecisionIngestor": {
+    "now": "2026-05-19T01:40:00.000Z",
+    "maxEvidenceAgeMinutes": 60
+  }
+}
