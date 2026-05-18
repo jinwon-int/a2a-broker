@@ -191,6 +191,9 @@ Worker side (lifecycle progression):
   `claimed -> running`.
 - `POST /tasks/:id/complete` — worker delivers `result`; transitions
   `running -> succeeded`.
+- `POST /tasks/:id/evidence` — broker-agnostic worker evidence alias.
+  `outcome=done|pr` maps to `complete`; `outcome=blocked|failed` maps to
+  `fail`.
 - `POST /tasks/:id/fail` — worker reports `error`; transitions
   `running -> failed`.
 
@@ -304,6 +307,9 @@ Authorization:
   legacy full list shape can request `GET /tasks?detail=full`, but high-fan-out
   plugin polling should prefer filters and task detail reads (see rate-limit notes
   in `docs/v1-acceptance-handoff.md`).
+  Non-OpenClaw polling workers may use `worker=<nodeId>` as an alias for
+  `assignedWorkerId=<nodeId>` and `status=pending` as an alias for the
+  internal `queued` state.
 - JSON-RPC: `GetTask { taskId }` returns
   `{ task: A2ATaskProjection }`. `ListTasks` accepts the same
   filters and returns lightweight projections with `metadata.resultSummary`
