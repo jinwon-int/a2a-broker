@@ -197,6 +197,11 @@ import {
   extractTerminalBriefSidecarDryRunStartApprovalRequestOptions,
 } from "./core/terminal-brief-sidecar-dry-run-start-approval-request.js";
 import {
+  buildTerminalBriefSidecarDryRunStartApprovalReceiptIngestor,
+  extractTerminalBriefSidecarDryRunStartApprovalReceiptEvidence,
+  extractTerminalBriefSidecarDryRunStartApprovalRequestPacket,
+} from "./core/terminal-brief-sidecar-dry-run-start-approval-receipt-ingestor.js";
+import {
   buildBrokerCleanupPlan,
   executeBrokerCleanupPlan,
   validateCleanupExecution,
@@ -1656,6 +1661,27 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
         const report = buildTerminalBriefSidecarDryRunStartApprovalRequest(
           chainReview,
           extractTerminalBriefSidecarDryRunStartApprovalRequestOptions(body),
+        );
+        return sendJson(res, 200, report, {
+          "cache-control": "no-store",
+        });
+      }
+
+      if (req.method === "POST" && path === "/terminal-brief/sidecar/dry-run-start-approval-receipt") {
+        if (enforceRequesterIdentity) {
+          assertRequesterHasRole(requesterIdentity, ["hub", "operator"], "terminal_brief.sidecar_dry_run_start_approval_receipt.read");
+        }
+        const body = await readJson<Record<string, unknown>>(req);
+        let approvalRequest;
+        try {
+          approvalRequest = extractTerminalBriefSidecarDryRunStartApprovalRequestPacket(body);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "invalid sidecar dry-run start approval receipt input";
+          throw new BrokerError("bad_request", message);
+        }
+        const report = buildTerminalBriefSidecarDryRunStartApprovalReceiptIngestor(
+          approvalRequest,
+          extractTerminalBriefSidecarDryRunStartApprovalReceiptEvidence(body),
         );
         return sendJson(res, 200, report, {
           "cache-control": "no-store",

@@ -7494,3 +7494,53 @@ test("POST /terminal-brief/sidecar/dry-run-start-approval-request returns source
     await server.close();
   }
 });
+
+test("POST /terminal-brief/sidecar/dry-run-start-approval-receipt returns source-only receipt evidence", async () => {
+  const server = await startTestServer({ edgeSecret: "test-edge-secret" });
+  try {
+    const input = JSON.parse(readFileSync(
+      join(process.cwd(), "fixtures/terminal-brief/sidecar-dry-run-start-approval-receipt-ingestor.no-live.json"),
+      "utf8",
+    )) as Record<string, unknown>;
+
+    const res = await fetch(
+      server.baseUrl + "/terminal-brief/sidecar/dry-run-start-approval-receipt",
+      {
+        method: "POST",
+        headers: jsonHeaders({
+          "x-a2a-edge-secret": "test-edge-secret",
+          "x-a2a-requester-id": "operator-a",
+          "x-a2a-requester-role": "operator",
+        }),
+        body: JSON.stringify(input),
+      },
+    );
+
+    assert.equal(res.status, 200);
+    assert.equal(res.headers.get("cache-control"), "no-store");
+    const body = await res.json();
+    assert.equal(body.kind, "a2a-broker.terminal-brief-sidecar-dry-run-start-approval-receipt-ingestor.packet");
+    assert.equal(body.state, "accepted");
+    assert.equal(body.receiptEvidenceAccepted, true);
+    assert.equal(body.approvalEvidenceAccepted, true);
+    assert.equal(body.classification.providerAccepted, true);
+    assert.equal(body.classification.providerAcceptedIsVisibilityProof, false);
+    assert.equal(body.classification.terminalAckEligible, true);
+    assert.equal(body.readiness.approvalGrantPermitted, false);
+    assert.equal(body.readiness.startExecutorDispatchPermitted, false);
+    assert.equal(body.readiness.executorInvocationPermitted, false);
+    assert.equal(body.readiness.processSpawnPermitted, false);
+    assert.equal(body.readiness.sidecarStartPermitted, false);
+    assert.equal(body.readiness.defaultOnPermitted, false);
+    assert.equal(body.readiness.providerSendPermitted, false);
+    assert.equal(body.readiness.terminalAckPermitted, false);
+    assert.equal(body.readiness.dbMutationPermitted, false);
+    assert.equal(body.integrationContract.openclawMessageSendRequired, false);
+    assert.equal(body.integrationContract.grantsApproval, false);
+    assert.equal(body.integrationContract.startsSidecar, false);
+    assert.equal(body.semantics.approvalGrantEvidenceDoesNotGrantApproval, true);
+    assert.equal(body.semantics.performsTerminalAck, false);
+  } finally {
+    await server.close();
+  }
+});
