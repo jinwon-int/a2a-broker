@@ -6298,3 +6298,148 @@ test("POST /terminal-brief/closeout/approval-dispatch returns no-live adapter tr
     await server.close();
   }
 });
+
+test("POST /terminal-brief/closeout/approval-receipt returns no-live receipt evidence classification", async () => {
+  const server = await startTestServer({ edgeSecret: "test-edge-secret" });
+  try {
+    const approvalDispatch = {
+      kind: "a2a-broker.terminal-brief-approval-dispatch-adapter.packet",
+      version: 1,
+      generatedAt: "2026-05-18T21:30:00.000Z",
+      mode: "read-only/no-live",
+      parentRoundId: "round-708",
+      state: "dispatch_draft_ready",
+      dryRunOnly: true,
+      dispatchPermitted: false,
+      providerSendPermitted: false,
+      approvalGrantPermitted: false,
+      executionPermitted: false,
+      terminalReceiptMutationPermitted: false,
+      idempotencyKey: "tb-approval-dispatch:fixture-708",
+      finalizer: {
+        brokerOfRecordId: "broker-finalizer",
+        owner: "broker-finalizer",
+        required: true,
+        singleFinalizerRequired: true,
+      },
+      adapter: {
+        id: "gongyung",
+        type: "gongyung",
+        harnessNeutral: true,
+        protocol: "json-transcript",
+        requiresOpenClawMessageSend: false,
+        supportsExternalHarnesses: true,
+        liveSendPermitted: false,
+      },
+      source: {
+        executorState: "dispatch_pending",
+        executorIdempotencyKey: "tb-approval-executor:fixture-708",
+        approvalRequestIdempotencyKey: "tb-approval-request:fixture-708",
+        targetIssueUrl: "https://github.com/jinwon-int/a2a-broker/issues/708",
+        targetPrUrl: "https://github.com/jinwon-int/a2a-broker/pull/710",
+        selectedAction: "post_closeout_comment",
+        selectedTarget: "https://github.com/jinwon-int/a2a-broker/issues/708",
+        requestedActions: 2,
+        nonRequestableActions: 1,
+      },
+      transcript: {
+        mode: "draft-only",
+        target: "hermes://gongyung/approval",
+        channel: "operator",
+        requestedBy: "broker-finalizer",
+        title: "Draft approval dispatch: Terminal Brief closeout - round-708",
+        body: "Terminal Brief approval adapter transcript (dry-run).",
+        sendPermitted: false,
+        sent: false,
+      },
+      receiptDraft: {
+        mode: "draft-only",
+        id: "tb-approval-dispatch-receipt:fixture-708",
+        providerAccepted: false,
+        currentSessionVisible: false,
+        terminalAck: false,
+        approvalGranted: false,
+        actionExecuted: false,
+        reason: "dispatch transcript draft only for gongyung; no provider send exists",
+      },
+      blockers: [],
+      nextActions: [],
+      integrationContract: {
+        transport: "json",
+        adapterInterfaceVersion: 1,
+        harnessNeutral: true,
+        openclawMessageSendRequired: false,
+        hermesAdapterCompatible: true,
+        gongyungAdapterCompatible: true,
+        sendsApprovalRequest: false,
+        producesLiveReceipt: false,
+        grantsApproval: false,
+        executesAction: false,
+      },
+      semantics: {
+        adapterShellOnly: true,
+        transcriptDraftOnly: true,
+        dispatchNotPerformed: true,
+        receiptIsDraftOnly: true,
+        providerAcceptedIsVisibilityProof: false,
+        approvalNotReallyGranted: true,
+        executionNotPermitted: true,
+        routeIsReadOnly: true,
+        brokerFinalizerRequired: true,
+        singleFinalizerRequired: true,
+        performsGitHubMutation: false,
+        performsProviderSend: false,
+        performsTerminalAck: false,
+        performsRuntimeRestartOrDeploy: false,
+        performsDbMutation: false,
+        createsTaskFlowRecords: false,
+        performsHistoricalReplay: false,
+        performsReleaseOrPublish: false,
+        movesSecretsOrCredentials: false,
+      },
+    };
+
+    const res = await fetch(
+      server.baseUrl + "/terminal-brief/closeout/approval-receipt",
+      {
+        method: "POST",
+        headers: jsonHeaders({
+          "x-a2a-edge-secret": "test-edge-secret",
+          "x-a2a-requester-id": "operator-a",
+          "x-a2a-requester-role": "operator",
+        }),
+        body: JSON.stringify({
+          approvalDispatch,
+          receiptEvidence: [
+            {
+              kind: "current_session_visible",
+              observedAt: new Date().toISOString(),
+              receiptId: "receipt-visible-route",
+              currentSessionId: "session-current",
+            },
+          ],
+          maxAgeMs: 300000,
+        }),
+      },
+    );
+
+    assert.equal(res.status, 200);
+    assert.equal(res.headers.get("cache-control"), "no-store");
+    const body = await res.json();
+    assert.equal(body.kind, "a2a-broker.terminal-brief-approval-receipt-ingestor.packet");
+    assert.equal(body.state, "accepted");
+    assert.equal(body.receiptEvidenceAccepted, true);
+    assert.equal(body.classification.currentSessionVisible, true);
+    assert.equal(body.classification.providerAcceptedIsVisibilityProof, false);
+    assert.equal(body.classification.terminalAckEligible, true);
+    assert.equal(body.terminalAckPermitted, false);
+    assert.equal(body.terminalReceiptMutationPermitted, false);
+    assert.equal(body.approvalGrantPermitted, false);
+    assert.equal(body.executionPermitted, false);
+    assert.equal(body.integrationContract.providerAcceptedIsVisibilityProof, false);
+    assert.equal(body.integrationContract.grantsApproval, false);
+    assert.equal(body.integrationContract.executesAction, false);
+  } finally {
+    await server.close();
+  }
+});

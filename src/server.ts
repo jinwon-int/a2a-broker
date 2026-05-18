@@ -140,6 +140,11 @@ import {
   extractTerminalBriefApprovalExecutorPacket,
 } from "./core/terminal-brief-approval-dispatch-adapter.js";
 import {
+  buildTerminalBriefApprovalReceiptIngestor,
+  extractTerminalBriefApprovalDispatchAdapterPacket,
+  extractTerminalBriefApprovalReceiptEvidence,
+} from "./core/terminal-brief-approval-receipt-ingestor.js";
+import {
   buildBrokerCleanupPlan,
   executeBrokerCleanupPlan,
   validateCleanupExecution,
@@ -1363,6 +1368,31 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
           requestedBy: optionalString(dispatchOptions.requestedBy ?? dispatchOptions.requested_by),
           receiptId: optionalString(dispatchOptions.receiptId ?? dispatchOptions.receipt_id),
         });
+        return sendJson(res, 200, report, {
+          "cache-control": "no-store",
+        });
+      }
+
+      if (req.method === "POST" && path === "/terminal-brief/closeout/approval-receipt") {
+        if (enforceRequesterIdentity) {
+          assertRequesterHasRole(requesterIdentity, ["hub", "operator"], "terminal_brief.approval_receipt.read");
+        }
+        const body = await readJson<Record<string, unknown>>(req);
+        let approvalDispatch;
+        try {
+          approvalDispatch = extractTerminalBriefApprovalDispatchAdapterPacket(body);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "invalid approval receipt input";
+          throw new BrokerError("bad_request", message);
+        }
+        const receiptOptions = body ?? {};
+        const maxAgeMsRaw = receiptOptions.maxAgeMs ?? receiptOptions.max_age_ms;
+        const maxAgeMs = typeof maxAgeMsRaw === "number" && Number.isFinite(maxAgeMsRaw) ? maxAgeMsRaw : undefined;
+        const report = buildTerminalBriefApprovalReceiptIngestor(
+          approvalDispatch,
+          extractTerminalBriefApprovalReceiptEvidence(body),
+          { maxAgeMs },
+        );
         return sendJson(res, 200, report, {
           "cache-control": "no-store",
         });

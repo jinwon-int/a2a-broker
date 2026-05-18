@@ -39,6 +39,7 @@
     "terminal_brief_approval_request": "npm run build && node scripts/terminal-brief-approval-request.mjs",
     "terminal_brief_approval_executor": "npm run build && node scripts/terminal-brief-approval-executor.mjs",
     "terminal_brief_approval_dispatch": "npm run build && node scripts/terminal-brief-approval-dispatch.mjs",
+    "terminal_brief_approval_receipt_ingestor": "npm run build && node scripts/terminal-brief-approval-receipt-ingestor.mjs",
     "broker_cleanup_safe_prune": "npm run build && node scripts/broker-cleanup-safe-prune.mjs",
     "terminal_brief_activation_report": "node scripts/terminal-brief-activation-report.mjs",
     "test:terminal_brief_activation_report": "node --test scripts/terminal-brief-activation-report.test.mjs",
