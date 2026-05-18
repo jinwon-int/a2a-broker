@@ -202,6 +202,12 @@ import {
   extractTerminalBriefSidecarApprovalGrantProposalReviewDecision,
 } from "./core/terminal-brief-sidecar-approval-grant-proposal.js";
 import {
+  buildTerminalBriefSidecarApprovalGrantEvidenceIngestor,
+  extractTerminalBriefSidecarApprovalGrantEvidence,
+  extractTerminalBriefSidecarApprovalGrantEvidenceIngestorOptions,
+  extractTerminalBriefSidecarApprovalGrantEvidenceIngestorProposal,
+} from "./core/terminal-brief-sidecar-approval-grant-evidence-ingestor.js";
+import {
   buildTerminalBriefSidecarDryRunStartCanaryPlan,
   extractTerminalBriefSidecarDryRunStartCanaryPlanOptions,
   extractTerminalBriefSidecarDryRunStartCanaryPlanRehearsal,
@@ -1708,6 +1714,28 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
         const report = buildTerminalBriefSidecarApprovalGrantProposal(
           reviewDecision,
           extractTerminalBriefSidecarApprovalGrantProposalOptions(body),
+        );
+        return sendJson(res, 200, report, {
+          "cache-control": "no-store",
+        });
+      }
+
+      if (req.method === "POST" && path === "/terminal-brief/sidecar/approval-grant-evidence") {
+        if (enforceRequesterIdentity) {
+          assertRequesterHasRole(requesterIdentity, ["hub", "operator"], "terminal_brief.sidecar_approval_grant_evidence.read");
+        }
+        const body = await readJson<Record<string, unknown>>(req);
+        let proposal;
+        try {
+          proposal = extractTerminalBriefSidecarApprovalGrantEvidenceIngestorProposal(body);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "invalid sidecar approval grant evidence input";
+          throw new BrokerError("bad_request", message);
+        }
+        const report = buildTerminalBriefSidecarApprovalGrantEvidenceIngestor(
+          proposal,
+          extractTerminalBriefSidecarApprovalGrantEvidence(body),
+          extractTerminalBriefSidecarApprovalGrantEvidenceIngestorOptions(body),
         );
         return sendJson(res, 200, report, {
           "cache-control": "no-store",
