@@ -176,6 +176,11 @@ import {
   extractTerminalBriefSidecarExecutorInvocationRehearsalOptions,
 } from "./core/terminal-brief-sidecar-executor-invocation-rehearsal.js";
 import {
+  buildTerminalBriefSidecarDryRunStartCanaryPlan,
+  extractTerminalBriefSidecarDryRunStartCanaryPlanOptions,
+  extractTerminalBriefSidecarDryRunStartCanaryPlanRehearsal,
+} from "./core/terminal-brief-sidecar-dry-run-start-canary-plan.js";
+import {
   buildBrokerCleanupPlan,
   executeBrokerCleanupPlan,
   validateCleanupExecution,
@@ -1550,6 +1555,27 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
         const report = buildTerminalBriefSidecarExecutorInvocationRehearsal(
           startExecutorGate,
           extractTerminalBriefSidecarExecutorInvocationRehearsalOptions(body),
+        );
+        return sendJson(res, 200, report, {
+          "cache-control": "no-store",
+        });
+      }
+
+      if (req.method === "POST" && path === "/terminal-brief/sidecar/dry-run-start-canary-plan") {
+        if (enforceRequesterIdentity) {
+          assertRequesterHasRole(requesterIdentity, ["hub", "operator"], "terminal_brief.sidecar_dry_run_start_canary_plan.read");
+        }
+        const body = await readJson<Record<string, unknown>>(req);
+        let executorInvocationRehearsal;
+        try {
+          executorInvocationRehearsal = extractTerminalBriefSidecarDryRunStartCanaryPlanRehearsal(body);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "invalid sidecar dry-run start canary plan input";
+          throw new BrokerError("bad_request", message);
+        }
+        const report = buildTerminalBriefSidecarDryRunStartCanaryPlan(
+          executorInvocationRehearsal,
+          extractTerminalBriefSidecarDryRunStartCanaryPlanOptions(body),
         );
         return sendJson(res, 200, report, {
           "cache-control": "no-store",
