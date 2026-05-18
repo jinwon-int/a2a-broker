@@ -7389,3 +7389,54 @@ test("POST /terminal-brief/sidecar/preflight-evidence-collector returns source-o
     await server.close();
   }
 });
+
+test("POST /terminal-brief/sidecar/preflight-chain-review returns final no-live chain packet", async () => {
+  const server = await startTestServer({ edgeSecret: "test-edge-secret" });
+  try {
+    const input = JSON.parse(readFileSync(
+      join(process.cwd(), "fixtures/terminal-brief/sidecar-preflight-chain-review.no-live.json"),
+      "utf8",
+    )) as Record<string, unknown>;
+
+    const res = await fetch(
+      server.baseUrl + "/terminal-brief/sidecar/preflight-chain-review",
+      {
+        method: "POST",
+        headers: jsonHeaders({
+          "x-a2a-edge-secret": "test-edge-secret",
+          "x-a2a-requester-id": "operator-a",
+          "x-a2a-requester-role": "operator",
+        }),
+        body: JSON.stringify(input),
+      },
+    );
+
+    assert.equal(res.status, 200);
+    assert.equal(res.headers.get("cache-control"), "no-store");
+    const body = await res.json();
+    assert.equal(body.kind, "a2a-broker.terminal-brief-sidecar-preflight-chain-review.packet");
+    assert.equal(body.state, "ready_for_supervised_dry_run_chain_review");
+    assert.equal(body.readiness.chainReviewReady, true);
+    assert.equal(body.readiness.approvalRequestDispatchPermitted, false);
+    assert.equal(body.readiness.approvalGrantPermitted, false);
+    assert.equal(body.readiness.startExecutorDispatchPermitted, false);
+    assert.equal(body.readiness.executorInvocationPermitted, false);
+    assert.equal(body.readiness.processSpawnPermitted, false);
+    assert.equal(body.readiness.sidecarStartPermitted, false);
+    assert.equal(body.readiness.defaultOnPermitted, false);
+    assert.equal(body.readiness.providerSendPermitted, false);
+    assert.equal(body.readiness.terminalAckPermitted, false);
+    assert.equal(body.readiness.dbMutationPermitted, false);
+    assert.equal(body.integrationContract.openclawMessageSendRequired, false);
+    assert.equal(body.integrationContract.probesGateway, false);
+    assert.equal(body.integrationContract.startsSidecar, false);
+    assert.equal(body.semantics.preflightChainReviewOnly, true);
+    assert.equal(body.semantics.dryRunStartRequiresSeparateApproval, true);
+    assert.equal(body.semantics.performsProviderSend, false);
+    assert.equal(body.semantics.performsTerminalAck, false);
+    assert.equal(body.semantics.performsRuntimeRestartOrDeploy, false);
+    assert.equal(body.semantics.performsDbMutation, false);
+  } finally {
+    await server.close();
+  }
+});

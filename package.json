@@ -48,6 +48,7 @@
     "terminal_brief_sidecar_executor_invocation_rehearsal": "npm run build && node scripts/terminal-brief-sidecar-executor-invocation-rehearsal.mjs",
     "terminal_brief_sidecar_dry_run_start_canary_plan": "npm run build && node scripts/terminal-brief-sidecar-dry-run-start-canary-plan.mjs",
     "terminal_brief_sidecar_preflight_evidence_collector": "npm run build && node scripts/terminal-brief-sidecar-preflight-evidence-collector.mjs",
+    "terminal_brief_sidecar_preflight_chain_review": "npm run build && node scripts/terminal-brief-sidecar-preflight-chain-review.mjs",
     "broker_cleanup_safe_prune": "npm run build && node scripts/broker-cleanup-safe-prune.mjs",
     "terminal_brief_activation_report": "node scripts/terminal-brief-activation-report.mjs",
     "test:terminal_brief_activation_report": "node --test scripts/terminal-brief-activation-report.test.mjs",

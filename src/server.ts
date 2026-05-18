@@ -187,6 +187,11 @@ import {
   extractTerminalBriefSidecarPreflightEvidenceCollectorOptions,
 } from "./core/terminal-brief-sidecar-preflight-evidence-collector.js";
 import {
+  buildTerminalBriefSidecarPreflightChainReview,
+  extractTerminalBriefSidecarPreflightChainReviewCollector,
+  extractTerminalBriefSidecarPreflightChainReviewOptions,
+} from "./core/terminal-brief-sidecar-preflight-chain-review.js";
+import {
   buildBrokerCleanupPlan,
   executeBrokerCleanupPlan,
   validateCleanupExecution,
@@ -1604,6 +1609,27 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
           dryRunStartCanaryPlan,
           extractTerminalBriefSidecarPreflightEvidence(body),
           extractTerminalBriefSidecarPreflightEvidenceCollectorOptions(body),
+        );
+        return sendJson(res, 200, report, {
+          "cache-control": "no-store",
+        });
+      }
+
+      if (req.method === "POST" && path === "/terminal-brief/sidecar/preflight-chain-review") {
+        if (enforceRequesterIdentity) {
+          assertRequesterHasRole(requesterIdentity, ["hub", "operator"], "terminal_brief.sidecar_preflight_chain_review.read");
+        }
+        const body = await readJson<Record<string, unknown>>(req);
+        let preflightCollector;
+        try {
+          preflightCollector = extractTerminalBriefSidecarPreflightChainReviewCollector(body);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "invalid sidecar preflight chain review input";
+          throw new BrokerError("bad_request", message);
+        }
+        const report = buildTerminalBriefSidecarPreflightChainReview(
+          preflightCollector,
+          extractTerminalBriefSidecarPreflightChainReviewOptions(body),
         );
         return sendJson(res, 200, report, {
           "cache-control": "no-store",
