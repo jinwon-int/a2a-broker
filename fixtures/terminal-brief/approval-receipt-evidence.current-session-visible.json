@@ -1,0 +1,11 @@
+{
+  "receiptEvidence": [
+    {
+      "kind": "current_session_visible",
+      "observedAt": "2026-05-18T21:29:30.000Z",
+      "receiptId": "receipt-visible-fixture-708",
+      "currentSessionId": "session-current-fixture",
+      "source": "fixture"
+    }
+  ]
+}
