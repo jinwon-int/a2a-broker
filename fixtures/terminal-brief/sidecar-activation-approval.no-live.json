@@ -1,0 +1,105 @@
+{
+  "sidecarDryRunGate": {
+    "kind": "a2a-broker.terminal-brief-sidecar-dry-run-gate.packet",
+    "version": 1,
+    "generatedAt": "2026-05-18T14:00:00.000Z",
+    "mode": "read-only/no-live",
+    "parentRoundId": "round-714",
+    "state": "ready_for_operator_approval",
+    "dryRunOnly": true,
+    "sourceOnlyNoLive": true,
+    "idempotencyKey": "tb-sidecar-dry-run-gate:fixture-714",
+    "source": {
+      "sidecarDecision": "candidate",
+      "sidecarSpoolRecords": 3,
+      "sidecarReceiptDecisions": 1,
+      "sidecarDryRunOnly": true,
+      "providerSendAttempted": false,
+      "terminalAckAttempted": false,
+      "finalCountDecision": "candidate",
+      "finalizerStatus": "ready_for_finalizer_review",
+      "finalizerStatusIdempotencyKey": "tb-finalizer-approval-status:fixture-714"
+    },
+    "operatingEvidence": {
+      "observedAt": "2026-05-18T14:00:00.000Z",
+      "stale": false,
+      "cursorPersisted": true,
+      "boundedPolling": true,
+      "pollIntervalMs": 15000,
+      "maxBatch": 20,
+      "gatewayReady": true,
+      "eventLoopDegraded": false,
+      "queueBacklog": 0,
+      "dryRunOnly": true,
+      "operatorEventsCrossBrokersEnabled": false,
+      "supervisedSidecar": true
+    },
+    "table": {
+      "rows": [],
+      "requiredRowsReady": 5,
+      "requiredRows": 5,
+      "readyRows": 5,
+      "totalRows": 6
+    },
+    "readiness": {
+      "sourceCriteriaMet": true,
+      "alwaysOnDryRunCandidate": true,
+      "alwaysOnDryRunStartPermitted": false,
+      "defaultOnPermitted": false,
+      "liveActivationPermitted": false,
+      "missingEvidence": [],
+      "blockers": [
+        "starting always-on dry-run sidecar still requires separate operator approval"
+      ],
+      "nextAction": "request explicit operator approval for dry-run sidecar supervision/canary"
+    },
+    "blockers": [],
+    "nextActions": [],
+    "approvalSensitiveActionsExcluded": [
+      "starting/enabling always-on sidecar",
+      "Terminal Brief default-on enablement"
+    ],
+    "integrationContract": {
+      "transport": "json",
+      "gateVersion": 1,
+      "harnessNeutral": true,
+      "openclawMessageSendRequired": false,
+      "hermesAdapterCompatible": true,
+      "gongyungAdapterCompatible": true,
+      "consumesSidecarIntegrationRehearsal": true,
+      "consumesFinalizerApprovalStatus": true,
+      "grantsApproval": false,
+      "startsSidecar": false,
+      "enablesDefaultOn": false,
+      "executesAction": false
+    },
+    "semantics": {
+      "operatingGateOnly": true,
+      "sourceOnlyNoLive": true,
+      "gateDoesNotMutateState": true,
+      "sidecarDryRunCandidateDoesNotStartSidecar": true,
+      "providerAcceptedIsVisibilityProof": false,
+      "terminalAckEligibleDoesNotPermitAck": true,
+      "approvalGrantEvidenceDoesNotGrantApproval": true,
+      "defaultOnNotEnabledByThisPacket": true,
+      "executionNotPermitted": true,
+      "routeIsReadOnly": true,
+      "brokerFinalizerRequired": true,
+      "performsGitHubMutation": false,
+      "performsProviderSend": false,
+      "performsTerminalAck": false,
+      "performsRuntimeRestartOrDeploy": false,
+      "performsDbMutation": false,
+      "createsTaskFlowRecords": false,
+      "performsHistoricalReplay": false,
+      "performsReleaseOrPublish": false,
+      "movesSecretsOrCredentials": false
+    }
+  },
+  "activationApproval": {
+    "requestedBy": "broker-finalizer",
+    "operatorTarget": "operator",
+    "approvalWindowMinutes": 30,
+    "abortQueueBacklog": 1000
+  }
+}
