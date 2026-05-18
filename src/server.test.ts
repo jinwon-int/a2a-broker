@@ -8,6 +8,12 @@ import { DatabaseSync } from "node:sqlite";
 
 import { createBrokerServer, type BrokerServerOptions } from "./server.js";
 import {
+  DECISION_DIALECTIC_KIND,
+  DECISION_DIALECTIC_VERSION,
+  type DecisionDialecticTaskInputV1,
+  type DecisionDialecticTaskV1,
+} from "./decision-dialectic/types.js";
+import {
   emptySnapshot,
   SqliteBrokerStateStore,
   type BrokerSnapshot,
@@ -4840,6 +4846,235 @@ function buildTradingDialecticPayload(
     },
   };
 }
+
+function buildDecisionDialecticTaskFixture(
+  overrides: Partial<DecisionDialecticTaskV1> = {},
+): DecisionDialecticTaskV1 {
+  return {
+    kind: DECISION_DIALECTIC_KIND,
+    version: DECISION_DIALECTIC_VERSION,
+    taskId: "dd-task-01",
+    revision: 3,
+    state: "DECISION_ROUTED",
+    meta: {
+      topic: "gateway-heartbeat-polling",
+      domain: "operations",
+      urgency: "high",
+      openedAt: "2026-05-18T00:00:00.000Z",
+      snapshotAt: "2026-05-18T00:02:00.000Z",
+      expiresAt: "2026-05-18T06:00:00.000Z",
+      openedBy: "seoseo",
+      contextRefs: ["wiki:pages/a2a/dialectic-mode.md"],
+      tags: ["a2ad", "ops"],
+    },
+    roles: {
+      thesisAgent: { agentId: "sogyo", teamId: "team1", roleHint: "thesis" },
+      antithesisAgent: { agentId: "nosuk", teamId: "team1", roleHint: "antithesis" },
+      rebuttalAgent: { agentId: "bangtong", teamId: "team1", roleHint: "rebuttal" },
+      synthAgent: { agentId: "yukson", teamId: "team1", roleHint: "synthesis" },
+    },
+    context: {
+      brief: "Evaluate whether to reduce heartbeat polling pressure.",
+      objective: "Keep operator liveness without overloading broker foreground sessions.",
+      constraints: ["no production restart in this task", "no provider send"],
+      decisionCriteria: ["liveness preserved", "event loop pressure reduced"],
+      evidenceRefs: ["gh:jinwon-int/a2a-broker#489"],
+      availableTools: ["logs", "unit-tests"],
+      hardVetoPolicy: ["would require unapproved restart", "drops operator visibility"],
+      domainContext: {
+        brokerId: "seoseo",
+        team: "team1",
+      },
+    },
+    thesis: {
+      author: { agentId: "sogyo" },
+      submittedAt: "2026-05-18T00:05:00.000Z",
+      claim: "Reduce redundant idle polling.",
+      proposal: "Bound idle polling and keep explicit heartbeat updates.",
+      rationale: "The operator channel should stay responsive during closeout rounds.",
+      expectedBenefits: ["lower event-loop pressure", "clearer liveness signal"],
+      evidenceRefs: ["ev-01"],
+      assumptions: ["foreground sessions remain the report channel"],
+      risks: ["over-reducing polling may hide stalls"],
+      confidence: 0.72,
+    },
+    antithesis: {
+      author: { agentId: "nosuk" },
+      submittedAt: "2026-05-18T00:10:00.000Z",
+      counterClaim: "Too much reduction can hide worker stalls.",
+      whyThesisMayFail: "Operators rely on visible heartbeat signals.",
+      failureModes: ["stale status", "silent failure"],
+      contradictions: ["liveness and lower polling trade off"],
+      vetoFlags: [
+        {
+          code: "drops_operator_visibility",
+          reason: "A change that removes visible heartbeat evidence must block.",
+          severity: "warn",
+        },
+      ],
+      evidenceRefs: ["ev-02"],
+      confidence: 0.64,
+    },
+    rebuttal: {
+      author: { agentId: "bangtong" },
+      submittedAt: "2026-05-18T00:15:00.000Z",
+      response: "Keep heartbeat summaries while bounding duplicate scans.",
+      defendedClaims: ["operator visibility remains explicit"],
+      concededRisks: ["some polling is still needed"],
+      residualRisks: ["misconfigured interval"],
+    },
+    synthesis: {
+      author: { agentId: "yukson" },
+      submittedAt: "2026-05-18T00:20:00.000Z",
+      preserve: ["explicit heartbeat signal"],
+      discard: ["unbounded duplicate polling"],
+      decisionRule: "Proceed only as a bounded no-live implementation.",
+      verdict: "PROCEED_WITH_GUARDRAILS",
+      guardrails: ["no restart", "unit tests only"],
+      followups: ["separate live canary approval"],
+      unresolved: ["production interval tuning"],
+    },
+    decision: {
+      action: "PROCEED_WITH_GUARDRAILS",
+      routeTo: "yukson",
+      ttlSec: 1800,
+      hardVeto: false,
+      decisionPolicyRef: "decision-dialectic-no-live-v1",
+      decisionBasisRevision: 3,
+    },
+    ...overrides,
+  };
+}
+
+function buildDecisionDialecticPayload(
+  overrides: Partial<DecisionDialecticTaskV1> = {},
+  phase: DecisionDialecticTaskInputV1["contract"]["phase"] = "synthesis",
+): DecisionDialecticTaskInputV1 {
+  return {
+    contract: {
+      kind: DECISION_DIALECTIC_KIND,
+      version: DECISION_DIALECTIC_VERSION,
+      phase,
+      task: buildDecisionDialecticTaskFixture(overrides),
+    },
+  };
+}
+
+test("decision-dialectic read model returns generic stage rail and dynamic role routing", async () => {
+  const server = await startTestServer({
+    edgeSecret: "test-edge-secret",
+    enforceRequesterIdentity: true,
+  });
+  try {
+    await registerTestWorker(server.baseUrl, "sogyo", "analyst", "test-edge-secret");
+    const createRes = await fetch(`${server.baseUrl}/tasks`, {
+      method: "POST",
+      headers: jsonHeaders({
+        "x-a2a-edge-secret": "test-edge-secret",
+        "x-a2a-requester-id": "hub-a",
+        "x-a2a-requester-role": "hub",
+      }),
+      body: JSON.stringify({
+        intent: "analyze",
+        requester: { id: "hub-a", kind: "node", role: "hub" },
+        target: { id: "sogyo", kind: "node", role: "analyst" },
+        assignedWorkerId: "sogyo",
+        message: "evaluate generic decision dialectic",
+        payload: buildDecisionDialecticPayload(),
+      }),
+    });
+    assert.equal(createRes.status, 201);
+    const task = await createRes.json();
+
+    const readRes = await fetch(`${server.baseUrl}/tasks/${task.id}/decision-dialectic`, {
+      headers: {
+        "x-a2a-edge-secret": "test-edge-secret",
+        "x-a2a-requester-id": "hub-a",
+        "x-a2a-requester-role": "hub",
+      },
+    });
+    assert.equal(readRes.status, 200);
+    const body = await readRes.json();
+
+    assert.equal(body.kind, "decision.dialectic");
+    assert.equal(body.version, 1);
+    assert.equal(body.brokerTaskId, task.id);
+    assert.equal(body.contract.taskId, "dd-task-01");
+    assert.equal(body.contract.state, "DECISION_ROUTED");
+    assert.equal(body.contract.phase, "synthesis");
+    assert.equal(body.meta.topic, "gateway-heartbeat-polling");
+    assert.equal(body.meta.domain, "operations");
+    assert.equal(body.roles.thesisAgent.agentId, "sogyo");
+    assert.equal(body.roles.antithesisAgent.agentId, "nosuk");
+    assert.equal(body.roles.rebuttalAgent.agentId, "bangtong");
+    assert.equal(body.roles.synthAgent.agentId, "yukson");
+    assert.equal(body.context.domainContext.brokerId, "seoseo");
+
+    const stageNames = ["thesis", "antithesis", "rebuttal", "synthesis", "outcome"];
+    for (const stage of stageNames) {
+      assert.ok(body.stages[stage], `expected stage ${stage}`);
+      assert.equal(body.stages[stage].name, stage);
+    }
+    assert.equal(body.stages.thesis.author.agentId, "sogyo");
+    assert.equal(body.stages.antithesis.vetoFlags[0].code, "drops_operator_visibility");
+    assert.equal(body.stages.synthesis.verdict, "PROCEED_WITH_GUARDRAILS");
+    assert.equal(body.stages.outcome.present, false);
+
+    assert.equal(body.decisionCard.present, true);
+    assert.equal(body.decisionCard.verdict, "PROCEED_WITH_GUARDRAILS");
+    assert.equal(body.decisionCard.route, "yukson");
+    assert.equal(body.decisionCard.hardVeto, false);
+    assert.equal(body.decisionCard.decisionPolicyRef, "decision-dialectic-no-live-v1");
+    assert.equal(body.decisionCard.decisionBasisRevision, 3);
+    assert.equal(body.decisionCard.ttlSec, 1800);
+    assert.equal(body.decisionCard.decidedBy.agentId, "yukson");
+    assert.match(body.summary.decision, /PROCEED_WITH_GUARDRAILS/);
+  } finally {
+    await server.close();
+  }
+});
+
+test("decision-dialectic route returns 404 when task is not a decision.dialectic", async () => {
+  const server = await startTestServer({
+    edgeSecret: "test-edge-secret",
+    enforceRequesterIdentity: true,
+  });
+  try {
+    await registerTestWorker(server.baseUrl, "bangtong", "live-trader", "test-edge-secret");
+    const createRes = await fetch(`${server.baseUrl}/tasks`, {
+      method: "POST",
+      headers: jsonHeaders({
+        "x-a2a-edge-secret": "test-edge-secret",
+        "x-a2a-requester-id": "hub-a",
+        "x-a2a-requester-role": "hub",
+      }),
+      body: JSON.stringify({
+        intent: "analyze",
+        requester: { id: "hub-a", kind: "node", role: "hub" },
+        target: { id: "bangtong", kind: "node", role: "live-trader" },
+        assignedWorkerId: "bangtong",
+        message: "trade BTCUSDT",
+        payload: buildTradingDialecticPayload(),
+      }),
+    });
+    assert.equal(createRes.status, 201);
+    const task = await createRes.json();
+
+    const readRes = await fetch(`${server.baseUrl}/tasks/${task.id}/decision-dialectic`, {
+      headers: {
+        "x-a2a-edge-secret": "test-edge-secret",
+        "x-a2a-requester-id": "hub-a",
+        "x-a2a-requester-role": "hub",
+      },
+    });
+    assert.equal(readRes.status, 404);
+    const body = await readRes.json();
+    assert.equal(body.error.code, "not_found");
+    assert.match(body.error.message, /decision\.dialectic/);
+  } finally {
+    await server.close();
+  }
+});
 
 test("trading-dialectic read model returns operator stage rail and decision card", async () => {
   const server = await startTestServer({

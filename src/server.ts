@@ -104,6 +104,10 @@ import type {
   A2APartyRole,
 } from "./core/types.js";
 import {
+  projectDecisionDialecticReadModel,
+  DecisionDialecticReadModelError,
+} from "./decision-dialectic/read-model.js";
+import {
   projectTradingDialecticReadModel,
   TradingDialecticReadModelError,
 } from "./trading-dialectic/read-model.js";
@@ -1618,6 +1622,29 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
             updatedAt: task.updatedAt,
           })),
         });
+      }
+
+      if (
+        req.method === "GET" &&
+        segments[0] === "tasks" &&
+        segments[1] &&
+        segments[2] === "decision-dialectic" &&
+        segments.length === 3
+      ) {
+        const task = broker.getTask(segments[1]);
+        if (!task) {
+          throw new BrokerError("not_found", "task not found");
+        }
+        try {
+          const readModel = projectDecisionDialecticReadModel(task);
+          return sendJson(res, 200, readModel);
+        } catch (error) {
+          if (error instanceof DecisionDialecticReadModelError) {
+            const code = error.code === "missing_contract" || error.code === "wrong_kind" ? "not_found" : "bad_request";
+            throw new BrokerError(code, error.message);
+          }
+          throw error;
+        }
       }
 
       if (

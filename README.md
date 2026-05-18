@@ -174,6 +174,7 @@ Release note: this repository currently has no root `LICENSE` file. Treat public
 - JSON-RPC facade at `POST /a2a/jsonrpc` with initial `SendMessage`, `GetTask`, `ListTasks`, `CancelTask`, and `GetExtendedAgentCard` methods
 - create/list/get exchange endpoints
 - operator read model for trading dialectic tasks at `GET /tasks/:id/trading-dialectic` (returns stage rail, decision card, and summary projection of a `trading.dialectic` v1 task payload)
+- operator read model for generic decision dialectic tasks at `GET /tasks/:id/decision-dialectic` (returns stage rail, decision card, dynamic worker roles, and summary projection of a `decision.dialectic` v1 task payload; see `docs/decision-dialectic.md`)
 - Dockerfile
 - docker-compose.yml
 
