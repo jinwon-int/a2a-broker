@@ -1,0 +1,71 @@
+#!/usr/bin/env node
+// Source-only Terminal Brief sidecar dry-run start approval receipt/evidence
+// ingestor. It classifies receipt and approval evidence without granting
+// approval, dispatching executors, starting sidecars, enabling default-on,
+// sending providers, ACKing terminal rows, mutating state, restarting services,
+// replaying history, publishing releases, or moving secrets.
+
+import { readFile } from "node:fs/promises";
+import process from "node:process";
+
+import {
+  buildTerminalBriefSidecarDryRunStartApprovalReceiptIngestor,
+  extractTerminalBriefSidecarDryRunStartApprovalReceiptEvidence,
+  extractTerminalBriefSidecarDryRunStartApprovalRequestPacket,
+  renderTerminalBriefSidecarDryRunStartApprovalReceiptIngestorMarkdown,
+} from "../dist/core/terminal-brief-sidecar-dry-run-start-approval-receipt-ingestor.js";
+
+function parseArgs(argv) {
+  const readOption = (name) => {
+    const prefix = name + "=";
+    const inline = argv.find((arg) => arg.startsWith(prefix));
+    if (inline) return inline.slice(prefix.length);
+    const index = argv.indexOf(name);
+    return index >= 0 ? argv[index + 1] : undefined;
+  };
+  return {
+    input: readOption("--input"),
+    evidenceFile: readOption("--evidence-file"),
+    json: argv.includes("--json") || argv.includes("--format=json"),
+    markdown: argv.includes("--markdown") || argv.includes("--format=markdown"),
+  };
+}
+
+function sanitize(value) {
+  if (typeof value !== "string") return String(value);
+  return value
+    .replace(/gh[pousr]_[A-Za-z0-9_]+/g, "[redacted-token]")
+    .replace(/\b(BROKER_EDGE_SECRET|EDGE_SECRET|TOKEN|SECRET)=\S+/gi, "$1=[redacted]")
+    .replace(/\/root\/\.openclaw\/[^\s]+/g, "[openclaw-path]")
+    .slice(0, 500);
+}
+
+async function readJsonFile(path) {
+  return JSON.parse(await readFile(path, "utf8"));
+}
+
+async function readEvidence(options, rawInput) {
+  if (options.evidenceFile) {
+    return extractTerminalBriefSidecarDryRunStartApprovalReceiptEvidence(await readJsonFile(options.evidenceFile));
+  }
+  return extractTerminalBriefSidecarDryRunStartApprovalReceiptEvidence(rawInput);
+}
+
+async function main() {
+  const options = parseArgs(process.argv.slice(2));
+  if (!options.input) {
+    throw new Error("usage: npm run terminal_brief_sidecar_dry_run_start_approval_receipt_ingestor -- --input approval-request.json [--evidence-file evidence.json] [--markdown|--json]");
+  }
+  const rawInput = await readJsonFile(options.input);
+  const approvalRequest = extractTerminalBriefSidecarDryRunStartApprovalRequestPacket(rawInput);
+  const evidence = await readEvidence(options, rawInput);
+  const packet = buildTerminalBriefSidecarDryRunStartApprovalReceiptIngestor(approvalRequest, evidence);
+  if (options.json && !options.markdown) console.log(JSON.stringify(packet, null, 2));
+  else console.log(renderTerminalBriefSidecarDryRunStartApprovalReceiptIngestorMarkdown(packet));
+  process.exit(packet.state === "accepted" ? 0 : 1);
+}
+
+main().catch((error) => {
+  console.error("terminal-brief-sidecar-dry-run-start-approval-receipt-ingestor: " + sanitize(error.message));
+  process.exit(2);
+});

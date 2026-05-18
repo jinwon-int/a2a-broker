@@ -1,0 +1,149 @@
+{
+  "dryRunStartApprovalRequestPacket": {
+    "kind": "a2a-broker.terminal-brief-sidecar-dry-run-start-approval-request.packet",
+    "version": 1,
+    "generatedAt": "2026-05-19T00:35:00.000Z",
+    "mode": "read-only/no-live",
+    "parentRoundId": "round-733",
+    "state": "approval_request_draft_ready",
+    "dryRunOnly": true,
+    "sourceOnlyNoLive": true,
+    "idempotencyKey": "tb-sidecar-dry-run-start-approval-request:fixture-733",
+    "source": {
+      "preflightChainReviewState": "ready_for_supervised_dry_run_chain_review",
+      "preflightChainReviewIdempotencyKey": "tb-sidecar-preflight-chain-review:fixture-731",
+      "sourceCriteriaMet": true,
+      "chainReviewReady": true,
+      "requiredRowsReady": 6,
+      "requiredRows": 6,
+      "preflightCollectorState": "ready_for_supervised_dry_run_preflight_review",
+      "preflightCollectorIdempotencyKey": "tb-sidecar-preflight-evidence:fixture-729",
+      "dryRunStartCanaryPlanState": "ready_for_dry_run_start_approval_request",
+      "dryRunStartCanaryPlanIdempotencyKey": "tb-sidecar-dry-run-start-canary-plan:fixture-726",
+      "executorName": "gongyung-sidecar-dry-run-executor",
+      "adapterName": "gongyung",
+      "finalizer": "seoseo"
+    },
+    "approvalRequestDraft": {
+      "draftOnly": true,
+      "status": "draft_not_sent",
+      "requestedAction": "approve_supervised_terminal_brief_sidecar_dry_run_start",
+      "requestedBy": "seoseo",
+      "operatorTarget": "round-733",
+      "operatorChannel": "telegram",
+      "approvalExpiresAt": "2026-05-19T00:55:00.000Z",
+      "dispatchRequired": true,
+      "dispatchPermitted": false,
+      "approvalGrantPermitted": false,
+      "executionPermitted": false,
+      "transcriptDraft": "Request: approve supervised Terminal Brief sidecar dry-run start."
+    },
+    "supervisedDryRunBoundary": {
+      "planOnly": true,
+      "sourcePacketIds": [
+        "tb-sidecar-dry-run-start-canary-plan:fixture-726",
+        "tb-sidecar-preflight-evidence:fixture-729",
+        "tb-sidecar-preflight-chain-review:fixture-731"
+      ],
+      "finalizerRequired": true,
+      "separateOperatorApprovalRequired": true,
+      "separateExecutorRequired": true,
+      "defaultOnCandidate": false,
+      "approvalCanBeRequestedBy": "seoseo",
+      "approvalCanBeDeliveredBy": ["openclaw", "hermes", "gongyung", "external"],
+      "mustNotTreatProviderAcceptedAsVisibilityProof": true,
+      "forbiddenBeforeSeparateApproval": ["start sidecar", "send provider", "terminal ACK"]
+    },
+    "readiness": {
+      "sourceCriteriaMet": true,
+      "approvalRequestDraftReady": true,
+      "approvalRequestDispatchPermitted": false,
+      "approvalGrantPermitted": false,
+      "startExecutorDispatchPermitted": false,
+      "executorInvocationPermitted": false,
+      "processSpawnPermitted": false,
+      "sidecarStartPermitted": false,
+      "defaultOnPermitted": false,
+      "liveActivationPermitted": false,
+      "providerSendPermitted": false,
+      "terminalAckPermitted": false,
+      "executionPermitted": false,
+      "dbMutationPermitted": false,
+      "missingEvidence": [],
+      "blockers": [
+        "approval request draft is not a dispatch, approval grant, or runtime executor",
+        "supervised dry-run start requires a separate explicit operator approval and executor path"
+      ],
+      "nextAction": "broker finalizer may send this draft through a chosen adapter"
+    },
+    "blockers": [],
+    "nextActions": [],
+    "approvalSensitiveActionsExcluded": [],
+    "integrationContract": {
+      "transport": "json",
+      "approvalRequestVersion": 1,
+      "harnessNeutral": true,
+      "openclawMessageSendRequired": false,
+      "hermesAdapterCompatible": true,
+      "gongyungAdapterCompatible": true,
+      "consumesPreflightChainReviewPacket": true,
+      "producesApprovalRequestDraft": true,
+      "sendsApprovalRequest": false,
+      "grantsApproval": false,
+      "dispatchesStartExecutor": false,
+      "invokesExecutor": false,
+      "spawnsProcess": false,
+      "startsSidecar": false,
+      "enablesDefaultOn": false,
+      "executesAction": false
+    },
+    "semantics": {
+      "approvalRequestDraftOnly": true,
+      "sourceOnlyNoLive": true,
+      "requestDraftIsNotSend": true,
+      "approvalRequestIsNotApprovalGrant": true,
+      "dryRunStartRequiresSeparateApproval": true,
+      "dryRunStartRequiresSeparateExecutor": true,
+      "preflightChainReviewDoesNotPermitStart": true,
+      "defaultOnRequiresSeparateApprovalAfterObservation": true,
+      "providerAcceptedIsVisibilityProof": false,
+      "terminalAckEligibleDoesNotPermitAck": true,
+      "executionNotPermitted": true,
+      "processSpawnNotPermitted": true,
+      "sidecarStartNotPermitted": true,
+      "defaultOnNotEnabledByThisPacket": true,
+      "routeIsReadOnly": true,
+      "brokerFinalizerRequired": true,
+      "performsGitHubMutation": false,
+      "performsProviderSend": false,
+      "performsTerminalAck": false,
+      "performsRuntimeRestartOrDeploy": false,
+      "performsDbMutation": false,
+      "createsTaskFlowRecords": false,
+      "performsHistoricalReplay": false,
+      "performsReleaseOrPublish": false,
+      "movesSecretsOrCredentials": false
+    }
+  },
+  "evidence": [
+    {
+      "kind": "provider_accepted",
+      "observedAt": "2026-05-19T00:35:00.000Z",
+      "providerMessageId": "provider-733",
+      "target": "round-733"
+    },
+    {
+      "kind": "current_session_visible",
+      "observedAt": "2026-05-19T00:35:00.000Z",
+      "receiptId": "visible-733",
+      "target": "round-733"
+    },
+    {
+      "kind": "approval_grant",
+      "observedAt": "2026-05-19T00:35:00.000Z",
+      "approvedAction": "approve_supervised_terminal_brief_sidecar_dry_run_start",
+      "approvedTarget": "round-733",
+      "operatorId": "operator-a"
+    }
+  ]
+}
