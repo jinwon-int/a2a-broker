@@ -181,6 +181,12 @@ import {
   extractTerminalBriefSidecarDryRunStartCanaryPlanRehearsal,
 } from "./core/terminal-brief-sidecar-dry-run-start-canary-plan.js";
 import {
+  buildTerminalBriefSidecarPreflightEvidenceCollector,
+  extractTerminalBriefSidecarPreflightEvidence,
+  extractTerminalBriefSidecarPreflightEvidenceCollectorCanaryPlan,
+  extractTerminalBriefSidecarPreflightEvidenceCollectorOptions,
+} from "./core/terminal-brief-sidecar-preflight-evidence-collector.js";
+import {
   buildBrokerCleanupPlan,
   executeBrokerCleanupPlan,
   validateCleanupExecution,
@@ -1576,6 +1582,28 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
         const report = buildTerminalBriefSidecarDryRunStartCanaryPlan(
           executorInvocationRehearsal,
           extractTerminalBriefSidecarDryRunStartCanaryPlanOptions(body),
+        );
+        return sendJson(res, 200, report, {
+          "cache-control": "no-store",
+        });
+      }
+
+      if (req.method === "POST" && path === "/terminal-brief/sidecar/preflight-evidence-collector") {
+        if (enforceRequesterIdentity) {
+          assertRequesterHasRole(requesterIdentity, ["hub", "operator"], "terminal_brief.sidecar_preflight_evidence_collector.read");
+        }
+        const body = await readJson<Record<string, unknown>>(req);
+        let dryRunStartCanaryPlan;
+        try {
+          dryRunStartCanaryPlan = extractTerminalBriefSidecarPreflightEvidenceCollectorCanaryPlan(body);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "invalid sidecar preflight evidence collector input";
+          throw new BrokerError("bad_request", message);
+        }
+        const report = buildTerminalBriefSidecarPreflightEvidenceCollector(
+          dryRunStartCanaryPlan,
+          extractTerminalBriefSidecarPreflightEvidence(body),
+          extractTerminalBriefSidecarPreflightEvidenceCollectorOptions(body),
         );
         return sendJson(res, 200, report, {
           "cache-control": "no-store",
