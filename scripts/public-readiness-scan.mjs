@@ -125,8 +125,10 @@ function concreteSecretValue(key, value) {
   if (!value) return false;
   const isShellExpansion = value.includes("${") || value.startsWith("$");
   const isFilePointer = /_(?:FILE|PATH)$/i.test(key);
+  const isSecretRedactionFlag = /(?:REDACT|MASK|STRIP)_?SECRETS?/i.test(key);
   const isBooleanLiteral = /^(?:true|false|yes|no)$/i.test(value);
-  if (isShellExpansion || isFilePointer || isBooleanLiteral) return false;
+  const isNumericBoolean = /^(?:0|1)$/i.test(value);
+  if (isShellExpansion || isFilePointer || isBooleanLiteral || (isSecretRedactionFlag && isNumericBoolean)) return false;
   if (placeholderPattern.test(value)) return false;
   return true;
 }
