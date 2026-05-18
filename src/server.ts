@@ -186,6 +186,11 @@ import {
   extractTerminalBriefSidecarAdapterHandoffApprovalPacket,
 } from "./core/terminal-brief-sidecar-adapter-handoff-approval.js";
 import {
+  buildTerminalBriefSidecarOperatorReviewTable,
+  extractTerminalBriefSidecarOperatorReviewTableHandoff,
+  extractTerminalBriefSidecarOperatorReviewTableOptions,
+} from "./core/terminal-brief-sidecar-operator-review-table.js";
+import {
   buildTerminalBriefSidecarDryRunStartCanaryPlan,
   extractTerminalBriefSidecarDryRunStartCanaryPlanOptions,
   extractTerminalBriefSidecarDryRunStartCanaryPlanRehearsal,
@@ -1628,6 +1633,27 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
         const report = buildTerminalBriefSidecarAdapterHandoffApproval(
           runtimePreflightApproval,
           extractTerminalBriefSidecarAdapterHandoffApprovalOptions(body),
+        );
+        return sendJson(res, 200, report, {
+          "cache-control": "no-store",
+        });
+      }
+
+      if (req.method === "POST" && path === "/terminal-brief/sidecar/operator-review-table") {
+        if (enforceRequesterIdentity) {
+          assertRequesterHasRole(requesterIdentity, ["hub", "operator"], "terminal_brief.sidecar_operator_review_table.read");
+        }
+        const body = await readJson<Record<string, unknown>>(req);
+        let adapterHandoff;
+        try {
+          adapterHandoff = extractTerminalBriefSidecarOperatorReviewTableHandoff(body);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "invalid sidecar operator review table input";
+          throw new BrokerError("bad_request", message);
+        }
+        const report = buildTerminalBriefSidecarOperatorReviewTable(
+          adapterHandoff,
+          extractTerminalBriefSidecarOperatorReviewTableOptions(body),
         );
         return sendJson(res, 200, report, {
           "cache-control": "no-store",

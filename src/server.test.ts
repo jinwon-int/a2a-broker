@@ -7296,6 +7296,61 @@ test("POST /terminal-brief/sidecar/adapter-handoff-approval returns source-only 
   }
 });
 
+test("POST /terminal-brief/sidecar/operator-review-table returns source-only review table", async () => {
+  const server = await startTestServer({ edgeSecret: "test-edge-secret" });
+  try {
+    const fixture = JSON.parse(readFileSync("fixtures/terminal-brief/sidecar-operator-review-table.no-live.json", "utf8"));
+    const res = await fetch(
+      server.baseUrl + "/terminal-brief/sidecar/operator-review-table",
+      {
+        method: "POST",
+        headers: jsonHeaders({
+          "x-a2a-edge-secret": "test-edge-secret",
+          "x-a2a-requester-id": "operator-a",
+          "x-a2a-requester-role": "operator",
+        }),
+        body: JSON.stringify({
+          adapterHandoffApprovalPacket: fixture,
+          operatorReviewTable: {
+            reviewOwner: "seoseo",
+            reviewReference: "operator-review-743",
+          },
+        }),
+      },
+    );
+
+    assert.equal(res.status, 200);
+    assert.equal(res.headers.get("cache-control"), "no-store");
+    const body = await res.json();
+    assert.equal(body.kind, "a2a-broker.terminal-brief-sidecar-operator-review-table.packet");
+    assert.equal(body.state, "review_table_ready");
+    assert.equal(body.source.adapterHandoffReady, true);
+    assert.equal(body.operatorReview.tableOnly, true);
+    assert.equal(body.operatorReview.rows.length, 8);
+    assert.equal(body.operatorReview.readyRowCount, 8);
+    assert.equal(body.operatorReview.dispatchPermitted, false);
+    assert.equal(body.operatorReview.providerSendPermitted, false);
+    assert.equal(body.operatorReview.approvalGrantPermitted, false);
+    assert.equal(body.operatorReview.terminalAckPermitted, false);
+    assert.equal(body.operatorReview.executionPermitted, false);
+    assert.equal(body.readiness.approvalRequestDispatchPermitted, false);
+    assert.equal(body.readiness.providerSendPermitted, false);
+    assert.equal(body.readiness.terminalAckPermitted, false);
+    assert.equal(body.readiness.executionPermitted, false);
+    assert.equal(body.readiness.dbMutationPermitted, false);
+    assert.equal(body.integrationContract.rendersOperatorReviewTable, true);
+    assert.equal(body.integrationContract.sendsApprovalRequest, false);
+    assert.equal(body.integrationContract.invokesExecutor, false);
+    assert.equal(body.integrationContract.spawnsProcess, false);
+    assert.equal(body.integrationContract.startsSidecar, false);
+    assert.equal(body.semantics.operatorReviewTableOnly, true);
+    assert.equal(body.semantics.reviewDoesNotSendApprovalRequest, true);
+    assert.equal(body.semantics.reviewDoesNotGrantApproval, true);
+  } finally {
+    await server.close();
+  }
+});
+
 test("POST /terminal-brief/sidecar/dry-run-start-canary-plan returns draft-only no-live canary plan", async () => {
   const server = await startTestServer({ edgeSecret: "test-edge-secret" });
   try {
