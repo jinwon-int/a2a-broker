@@ -6023,3 +6023,151 @@ test("POST /terminal-brief/closeout/approval-request returns draft-only approval
     await server.close();
   }
 });
+
+test("POST /terminal-brief/closeout/approval-executor returns no-live execute-blocked shell", async () => {
+  const server = await startTestServer({ edgeSecret: "test-edge-secret" });
+  try {
+    const approvalRequest = {
+      kind: "a2a-broker.terminal-brief-approval-request.packet",
+      version: 1,
+      generatedAt: "2026-05-18T20:20:00.000Z",
+      mode: "read-only/no-live",
+      parentRoundId: "round-704",
+      decision: "request_ready",
+      dryRunOnly: true,
+      requestDispatchPermitted: false,
+      approvalGrantPermitted: false,
+      executionPermitted: false,
+      idempotencyKey: "tb-approval-request:fixture-704",
+      finalizer: {
+        brokerOfRecordId: "seoseo",
+        owner: "seoseo",
+        required: true,
+        singleFinalizerRequired: true,
+      },
+      source: {
+        closeoutGateDecision: "ready_for_approval",
+        closeoutGateState: "approval_required",
+        closeoutGateIdempotencyKey: "tb-closeout-gate:fixture-704",
+        targetIssueUrl: "https://github.com/jinwon-int/a2a-broker/issues/704",
+        targetPrUrl: "https://github.com/jinwon-int/a2a-broker/pull/705",
+        proposedActions: 2,
+        blockedActions: 0,
+        forbiddenActions: 1,
+      },
+      request: {
+        mode: "draft-only",
+        title: "Draft approval request: Terminal Brief closeout - round-704",
+        body: "Draft approval request body. This was not sent automatically.",
+        sendPermitted: false,
+        requestedActions: [
+          {
+            action: "post_closeout_comment",
+            status: "requested",
+            sourceGateStatus: "proposed",
+            requiresApproval: true,
+            executePermitted: false,
+            target: "https://github.com/jinwon-int/a2a-broker/issues/704",
+            reason: "draft closeout comment is ready but posting is a separate approved mutation",
+          },
+          {
+            action: "merge_pull_request",
+            status: "requested",
+            sourceGateStatus: "proposed",
+            requiresApproval: true,
+            executePermitted: false,
+            target: "https://github.com/jinwon-int/a2a-broker/pull/705",
+            reason: "merge is only a proposed follow-up after finalizer approval",
+          },
+        ],
+        nonRequestableActions: [
+          {
+            action: "live_provider_send",
+            status: "forbidden",
+            requiresApproval: true,
+            executePermitted: false,
+            reason: "live sends must stay outside the source-only gate",
+          },
+        ],
+        presentationPlan: {
+          kind: "approval_buttons",
+          sendPermitted: false,
+          buttonsEnabled: false,
+          buttons: [],
+        },
+        cliPlan: {
+          mode: "plan-only",
+          command: "terminal_brief_approval_request --input closeout-gate.json --json",
+          executePermitted: false,
+          requiredHumanApproval: true,
+        },
+      },
+      blockers: [],
+      nextActions: [],
+      integrationContract: {
+        transport: "json",
+        harnessNeutral: true,
+        openclawMessageSendRequired: false,
+        hermesAdapterCompatible: true,
+        sendsApprovalRequest: false,
+      },
+      semantics: {
+        approvalRequestPlannerOnly: true,
+        requestNotSent: true,
+        approvalNotGranted: true,
+        executionNotPermitted: true,
+        routeIsReadOnly: true,
+        brokerFinalizerRequired: true,
+        singleFinalizerRequired: true,
+        idempotentRequestDraft: true,
+        replayRequiresSameIdempotencyKey: true,
+        performsGitHubMutation: false,
+        performsProviderSend: false,
+        performsTerminalAck: false,
+        performsRuntimeRestartOrDeploy: false,
+        performsDbMutation: false,
+        createsTaskFlowRecords: false,
+        performsHistoricalReplay: false,
+        performsReleaseOrPublish: false,
+        movesSecretsOrCredentials: false,
+      },
+    };
+
+    const res = await fetch(
+      server.baseUrl + "/terminal-brief/closeout/approval-executor",
+      {
+        method: "POST",
+        headers: jsonHeaders({
+          "x-a2a-edge-secret": "test-edge-secret",
+          "x-a2a-requester-id": "operator-a",
+          "x-a2a-requester-role": "operator",
+        }),
+        body: JSON.stringify({
+          approvalRequest,
+          selectedAction: "merge_pull_request",
+          attemptExecute: true,
+        }),
+      },
+    );
+
+    assert.equal(res.status, 200);
+    assert.equal(res.headers.get("cache-control"), "no-store");
+    const body = await res.json();
+    assert.equal(body.kind, "a2a-broker.terminal-brief-approval-executor.packet");
+    assert.equal(body.state, "execute_blocked");
+    assert.equal(body.dispatchPermitted, false);
+    assert.equal(body.approvalGrantPermitted, false);
+    assert.equal(body.executionPermitted, false);
+    assert.equal(body.dispatch.requestDispatched, false);
+    assert.equal(body.approval.realApprovalGranted, false);
+    assert.equal(body.approval.simulatedApprovalOnly, true);
+    assert.equal(body.execution.state, "execute_blocked");
+    assert.equal(body.execution.executed, false);
+    assert.equal(body.integrationContract.openclawMessageSendRequired, false);
+    assert.equal(body.integrationContract.sendsApprovalRequest, false);
+    assert.equal(body.integrationContract.grantsApproval, false);
+    assert.equal(body.integrationContract.executesAction, false);
+  } finally {
+    await server.close();
+  }
+});
