@@ -176,6 +176,11 @@ import {
   extractTerminalBriefSidecarExecutorInvocationRehearsalOptions,
 } from "./core/terminal-brief-sidecar-executor-invocation-rehearsal.js";
 import {
+  buildTerminalBriefSidecarRuntimePreflightApproval,
+  extractTerminalBriefSidecarRuntimePreflightApprovalOptions,
+  extractTerminalBriefSidecarRuntimePreflightApprovalRehearsal,
+} from "./core/terminal-brief-sidecar-runtime-preflight-approval.js";
+import {
   buildTerminalBriefSidecarDryRunStartCanaryPlan,
   extractTerminalBriefSidecarDryRunStartCanaryPlanOptions,
   extractTerminalBriefSidecarDryRunStartCanaryPlanRehearsal,
@@ -1576,6 +1581,27 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
         const report = buildTerminalBriefSidecarExecutorInvocationRehearsal(
           startExecutorGate,
           extractTerminalBriefSidecarExecutorInvocationRehearsalOptions(body),
+        );
+        return sendJson(res, 200, report, {
+          "cache-control": "no-store",
+        });
+      }
+
+      if (req.method === "POST" && path === "/terminal-brief/sidecar/runtime-preflight-approval") {
+        if (enforceRequesterIdentity) {
+          assertRequesterHasRole(requesterIdentity, ["hub", "operator"], "terminal_brief.sidecar_runtime_preflight_approval.read");
+        }
+        const body = await readJson<Record<string, unknown>>(req);
+        let executorInvocationRehearsal;
+        try {
+          executorInvocationRehearsal = extractTerminalBriefSidecarRuntimePreflightApprovalRehearsal(body);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "invalid sidecar runtime preflight approval input";
+          throw new BrokerError("bad_request", message);
+        }
+        const report = buildTerminalBriefSidecarRuntimePreflightApproval(
+          executorInvocationRehearsal,
+          extractTerminalBriefSidecarRuntimePreflightApprovalOptions(body),
         );
         return sendJson(res, 200, report, {
           "cache-control": "no-store",
