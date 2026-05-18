@@ -132,6 +132,10 @@ import {
   extractTerminalBriefCloseoutGatePacket,
 } from "./core/terminal-brief-approval-request.js";
 import {
+  buildTerminalBriefApprovalExecutor,
+  extractTerminalBriefApprovalRequestPacket,
+} from "./core/terminal-brief-approval-executor.js";
+import {
   buildBrokerCleanupPlan,
   executeBrokerCleanupPlan,
   validateCleanupExecution,
@@ -1307,6 +1311,29 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
           throw new BrokerError("bad_request", message);
         }
         const report = buildTerminalBriefApprovalRequest(gate);
+        return sendJson(res, 200, report, {
+          "cache-control": "no-store",
+        });
+      }
+
+      if (req.method === "POST" && path === "/terminal-brief/closeout/approval-executor") {
+        if (enforceRequesterIdentity) {
+          assertRequesterHasRole(requesterIdentity, ["hub", "operator"], "terminal_brief.approval_executor.read");
+        }
+        const body = await readJson<Record<string, unknown>>(req);
+        let approvalRequest;
+        try {
+          approvalRequest = extractTerminalBriefApprovalRequestPacket(body);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "invalid approval executor input";
+          throw new BrokerError("bad_request", message);
+        }
+        const executorOptions = body ?? {};
+        const report = buildTerminalBriefApprovalExecutor(approvalRequest, {
+          selectedAction: optionalString(executorOptions.selectedAction ?? executorOptions.selected_action),
+          selectedTarget: optionalString(executorOptions.selectedTarget ?? executorOptions.selected_target),
+          attemptExecute: executorOptions.attemptExecute === true || executorOptions.attempt_execute === true,
+        });
         return sendJson(res, 200, report, {
           "cache-control": "no-store",
         });
