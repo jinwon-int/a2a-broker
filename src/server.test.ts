@@ -7241,6 +7241,61 @@ test("POST /terminal-brief/sidecar/runtime-preflight-approval returns source-onl
   }
 });
 
+test("POST /terminal-brief/sidecar/adapter-handoff-approval returns source-only handoff packet", async () => {
+  const server = await startTestServer({ edgeSecret: "test-edge-secret" });
+  try {
+    const fixture = JSON.parse(readFileSync("fixtures/terminal-brief/sidecar-adapter-handoff-approval.no-live.json", "utf8"));
+    const res = await fetch(
+      server.baseUrl + "/terminal-brief/sidecar/adapter-handoff-approval",
+      {
+        method: "POST",
+        headers: jsonHeaders({
+          "x-a2a-edge-secret": "test-edge-secret",
+          "x-a2a-requester-id": "operator-a",
+          "x-a2a-requester-role": "operator",
+        }),
+        body: JSON.stringify({
+          runtimePreflightApprovalPacket: fixture,
+          adapterHandoffApproval: {
+            adapterId: "gongyung-approval-renderer",
+            deliveryTargetClass: "manual-operator-channel",
+            handoffReference: "handoff-741",
+          },
+        }),
+      },
+    );
+
+    assert.equal(res.status, 200);
+    assert.equal(res.headers.get("cache-control"), "no-store");
+    const body = await res.json();
+    assert.equal(body.kind, "a2a-broker.terminal-brief-sidecar-adapter-handoff-approval.packet");
+    assert.equal(body.state, "handoff_packet_ready");
+    assert.equal(body.source.runtimePreflightApprovalReady, true);
+    assert.equal(body.source.adapterContractReady, true);
+    assert.equal(body.adapterHandoff.draftOnly, true);
+    assert.equal(body.adapterHandoff.adapterId, "gongyung-approval-renderer");
+    assert.equal(body.adapterHandoff.dispatchPermitted, false);
+    assert.equal(body.adapterHandoff.providerSendPermitted, false);
+    assert.equal(body.adapterHandoff.approvalGrantPermitted, false);
+    assert.equal(body.adapterHandoff.terminalAckPermitted, false);
+    assert.equal(body.adapterHandoff.executionPermitted, false);
+    assert.equal(body.readiness.approvalRequestDispatchPermitted, false);
+    assert.equal(body.readiness.providerSendPermitted, false);
+    assert.equal(body.readiness.terminalAckPermitted, false);
+    assert.equal(body.readiness.executionPermitted, false);
+    assert.equal(body.readiness.dbMutationPermitted, false);
+    assert.equal(body.integrationContract.rendersApprovalRequestDraft, true);
+    assert.equal(body.integrationContract.sendsApprovalRequest, false);
+    assert.equal(body.integrationContract.invokesExecutor, false);
+    assert.equal(body.integrationContract.spawnsProcess, false);
+    assert.equal(body.integrationContract.startsSidecar, false);
+    assert.equal(body.semantics.adapterHandoffPacketOnly, true);
+    assert.equal(body.semantics.handoffDoesNotSendApprovalRequest, true);
+  } finally {
+    await server.close();
+  }
+});
+
 test("POST /terminal-brief/sidecar/dry-run-start-canary-plan returns draft-only no-live canary plan", async () => {
   const server = await startTestServer({ edgeSecret: "test-edge-secret" });
   try {
