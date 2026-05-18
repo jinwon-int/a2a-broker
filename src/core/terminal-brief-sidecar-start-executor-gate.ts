@@ -1,6 +1,11 @@
 import { createHash } from "node:crypto";
 
 import type { TerminalBriefSidecarActivationReceiptIngestorPacket } from "./terminal-brief-sidecar-activation-receipt-ingestor.js";
+import type { TerminalBriefSidecarDryRunStartApprovalReceiptIngestorPacket } from "./terminal-brief-sidecar-dry-run-start-approval-receipt-ingestor.js";
+
+type TerminalBriefSidecarStartExecutorGateReceipt =
+  | TerminalBriefSidecarActivationReceiptIngestorPacket
+  | TerminalBriefSidecarDryRunStartApprovalReceiptIngestorPacket;
 
 export type TerminalBriefSidecarStartExecutorGateState =
   | "ready_for_start_executor_review"
@@ -40,7 +45,8 @@ export interface TerminalBriefSidecarStartExecutorGatePacket {
   sourceOnlyNoLive: true;
   idempotencyKey: string;
   source: {
-    receiptState: TerminalBriefSidecarActivationReceiptIngestorPacket["state"];
+    receiptKind: TerminalBriefSidecarStartExecutorGateReceipt["kind"];
+    receiptState: TerminalBriefSidecarStartExecutorGateReceipt["state"];
     receiptIdempotencyKey: string;
     receiptEvidenceAccepted: boolean;
     approvalEvidenceAccepted: boolean;
@@ -69,6 +75,8 @@ export interface TerminalBriefSidecarStartExecutorGatePacket {
     sourceCriteriaMet: boolean;
     startExecutorReviewReady: boolean;
     startExecutorDispatchPermitted: false;
+    executorInvocationPermitted: false;
+    processSpawnPermitted: false;
     sidecarStartPermitted: false;
     defaultOnPermitted: false;
     liveActivationPermitted: false;
@@ -90,8 +98,11 @@ export interface TerminalBriefSidecarStartExecutorGatePacket {
     openclawMessageSendRequired: false;
     hermesAdapterCompatible: true;
     gongyungAdapterCompatible: true;
-    consumesActivationReceiptIngestorPacket: true;
+    consumesActivationReceiptIngestorPacket: boolean;
+    consumesDryRunStartApprovalReceiptIngestorPacket: boolean;
     dispatchesStartExecutor: false;
+    invokesExecutor: false;
+    spawnsProcess: false;
     grantsApproval: false;
     startsSidecar: false;
     enablesDefaultOn: false;
@@ -108,6 +119,8 @@ export interface TerminalBriefSidecarStartExecutorGatePacket {
     sidecarStartRequiresSeparateApprovedExecutor: true;
     defaultOnNotEnabledByThisPacket: true;
     executionNotPermitted: true;
+    executorInvocationNotPermitted: true;
+    processSpawnNotPermitted: true;
     routeIsReadOnly: true;
     brokerFinalizerRequired: true;
     performsGitHubMutation: false;
@@ -123,7 +136,7 @@ export interface TerminalBriefSidecarStartExecutorGatePacket {
 }
 
 export function buildTerminalBriefSidecarStartExecutorGate(
-  receipt: TerminalBriefSidecarActivationReceiptIngestorPacket,
+  receipt: TerminalBriefSidecarStartExecutorGateReceipt,
   options: TerminalBriefSidecarStartExecutorGateOptions = {},
 ): TerminalBriefSidecarStartExecutorGatePacket {
   const generatedAt = options.now ?? new Date().toISOString();
@@ -142,6 +155,7 @@ export function buildTerminalBriefSidecarStartExecutorGate(
     sourceOnlyNoLive: true,
     idempotencyKey: buildGateIdempotencyKey(receipt, generatedAt, state, options),
     source: {
+      receiptKind: receipt.kind,
       receiptState: receipt.state,
       receiptIdempotencyKey: receipt.idempotencyKey,
       receiptEvidenceAccepted: receipt.receiptEvidenceAccepted,
@@ -175,6 +189,8 @@ export function buildTerminalBriefSidecarStartExecutorGate(
       sourceCriteriaMet,
       startExecutorReviewReady: sourceCriteriaMet,
       startExecutorDispatchPermitted: false,
+      executorInvocationPermitted: false,
+      processSpawnPermitted: false,
       sidecarStartPermitted: false,
       defaultOnPermitted: false,
       liveActivationPermitted: false,
@@ -211,8 +227,11 @@ export function buildTerminalBriefSidecarStartExecutorGate(
       openclawMessageSendRequired: false,
       hermesAdapterCompatible: true,
       gongyungAdapterCompatible: true,
-      consumesActivationReceiptIngestorPacket: true,
+      consumesActivationReceiptIngestorPacket: receipt.kind === "a2a-broker.terminal-brief-sidecar-activation-receipt-ingestor.packet",
+      consumesDryRunStartApprovalReceiptIngestorPacket: receipt.kind === "a2a-broker.terminal-brief-sidecar-dry-run-start-approval-receipt-ingestor.packet",
       dispatchesStartExecutor: false,
+      invokesExecutor: false,
+      spawnsProcess: false,
       grantsApproval: false,
       startsSidecar: false,
       enablesDefaultOn: false,
@@ -229,6 +248,8 @@ export function buildTerminalBriefSidecarStartExecutorGate(
       sidecarStartRequiresSeparateApprovedExecutor: true,
       defaultOnNotEnabledByThisPacket: true,
       executionNotPermitted: true,
+      executorInvocationNotPermitted: true,
+      processSpawnNotPermitted: true,
       routeIsReadOnly: true,
       brokerFinalizerRequired: true,
       performsGitHubMutation: false,
@@ -246,7 +267,7 @@ export function buildTerminalBriefSidecarStartExecutorGate(
 
 export function extractTerminalBriefSidecarStartExecutorGateReceipt(
   input: unknown,
-): TerminalBriefSidecarActivationReceiptIngestorPacket {
+): TerminalBriefSidecarStartExecutorGateReceipt {
   const envelope = isRecord(input) ? input : {};
   const candidates = [
     input,
@@ -254,13 +275,17 @@ export function extractTerminalBriefSidecarStartExecutorGateReceipt(
     envelope.activationReceiptPacket,
     envelope.sidecarActivationReceipt,
     envelope.sidecarActivationReceiptPacket,
+    envelope.dryRunStartApprovalReceipt,
+    envelope.dryRunStartApprovalReceiptPacket,
+    envelope.sidecarDryRunStartApprovalReceipt,
+    envelope.sidecarDryRunStartApprovalReceiptPacket,
     envelope.receiptIngestor,
     envelope.receiptIngestorPacket,
     envelope.packet,
   ];
-  const packet = candidates.find(isTerminalBriefSidecarActivationReceiptIngestorPacket);
+  const packet = candidates.find(isTerminalBriefSidecarStartExecutorGateReceipt);
   if (!packet) {
-    throw new Error("expected a Terminal Brief sidecar activation receipt ingestor packet");
+    throw new Error("expected a Terminal Brief sidecar activation or dry-run start approval receipt ingestor packet");
   }
   return packet;
 }
@@ -297,6 +322,8 @@ export function renderTerminalBriefSidecarStartExecutorGateMarkdown(
     "Readiness: sourceCriteriaMet=" + packet.readiness.sourceCriteriaMet
       + " startExecutorReviewReady=" + packet.readiness.startExecutorReviewReady
       + " startExecutorDispatchPermitted=" + packet.readiness.startExecutorDispatchPermitted
+      + " executorInvocationPermitted=" + packet.readiness.executorInvocationPermitted
+      + " processSpawnPermitted=" + packet.readiness.processSpawnPermitted
       + " sidecarStartPermitted=" + packet.readiness.sidecarStartPermitted
       + " terminalAckPermitted=" + packet.readiness.terminalAckPermitted
       + " executionPermitted=" + packet.readiness.executionPermitted,
@@ -305,24 +332,30 @@ export function renderTerminalBriefSidecarStartExecutorGateMarkdown(
     "Next actions:",
     ...packet.nextActions.map((action) => "- " + action),
     "",
-    "Safety: start executor gate only; command shape is metadata only; does not dispatch executor, start sidecar, enable default-on, send providers, ACK/replay terminal rows, mutate GitHub/DB/TaskFlow state, restart/deploy, replay history, release, publish, or move secrets.",
+    "Safety: start executor gate only; command shape is metadata only; does not dispatch or invoke executor, spawn a process, start sidecar, enable default-on, send providers, ACK/replay terminal rows, mutate GitHub/DB/TaskFlow state, restart/deploy, replay history, release, publish, or move secrets.",
   ].join("\n");
 }
 
-function buildBlockers(receipt: TerminalBriefSidecarActivationReceiptIngestorPacket): string[] {
+function buildBlockers(receipt: TerminalBriefSidecarStartExecutorGateReceipt): string[] {
   return unique([
     ...receipt.blockers,
-    ...(receipt.state !== "accepted" ? ["activation receipt ingestor is " + receipt.state] : []),
+    ...(receipt.state !== "accepted" ? ["receipt ingestor is " + receipt.state] : []),
     ...(!receipt.receiptEvidenceAccepted ? ["receipt proof evidence is not accepted"] : []),
     ...(!receipt.approvalEvidenceAccepted ? ["approval evidence is not accepted"] : []),
     ...(!receipt.readiness.sourceCriteriaMet ? ["activation receipt source criteria are not met"] : []),
     ...(receipt.readiness.sidecarStartPermitted !== false ? ["receipt ingestor unexpectedly permits sidecar start"] : []),
     ...(receipt.readiness.defaultOnPermitted !== false ? ["receipt ingestor unexpectedly permits default-on"] : []),
     ...(receipt.readiness.approvalGrantPermitted !== false ? ["receipt ingestor unexpectedly permits approval grant"] : []),
+    ...("startExecutorDispatchPermitted" in receipt.readiness && receipt.readiness.startExecutorDispatchPermitted !== false ? ["receipt ingestor unexpectedly permits start executor dispatch"] : []),
+    ...("executorInvocationPermitted" in receipt.readiness && receipt.readiness.executorInvocationPermitted !== false ? ["receipt ingestor unexpectedly permits executor invocation"] : []),
+    ...("processSpawnPermitted" in receipt.readiness && receipt.readiness.processSpawnPermitted !== false ? ["receipt ingestor unexpectedly permits process spawn"] : []),
     ...(receipt.readiness.providerSendPermitted !== false ? ["receipt ingestor unexpectedly permits provider send"] : []),
     ...(receipt.readiness.terminalAckPermitted !== false ? ["receipt ingestor unexpectedly permits terminal ACK"] : []),
     ...(receipt.readiness.executionPermitted !== false ? ["receipt ingestor unexpectedly permits execution"] : []),
     ...(receipt.integrationContract.grantsApproval ? ["receipt ingestor unexpectedly grants approval"] : []),
+    ...("dispatchesStartExecutor" in receipt.integrationContract && receipt.integrationContract.dispatchesStartExecutor ? ["receipt ingestor unexpectedly dispatches start executor"] : []),
+    ...("invokesExecutor" in receipt.integrationContract && receipt.integrationContract.invokesExecutor ? ["receipt ingestor unexpectedly invokes executor"] : []),
+    ...("spawnsProcess" in receipt.integrationContract && receipt.integrationContract.spawnsProcess ? ["receipt ingestor unexpectedly spawns process"] : []),
     ...(receipt.integrationContract.startsSidecar ? ["receipt ingestor unexpectedly starts sidecar"] : []),
     ...(receipt.integrationContract.enablesDefaultOn ? ["receipt ingestor unexpectedly enables default-on"] : []),
     ...(receipt.integrationContract.executesAction ? ["receipt ingestor unexpectedly executes action"] : []),
@@ -337,7 +370,7 @@ function buildBlockers(receipt: TerminalBriefSidecarActivationReceiptIngestorPac
 }
 
 function stateFor(
-  receipt: TerminalBriefSidecarActivationReceiptIngestorPacket,
+  receipt: TerminalBriefSidecarStartExecutorGateReceipt,
   blockers: string[],
 ): TerminalBriefSidecarStartExecutorGateState {
   if (receipt.state === "stale") return "stale";
@@ -348,14 +381,20 @@ function stateFor(
   return blockers.length ? "blocked" : "ready_for_start_executor_review";
 }
 
-function hasUnsafeNoLiveViolation(receipt: TerminalBriefSidecarActivationReceiptIngestorPacket): boolean {
+function hasUnsafeNoLiveViolation(receipt: TerminalBriefSidecarStartExecutorGateReceipt): boolean {
   return receipt.readiness.sidecarStartPermitted !== false
     || receipt.readiness.defaultOnPermitted !== false
     || receipt.readiness.approvalGrantPermitted !== false
+    || ("startExecutorDispatchPermitted" in receipt.readiness && receipt.readiness.startExecutorDispatchPermitted !== false)
+    || ("executorInvocationPermitted" in receipt.readiness && receipt.readiness.executorInvocationPermitted !== false)
+    || ("processSpawnPermitted" in receipt.readiness && receipt.readiness.processSpawnPermitted !== false)
     || receipt.readiness.providerSendPermitted !== false
     || receipt.readiness.terminalAckPermitted !== false
     || receipt.readiness.executionPermitted !== false
     || receipt.integrationContract.grantsApproval
+    || ("dispatchesStartExecutor" in receipt.integrationContract && receipt.integrationContract.dispatchesStartExecutor)
+    || ("invokesExecutor" in receipt.integrationContract && receipt.integrationContract.invokesExecutor)
+    || ("spawnsProcess" in receipt.integrationContract && receipt.integrationContract.spawnsProcess)
     || receipt.integrationContract.startsSidecar
     || receipt.integrationContract.enablesDefaultOn
     || receipt.integrationContract.executesAction
@@ -368,7 +407,7 @@ function hasUnsafeNoLiveViolation(receipt: TerminalBriefSidecarActivationReceipt
     || receipt.semantics.movesSecretsOrCredentials;
 }
 
-function missingEvidenceFor(receipt: TerminalBriefSidecarActivationReceiptIngestorPacket): string[] {
+function missingEvidenceFor(receipt: TerminalBriefSidecarStartExecutorGateReceipt): string[] {
   const missing: string[] = [];
   if (!receipt.receiptEvidenceAccepted) missing.push("receipt_evidence");
   if (!receipt.approvalEvidenceAccepted) missing.push("approval_evidence");
@@ -427,7 +466,7 @@ function nextActionsFor(state: TerminalBriefSidecarStartExecutorGateState): stri
 }
 
 function buildGateIdempotencyKey(
-  receipt: TerminalBriefSidecarActivationReceiptIngestorPacket,
+  receipt: TerminalBriefSidecarStartExecutorGateReceipt,
   generatedAt: string,
   state: TerminalBriefSidecarStartExecutorGateState,
   options: TerminalBriefSidecarStartExecutorGateOptions,
@@ -435,6 +474,7 @@ function buildGateIdempotencyKey(
   const base = JSON.stringify({
     label: "terminal-brief-sidecar-start-executor-gate",
     parentRoundId: receipt.parentRoundId ?? "unknown",
+    receiptKind: receipt.kind,
     receipt: receipt.idempotencyKey,
     generatedAt,
     state,
@@ -471,6 +511,19 @@ function unique<T>(items: T[]): T[] {
 
 function isTerminalBriefSidecarActivationReceiptIngestorPacket(value: unknown): value is TerminalBriefSidecarActivationReceiptIngestorPacket {
   return isRecord(value) && value.kind === "a2a-broker.terminal-brief-sidecar-activation-receipt-ingestor.packet";
+}
+
+function isTerminalBriefSidecarDryRunStartApprovalReceiptIngestorPacket(
+  value: unknown,
+): value is TerminalBriefSidecarDryRunStartApprovalReceiptIngestorPacket {
+  return isRecord(value) && value.kind === "a2a-broker.terminal-brief-sidecar-dry-run-start-approval-receipt-ingestor.packet";
+}
+
+function isTerminalBriefSidecarStartExecutorGateReceipt(
+  value: unknown,
+): value is TerminalBriefSidecarStartExecutorGateReceipt {
+  return isTerminalBriefSidecarActivationReceiptIngestorPacket(value)
+    || isTerminalBriefSidecarDryRunStartApprovalReceiptIngestorPacket(value);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
