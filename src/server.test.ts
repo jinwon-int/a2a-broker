@@ -5809,3 +5809,94 @@ test("GET /release/evidence returns read-only dry-run release evidence without m
     await server.close();
   }
 });
+
+test("POST /terminal-brief/closeout/gate returns approval-gated dry-run plan", async () => {
+  const server = await startTestServer({ edgeSecret: "test-edge-secret" });
+  try {
+    const workflow = {
+      kind: "a2a-broker.terminal-brief-finalizer-workflow.packet",
+      version: 1,
+      generatedAt: "2026-05-18T15:00:00.000Z",
+      mode: "read-only/no-live",
+      parentRoundId: "round-700",
+      decision: "ready",
+      currentStep: "finalizer_review",
+      idempotencyKey: "tb-finalizer-workflow:fixture",
+      finalizer: {
+        brokerOfRecordId: "seoseo",
+        owner: "seoseo",
+        required: true,
+        singleFinalizerRequired: true,
+      },
+      source: {
+        handoffDecision: "ready",
+        handoffIdempotencyKey: "tb-finalizer-handoff:fixture",
+        evidenceUrls: 1,
+        receiptGaps: 1,
+        blockers: 0,
+      },
+      workflow: {
+        closeoutComment: {
+          mode: "draft-only",
+          title: "Draft: Terminal Brief closeout ready - round-700",
+          body: "Draft closeout body. This was not posted automatically.",
+          postPermitted: false,
+        },
+        taskflowSeed: {
+          createRecords: false,
+          currentStep: "finalizer_review",
+          stateJson: { source: "terminal-brief-finalizer-workflow" },
+          waitJson: { kind: "broker_finalizer_review" },
+        },
+      },
+      checklist: [],
+      reviewItems: ["single broker finalizer must review"],
+      blockers: [],
+      nextActions: [],
+      approvalSensitiveActionsExcluded: [
+        "GitHub PR merge, issue close, or comment post",
+        "live provider/Hermes/Telegram/OpenClaw send",
+        "terminal ACK/replay",
+      ],
+      semantics: {
+        workflowPacketIsNotFinalAction: true,
+        commentIsDraftOnly: true,
+        taskflowSeedCreatesNoRecords: true,
+        brokerFinalizerRequired: true,
+        singleFinalizerRequired: true,
+        providerOrProducedReceiptIsTerminalAck: false,
+        performsGitHubMutation: false,
+        performsProviderSend: false,
+        performsTerminalAck: false,
+        performsRuntimeRestartOrDeploy: false,
+        performsDbMutation: false,
+      },
+    };
+
+    const res = await fetch(
+      server.baseUrl + "/terminal-brief/closeout/gate?issueUrl=https://github.com/jinwon-int/a2a-broker/issues/700&prUrl=https://github.com/jinwon-int/a2a-broker/pull/701",
+      {
+        method: "POST",
+        headers: jsonHeaders({
+          "x-a2a-edge-secret": "test-edge-secret",
+          "x-a2a-requester-id": "operator-a",
+          "x-a2a-requester-role": "operator",
+        }),
+        body: JSON.stringify({ workflowPacket: workflow }),
+      },
+    );
+
+    assert.equal(res.status, 200);
+    assert.equal(res.headers.get("cache-control"), "no-store");
+    const body = await res.json();
+    assert.equal(body.kind, "a2a-broker.terminal-brief-closeout-gate.packet");
+    assert.equal(body.decision, "ready_for_approval");
+    assert.equal(body.gateState, "approval_required");
+    assert.equal(body.executePermitted, false);
+    assert.equal(body.integrationContract.openclawMessageSendRequired, false);
+    assert.equal(body.semantics.performsGitHubMutation, false);
+    assert.equal(body.actions.every((action: Record<string, unknown>) => action.executePermitted === false), true);
+  } finally {
+    await server.close();
+  }
+});

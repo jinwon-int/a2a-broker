@@ -124,6 +124,10 @@ import { projectAlerts, type Alert, type AlertScanResult } from "./core/alert-pr
 import { buildOperatorTaskReport } from "./core/operator-task-report.js";
 import { buildReleaseEvidenceExport } from "./core/release-evidence.js";
 import {
+  buildTerminalBriefCloseoutGate,
+  extractTerminalBriefFinalizerWorkflowPacket,
+} from "./core/terminal-brief-closeout-gate.js";
+import {
   buildBrokerCleanupPlan,
   executeBrokerCleanupPlan,
   validateCleanupExecution,
@@ -1259,6 +1263,27 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
           issue: optionalString(url.searchParams.get("issue")),
           parentIssue: optionalString(url.searchParams.get("parentIssue") ?? url.searchParams.get("parent_issue")),
           runId: optionalString(url.searchParams.get("runId") ?? url.searchParams.get("run_id")),
+        });
+        return sendJson(res, 200, report, {
+          "cache-control": "no-store",
+        });
+      }
+
+      if (req.method === "POST" && path === "/terminal-brief/closeout/gate") {
+        if (enforceRequesterIdentity) {
+          assertRequesterHasRole(requesterIdentity, ["hub", "operator"], "terminal_brief.closeout_gate.read");
+        }
+        const body = await readJson<Record<string, unknown>>(req);
+        let workflow;
+        try {
+          workflow = extractTerminalBriefFinalizerWorkflowPacket(body);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "invalid closeout gate input";
+          throw new BrokerError("bad_request", message);
+        }
+        const report = buildTerminalBriefCloseoutGate(workflow, {
+          issueUrl: optionalString(url.searchParams.get("issueUrl") ?? url.searchParams.get("issue_url")),
+          prUrl: optionalString(url.searchParams.get("prUrl") ?? url.searchParams.get("pr_url")),
         });
         return sendJson(res, 200, report, {
           "cache-control": "no-store",
