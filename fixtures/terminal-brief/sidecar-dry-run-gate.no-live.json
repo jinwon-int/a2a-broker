@@ -1,0 +1,134 @@
+{
+  "sidecarRehearsal": {
+    "kind": "a2a-broker.terminal-brief-sidecar-integration-rehearsal",
+    "version": 1,
+    "generatedAt": "2026-05-18T23:30:00.000Z",
+    "mode": "read-only/no-live",
+    "parentRoundId": "round-712",
+    "decision": "candidate",
+    "sidecar": {
+      "spoolRecords": 3,
+      "finalCountSignalsFromSpool": 3,
+      "receiptDecisions": 1,
+      "terminalReceiptStatuses": [
+        "produced"
+      ],
+      "providerSendAttempted": false,
+      "terminalAckAttempted": false,
+      "dryRunOnly": true,
+      "unsafeSpoolRecords": []
+    },
+    "finalCountCandidate": {
+      "decision": "candidate",
+      "idempotencyKey": "tb-final-count:fixture-712"
+    },
+    "blockers": [],
+    "nextStep": "open broker finalizer review from sidecar no-live rehearsal",
+    "approvalSensitiveActionsExcluded": [
+      "live provider/Hermes/Telegram/OpenClaw send",
+      "terminal ACK/replay",
+      "Gateway/broker/worker/sidecar restart or deploy"
+    ],
+    "semantics": {
+      "sidecarSpoolIsReceiptProof": false,
+      "sidecarProducedReceiptIsTerminalAck": false,
+      "finalCountIsCloseoutTrigger": true,
+      "closeoutCandidateIsNotFinalAction": true,
+      "brokerFinalizerRequired": true
+    }
+  },
+  "finalizerApprovalStatus": {
+    "kind": "a2a-broker.terminal-brief-finalizer-approval-status.packet",
+    "version": 1,
+    "generatedAt": "2026-05-18T23:30:00.000Z",
+    "mode": "read-only/no-live",
+    "parentRoundId": "round-712",
+    "state": "ready_for_finalizer_review",
+    "dryRunOnly": true,
+    "sourceOnlyNoLive": true,
+    "finalizer": {
+      "brokerOfRecordId": "broker-finalizer",
+      "owner": "broker-finalizer",
+      "required": true,
+      "singleFinalizerRequired": true
+    },
+    "idempotencyKey": "tb-finalizer-approval-status:fixture-712",
+    "source": {
+      "dispatchState": "dispatch_draft_ready",
+      "dispatchIdempotencyKey": "tb-approval-dispatch:fixture-712",
+      "adapterType": "gongyung",
+      "targetIssueUrl": "https://github.com/jinwon-int/a2a-broker/issues/712"
+    },
+    "requestedAction": {
+      "action": "post_closeout_comment",
+      "target": "https://github.com/jinwon-int/a2a-broker/issues/712",
+      "requestedActions": 2,
+      "nonRequestableActions": 1
+    },
+    "approval": {
+      "receiptEvidenceAccepted": true,
+      "providerAccepted": false,
+      "currentSessionVisible": true,
+      "manualOperatorConfirmed": false,
+      "approvalGrantAccepted": true,
+      "terminalAckEligible": true,
+      "terminalAckPermitted": false,
+      "approvalGrantPermitted": false,
+      "executionPermitted": false
+    },
+    "table": {
+      "rows": [],
+      "requiredRowsReady": 3,
+      "requiredRows": 3,
+      "readyRows": 4,
+      "totalRows": 5
+    },
+    "defaultOnReadiness": {
+      "sourceCriteriaMet": true,
+      "defaultOnPermitted": false,
+      "missingEvidence": [],
+      "blockers": [
+        "default-on enablement still requires separate live deployment/canary approval"
+      ],
+      "nextAction": "request explicit operator approval for any default-on/live canary step"
+    },
+    "blockers": [],
+    "nextActions": [],
+    "approvalSensitiveActionsExcluded": [],
+    "integrationContract": {
+      "transport": "json",
+      "statusTableVersion": 1,
+      "harnessNeutral": true,
+      "openclawMessageSendRequired": false,
+      "hermesAdapterCompatible": true,
+      "gongyungAdapterCompatible": true,
+      "consumesDispatchAdapterPacket": true,
+      "consumesReceiptIngestorPacket": true,
+      "grantsApproval": false,
+      "executesAction": false
+    },
+    "semantics": {
+      "statusTableOnly": true,
+      "sourceOnlyNoLive": true,
+      "defaultOnNotEnabledByThisPacket": true,
+      "performsProviderSend": false,
+      "performsTerminalAck": false,
+      "performsRuntimeRestartOrDeploy": false,
+      "performsDbMutation": false,
+      "movesSecretsOrCredentials": false
+    }
+  },
+  "operatingEvidence": {
+    "observedAt": "2026-05-18T23:29:30.000Z",
+    "cursorPersisted": true,
+    "boundedPolling": true,
+    "pollIntervalMs": 15000,
+    "maxBatch": 20,
+    "gatewayReady": true,
+    "eventLoopDegraded": false,
+    "queueBacklog": 0,
+    "dryRunOnly": true,
+    "operatorEventsCrossBrokersEnabled": false,
+    "supervisedSidecar": true
+  }
+}
