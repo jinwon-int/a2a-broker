@@ -1,0 +1,97 @@
+{
+  "kind": "a2a-broker.terminal-brief-completion-watcher.fixture",
+  "version": 1,
+  "mode": "read-only/no-live",
+  "parentRoundId": "round-689-no-live",
+  "expectedWorkers": ["bangtong", "sogyo", "nosuk"],
+  "expectedTotal": 3,
+  "events": [
+    {
+      "id": "task-bangtong-succeeded-20260518T083000Z",
+      "kind": "task.terminal",
+      "taskEventId": 1,
+      "payload": {
+        "taskId": "task-bangtong",
+        "status": "succeeded",
+        "parentRoundId": "round-689-no-live",
+        "originBrokerId": "seoseo",
+        "brokerOfRecordId": "seoseo",
+        "worker": "bangtong",
+        "repo": "jinwon-int/a2a-broker",
+        "issue": 689,
+        "taskBrief": "Terminal Brief completion watcher fixture lane 1",
+        "prUrl": "https://github.com/jinwon-int/a2a-broker/pull/701",
+        "parentRoundProgress": 1,
+        "parentRoundTotal": 3,
+        "createdAt": "2026-05-18T08:30:00.000Z",
+        "updatedAt": "2026-05-18T08:30:00.000Z",
+        "completedAt": "2026-05-18T08:30:00.000Z"
+      },
+      "createdAt": "2026-05-18T08:30:00.000Z",
+      "receipt": {
+        "status": "provider_accepted",
+        "updatedAt": "2026-05-18T08:30:00.000Z",
+        "receiptId": "provider-message-1"
+      },
+      "attempts": 1
+    },
+    {
+      "id": "task-sogyo-succeeded-20260518T083100Z",
+      "kind": "task.terminal",
+      "taskEventId": 2,
+      "payload": {
+        "taskId": "task-sogyo",
+        "status": "succeeded",
+        "parentRoundId": "round-689-no-live",
+        "originBrokerId": "seoseo",
+        "brokerOfRecordId": "seoseo",
+        "worker": "sogyo",
+        "repo": "jinwon-int/a2a-broker",
+        "issue": 689,
+        "taskBrief": "Terminal Brief completion watcher fixture lane 2",
+        "doneUrl": "https://github.com/jinwon-int/a2a-broker/issues/689#issuecomment-sogyo-done",
+        "parentRoundProgress": 2,
+        "parentRoundTotal": 3,
+        "createdAt": "2026-05-18T08:31:00.000Z",
+        "updatedAt": "2026-05-18T08:31:00.000Z",
+        "completedAt": "2026-05-18T08:31:00.000Z"
+      },
+      "createdAt": "2026-05-18T08:31:00.000Z",
+      "receipt": {
+        "status": "provider_accepted",
+        "updatedAt": "2026-05-18T08:31:00.000Z",
+        "receiptId": "provider-message-2"
+      },
+      "attempts": 1
+    },
+    {
+      "id": "task-nosuk-succeeded-20260518T083200Z",
+      "kind": "task.terminal",
+      "taskEventId": 3,
+      "payload": {
+        "taskId": "task-nosuk",
+        "status": "succeeded",
+        "parentRoundId": "round-689-no-live",
+        "originBrokerId": "seoseo",
+        "brokerOfRecordId": "seoseo",
+        "worker": "nosuk",
+        "repo": "jinwon-int/a2a-broker",
+        "issue": 689,
+        "taskBrief": "Terminal Brief completion watcher fixture lane 3",
+        "prUrl": "https://github.com/jinwon-int/a2a-broker/pull/702",
+        "parentRoundProgress": 3,
+        "parentRoundTotal": 3,
+        "createdAt": "2026-05-18T08:32:00.000Z",
+        "updatedAt": "2026-05-18T08:32:00.000Z",
+        "completedAt": "2026-05-18T08:32:00.000Z"
+      },
+      "createdAt": "2026-05-18T08:32:00.000Z",
+      "receipt": {
+        "status": "provider_accepted",
+        "updatedAt": "2026-05-18T08:32:00.000Z",
+        "receiptId": "provider-message-3"
+      },
+      "attempts": 1
+    }
+  ]
+}

@@ -108,6 +108,12 @@ describe('UPPER_CASE secret detection', () => {
     assert.equal(fails.length, 0);
   });
 
+  it('skips REDACT_SECRETS=1 redaction flag', async () => {
+    const { data } = await scanJson({ '.env.example': 'REDACT_SECRETS=1\n' });
+    const fails = data.findings.filter((f) => f.kind === 'secret-value');
+    assert.equal(fails.length, 0, 'numeric redaction flag should not be flagged as a secret value');
+  });
+
   it('skips HAS_API_KEY=yes (boolean literal)', async () => {
     const { data } = await scanJson({ '.env.example': 'HAS_API_KEY=yes\n' });
     const fails = data.findings.filter((f) => f.kind === 'secret-value');
