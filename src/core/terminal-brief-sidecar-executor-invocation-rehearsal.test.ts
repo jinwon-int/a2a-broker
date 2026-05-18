@@ -142,9 +142,25 @@ test("sidecar executor invocation rehearsal becomes ready without invoking execu
   assert.equal(packet.invocationPlan.commandShape.processSpawnPermitted, false);
   assert.equal(packet.invocationPlan.commandShape.secretsIncluded, false);
   assert.deepEqual(packet.invocationPlan.commandShape.commandArgs, ["--dry-run", "--poll-ms", "15000"]);
+  assert.equal(packet.invocationPlan.adapterContract.version, 1);
+  assert.equal(packet.invocationPlan.adapterContract.adapterName, "gongyung");
+  assert.equal(packet.invocationPlan.adapterContract.transport, "json-stdin-stdout");
+  assert.equal(packet.invocationPlan.adapterContract.input.commandExecutionPermitted, false);
+  assert.equal(packet.invocationPlan.adapterContract.input.processSpawnPermitted, false);
+  assert.equal(packet.invocationPlan.adapterContract.input.envKeysOnly, true);
+  assert.equal(packet.invocationPlan.adapterContract.output.mustReportAbortEvidence, true);
+  assert.equal(packet.invocationPlan.adapterContract.output.providerAcceptedIsReceiptProof, false);
+  assert.equal(packet.invocationPlan.adapterContract.output.terminalAckPermitted, false);
+  assert.equal(packet.invocationPlan.adapterContract.abortEvidenceRequirements.length > 0, true);
+  assert.equal(packet.readiness.adapterContractReady, true);
+  assert.equal(packet.integrationContract.adapterContractVersion, 1);
+  assert.equal(packet.integrationContract.requiresAbortEvidence, true);
   assert.equal(packet.integrationContract.invokesExecutor, false);
   assert.equal(packet.integrationContract.spawnsProcess, false);
   assert.equal(packet.integrationContract.startsSidecar, false);
+  assert.equal(packet.semantics.adapterContractOnly, true);
+  assert.equal(packet.semantics.adapterOutputDoesNotImplyReceiptProof, true);
+  assert.equal(packet.semantics.abortEvidenceRequiredBeforeRuntimeApproval, true);
   assert.equal(packet.semantics.processSpawnNotPermitted, true);
 });
 
@@ -209,7 +225,9 @@ test("sidecar executor invocation rehearsal extractors and markdown preserve no-
     { ...extractTerminalBriefSidecarExecutorInvocationRehearsalOptions(input), now: NOW },
   );
   const markdown = renderTerminalBriefSidecarExecutorInvocationRehearsalMarkdown(packet);
-  assert.match(markdown, /executor invocation rehearsal only/);
+  assert.match(markdown, /executor invocation rehearsal and adapter contract only/);
+  assert.match(markdown, /adapter contract/);
+  assert.match(markdown, /terminalAckPermitted=false/);
   assert.match(markdown, /executorInvocationPermitted=false/);
   assert.match(markdown, /executionPermitted=false/);
 });
