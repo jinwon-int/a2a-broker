@@ -156,6 +156,11 @@ import {
   extractTerminalBriefSidecarDryRunOperatingEvidence,
 } from "./core/terminal-brief-sidecar-dry-run-gate.js";
 import {
+  buildTerminalBriefSidecarActivationApproval,
+  extractTerminalBriefSidecarActivationApprovalGate,
+  extractTerminalBriefSidecarActivationApprovalOptions,
+} from "./core/terminal-brief-sidecar-activation-approval.js";
+import {
   buildBrokerCleanupPlan,
   executeBrokerCleanupPlan,
   validateCleanupExecution,
@@ -1446,6 +1451,27 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
           sidecarRehearsal,
           extractTerminalBriefSidecarDryRunGateFinalizerStatus(body),
           extractTerminalBriefSidecarDryRunOperatingEvidence(body),
+        );
+        return sendJson(res, 200, report, {
+          "cache-control": "no-store",
+        });
+      }
+
+      if (req.method === "POST" && path === "/terminal-brief/sidecar/activation-approval") {
+        if (enforceRequesterIdentity) {
+          assertRequesterHasRole(requesterIdentity, ["hub", "operator"], "terminal_brief.sidecar_activation_approval.read");
+        }
+        const body = await readJson<Record<string, unknown>>(req);
+        let dryRunGate;
+        try {
+          dryRunGate = extractTerminalBriefSidecarActivationApprovalGate(body);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "invalid sidecar activation approval input";
+          throw new BrokerError("bad_request", message);
+        }
+        const report = buildTerminalBriefSidecarActivationApproval(
+          dryRunGate,
+          extractTerminalBriefSidecarActivationApprovalOptions(body),
         );
         return sendJson(res, 200, report, {
           "cache-control": "no-store",
