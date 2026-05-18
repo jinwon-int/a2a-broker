@@ -1,0 +1,114 @@
+{
+  "kind": "a2a-broker.terminal-brief-approval-receipt-ingestor.packet",
+  "version": 1,
+  "generatedAt": "2026-05-18T22:30:00.000Z",
+  "mode": "read-only/no-live",
+  "parentRoundId": "round-708",
+  "state": "accepted",
+  "dryRunOnly": true,
+  "receiptEvidenceAccepted": true,
+  "providerSendPermitted": false,
+  "approvalGrantPermitted": false,
+  "executionPermitted": false,
+  "terminalAckPermitted": false,
+  "terminalReceiptMutationPermitted": false,
+  "idempotencyKey": "tb-approval-receipt:fixture-708-visible-approval",
+  "finalizer": {
+    "brokerOfRecordId": "broker-finalizer",
+    "owner": "broker-finalizer",
+    "required": true,
+    "singleFinalizerRequired": true
+  },
+  "source": {
+    "dispatchState": "dispatch_draft_ready",
+    "dispatchIdempotencyKey": "tb-approval-dispatch:fixture-708",
+    "adapterType": "gongyung",
+    "transcriptTarget": "hermes://gongyung/approval",
+    "transcriptChannel": "operator",
+    "selectedAction": "post_closeout_comment",
+    "selectedTarget": "https://github.com/jinwon-int/a2a-broker/issues/708"
+  },
+  "evidence": {
+    "received": 2,
+    "acceptedKinds": [
+      "current_session_visible",
+      "approval_grant"
+    ],
+    "staleKinds": [],
+    "conflictingKinds": [],
+    "rejectedKinds": [],
+    "records": [
+      {
+        "kind": "current_session_visible",
+        "observedAt": "2026-05-18T22:29:30.000Z",
+        "receiptId": "receipt-visible-fixture-709",
+        "currentSessionId": "session-current-fixture",
+        "source": "fixture",
+        "stale": false,
+        "conflict": false,
+        "reason": "current-session-visible evidence can support ACK eligibility but does not perform ACK"
+      },
+      {
+        "kind": "approval_grant",
+        "observedAt": "2026-05-18T22:29:30.000Z",
+        "approvedAction": "post_closeout_comment",
+        "approvedTarget": "https://github.com/jinwon-int/a2a-broker/issues/708",
+        "operatorId": "operator-fixture",
+        "source": "fixture",
+        "stale": false,
+        "conflict": false,
+        "reason": "approval grant evidence is recorded but does not grant approval in this ingestor"
+      }
+    ]
+  },
+  "classification": {
+    "providerAccepted": false,
+    "currentSessionVisible": true,
+    "manualOperatorConfirmed": false,
+    "approvalGrantAccepted": true,
+    "rejected": false,
+    "expired": false,
+    "stale": false,
+    "terminalAckEligible": true,
+    "providerAcceptedIsVisibilityProof": false,
+    "reason": "visibility/manual receipt evidence accepted as no-live evidence only"
+  },
+  "blockers": [],
+  "nextActions": [
+    "feed accepted no-live receipt evidence into the broker finalizer approval status table",
+    "request separate explicit approval before any terminal ACK, GitHub mutation, or live execution"
+  ],
+  "integrationContract": {
+    "transport": "json",
+    "evidenceSchemaVersion": 1,
+    "harnessNeutral": true,
+    "openclawMessageSendRequired": false,
+    "hermesAdapterCompatible": true,
+    "gongyungAdapterCompatible": true,
+    "providerAcceptedIsVisibilityProof": false,
+    "terminalAckRequiresVisibilityProof": true,
+    "grantsApproval": false,
+    "executesAction": false
+  },
+  "semantics": {
+    "receiptIngestorOnly": true,
+    "sourceOnlyNoLive": true,
+    "evidenceDoesNotMutateState": true,
+    "providerAcceptedIsVisibilityProof": false,
+    "terminalAckEligibleDoesNotPermitAck": true,
+    "approvalGrantEvidenceDoesNotGrantApproval": true,
+    "executionNotPermitted": true,
+    "routeIsReadOnly": true,
+    "brokerFinalizerRequired": true,
+    "singleFinalizerRequired": true,
+    "performsGitHubMutation": false,
+    "performsProviderSend": false,
+    "performsTerminalAck": false,
+    "performsRuntimeRestartOrDeploy": false,
+    "performsDbMutation": false,
+    "createsTaskFlowRecords": false,
+    "performsHistoricalReplay": false,
+    "performsReleaseOrPublish": false,
+    "movesSecretsOrCredentials": false
+  }
+}

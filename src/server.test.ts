@@ -6443,3 +6443,93 @@ test("POST /terminal-brief/closeout/approval-receipt returns no-live receipt evi
     await server.close();
   }
 });
+
+test("POST /terminal-brief/closeout/finalizer-approval-status returns no-live finalizer status table", async () => {
+  const server = await startTestServer({ edgeSecret: "test-edge-secret" });
+  try {
+    const approvalDispatch = {
+      kind: "a2a-broker.terminal-brief-approval-dispatch-adapter.packet",
+      version: 1,
+      generatedAt: "2026-05-18T22:30:00.000Z",
+      mode: "read-only/no-live",
+      parentRoundId: "round-709",
+      state: "dispatch_draft_ready",
+      idempotencyKey: "tb-approval-dispatch:fixture-709",
+      finalizer: {
+        brokerOfRecordId: "broker-finalizer",
+        owner: "broker-finalizer",
+        required: true,
+        singleFinalizerRequired: true,
+      },
+      adapter: {
+        id: "gongyung",
+        type: "gongyung",
+      },
+      source: {
+        targetIssueUrl: "https://github.com/jinwon-int/a2a-broker/issues/709",
+        targetPrUrl: "https://github.com/jinwon-int/a2a-broker/pull/711",
+        selectedAction: "post_closeout_comment",
+        selectedTarget: "https://github.com/jinwon-int/a2a-broker/issues/709",
+        requestedActions: 2,
+        nonRequestableActions: 1,
+      },
+      transcript: {
+        target: "hermes://gongyung/approval",
+        channel: "operator",
+      },
+      blockers: [],
+    };
+    const approvalReceipt = {
+      kind: "a2a-broker.terminal-brief-approval-receipt-ingestor.packet",
+      version: 1,
+      generatedAt: "2026-05-18T22:30:00.000Z",
+      mode: "read-only/no-live",
+      parentRoundId: "round-709",
+      state: "accepted",
+      idempotencyKey: "tb-approval-receipt:fixture-709",
+      receiptEvidenceAccepted: true,
+      classification: {
+        providerAccepted: false,
+        currentSessionVisible: true,
+        manualOperatorConfirmed: false,
+        approvalGrantAccepted: true,
+        terminalAckEligible: true,
+      },
+      blockers: [],
+    };
+
+    const res = await fetch(
+      server.baseUrl + "/terminal-brief/closeout/finalizer-approval-status",
+      {
+        method: "POST",
+        headers: jsonHeaders({
+          "x-a2a-edge-secret": "test-edge-secret",
+          "x-a2a-requester-id": "operator-a",
+          "x-a2a-requester-role": "operator",
+        }),
+        body: JSON.stringify({
+          approvalDispatch,
+          approvalReceipt,
+        }),
+      },
+    );
+
+    assert.equal(res.status, 200);
+    assert.equal(res.headers.get("cache-control"), "no-store");
+    const body = await res.json();
+    assert.equal(body.kind, "a2a-broker.terminal-brief-finalizer-approval-status.packet");
+    assert.equal(body.state, "ready_for_finalizer_review");
+    assert.equal(body.table.requiredRowsReady, 3);
+    assert.equal(body.approval.currentSessionVisible, true);
+    assert.equal(body.approval.approvalGrantAccepted, true);
+    assert.equal(body.approval.terminalAckPermitted, false);
+    assert.equal(body.approval.approvalGrantPermitted, false);
+    assert.equal(body.approval.executionPermitted, false);
+    assert.equal(body.defaultOnReadiness.sourceCriteriaMet, true);
+    assert.equal(body.defaultOnReadiness.defaultOnPermitted, false);
+    assert.equal(body.integrationContract.grantsApproval, false);
+    assert.equal(body.integrationContract.executesAction, false);
+  } finally {
+    await server.close();
+  }
+});
