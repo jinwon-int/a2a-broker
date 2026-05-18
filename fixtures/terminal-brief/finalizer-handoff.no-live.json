@@ -1,0 +1,162 @@
+{
+  "kind": "a2a-broker.terminal-brief-finalizer-handoff.fixture",
+  "version": 1,
+  "mode": "read-only/no-live",
+  "brokerOfRecordId": "seoseo",
+  "finalizerOwner": "seoseo",
+  "parentRoundId": "round-695-no-live",
+  "expectedWorkers": ["bangtong", "sogyo", "nosuk"],
+  "expectedTotal": 3,
+  "sidecar": {
+    "spool": [
+      {
+        "schema": "a2a.terminalBrief.hermesGongyungAdapter.spool.v1",
+        "writtenAt": "2026-05-18T11:00:00.000Z",
+        "operator": "gongyung",
+        "envelopeId": "terminal-brief-bangtong",
+        "dedupeKey": "terminal-brief-bangtong",
+        "taskId": "task-bangtong",
+        "worker": "bangtong",
+        "status": "succeeded",
+        "title": "A2A Terminal Brief 완료: bangtong(1/3)",
+        "text": "A2A Terminal Brief 완료: bangtong(1/3)\nRequired receipt proof: current_session_visible",
+        "safety": {
+          "providerSend": false,
+          "terminalAck": false,
+          "dryRunOnly": true
+        }
+      },
+      {
+        "schema": "a2a.terminalBrief.hermesGongyungAdapter.spool.v1",
+        "writtenAt": "2026-05-18T11:01:00.000Z",
+        "operator": "gongyung",
+        "envelopeId": "terminal-brief-sogyo",
+        "dedupeKey": "terminal-brief-sogyo",
+        "taskId": "task-sogyo",
+        "worker": "sogyo",
+        "status": "succeeded",
+        "title": "A2A Terminal Brief 완료: sogyo(2/3)",
+        "text": "A2A Terminal Brief 완료: sogyo(2/3)\nRequired receipt proof: current_session_visible",
+        "safety": {
+          "providerSend": false,
+          "terminalAck": false,
+          "dryRunOnly": true
+        }
+      },
+      {
+        "schema": "a2a.terminalBrief.hermesGongyungAdapter.spool.v1",
+        "writtenAt": "2026-05-18T11:02:00.000Z",
+        "operator": "gongyung",
+        "envelopeId": "terminal-brief-nosuk",
+        "dedupeKey": "terminal-brief-nosuk",
+        "taskId": "task-nosuk",
+        "worker": "nosuk",
+        "status": "succeeded",
+        "title": "A2A Terminal Brief 완료: nosuk(3/3)",
+        "text": "A2A Terminal Brief 완료: nosuk(3/3)\nRequired receipt proof: current_session_visible",
+        "safety": {
+          "providerSend": false,
+          "terminalAck": false,
+          "dryRunOnly": true
+        }
+      }
+    ],
+    "receipts": [
+      {
+        "ackTerminalEvent": false,
+        "terminalReceiptStatus": "produced",
+        "receiptId": "hermes-gongyung:gongyung:terminal-brief-nosuk",
+        "reason": "spooled for Gongyung review; operator-visible receipt is not confirmed"
+      }
+    ]
+  },
+  "events": [
+    {
+      "id": "task-bangtong-succeeded-20260518T110000Z",
+      "kind": "task.terminal",
+      "taskEventId": 1,
+      "payload": {
+        "taskId": "task-bangtong",
+        "status": "succeeded",
+        "parentRoundId": "round-695-no-live",
+        "originBrokerId": "seoseo",
+        "brokerOfRecordId": "seoseo",
+        "worker": "bangtong",
+        "repo": "jinwon-int/a2a-broker",
+        "issue": 695,
+        "taskBrief": "Terminal Brief finalizer handoff fixture lane 1",
+        "prUrl": "https://github.com/jinwon-int/a2a-broker/pull/701",
+        "parentRoundProgress": 1,
+        "parentRoundTotal": 3,
+        "createdAt": "2026-05-18T11:00:00.000Z",
+        "updatedAt": "2026-05-18T11:00:00.000Z",
+        "completedAt": "2026-05-18T11:00:00.000Z"
+      },
+      "createdAt": "2026-05-18T11:00:00.000Z",
+      "receipt": {
+        "status": "produced",
+        "updatedAt": "2026-05-18T11:00:00.000Z",
+        "receiptId": "hermes-gongyung:gongyung:task-bangtong"
+      },
+      "attempts": 0
+    },
+    {
+      "id": "task-sogyo-succeeded-20260518T110100Z",
+      "kind": "task.terminal",
+      "taskEventId": 2,
+      "payload": {
+        "taskId": "task-sogyo",
+        "status": "succeeded",
+        "parentRoundId": "round-695-no-live",
+        "originBrokerId": "seoseo",
+        "brokerOfRecordId": "seoseo",
+        "worker": "sogyo",
+        "repo": "jinwon-int/a2a-broker",
+        "issue": 695,
+        "taskBrief": "Terminal Brief finalizer handoff fixture lane 2",
+        "doneUrl": "https://github.com/jinwon-int/a2a-broker/issues/695#issuecomment-sogyo-done",
+        "parentRoundProgress": 2,
+        "parentRoundTotal": 3,
+        "createdAt": "2026-05-18T11:01:00.000Z",
+        "updatedAt": "2026-05-18T11:01:00.000Z",
+        "completedAt": "2026-05-18T11:01:00.000Z"
+      },
+      "createdAt": "2026-05-18T11:01:00.000Z",
+      "receipt": {
+        "status": "produced",
+        "updatedAt": "2026-05-18T11:01:00.000Z",
+        "receiptId": "hermes-gongyung:gongyung:task-sogyo"
+      },
+      "attempts": 0
+    },
+    {
+      "id": "task-nosuk-succeeded-20260518T110200Z",
+      "kind": "task.terminal",
+      "taskEventId": 3,
+      "payload": {
+        "taskId": "task-nosuk",
+        "status": "succeeded",
+        "parentRoundId": "round-695-no-live",
+        "originBrokerId": "seoseo",
+        "brokerOfRecordId": "seoseo",
+        "worker": "nosuk",
+        "repo": "jinwon-int/a2a-broker",
+        "issue": 695,
+        "taskBrief": "Terminal Brief finalizer handoff fixture lane 3",
+        "prUrl": "https://github.com/jinwon-int/a2a-broker/pull/702",
+        "parentRoundProgress": 3,
+        "parentRoundTotal": 3,
+        "createdAt": "2026-05-18T11:02:00.000Z",
+        "updatedAt": "2026-05-18T11:02:00.000Z",
+        "completedAt": "2026-05-18T11:02:00.000Z"
+      },
+      "createdAt": "2026-05-18T11:02:00.000Z",
+      "receipt": {
+        "status": "produced",
+        "updatedAt": "2026-05-18T11:02:00.000Z",
+        "receiptId": "hermes-gongyung:gongyung:task-nosuk"
+      },
+      "attempts": 0
+    }
+  ]
+}

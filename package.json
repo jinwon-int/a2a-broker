@@ -33,6 +33,7 @@
     "terminal_brief_completion_watcher": "npm run build && node scripts/terminal-brief-completion-watcher.mjs",
     "terminal_brief_final_count_closeout": "npm run build && node scripts/terminal-brief-final-count-closeout.mjs",
     "terminal_brief_sidecar_integration_rehearsal": "npm run build && node scripts/terminal-brief-sidecar-integration-rehearsal.mjs",
+    "terminal_brief_finalizer_handoff": "npm run build && node scripts/terminal-brief-finalizer-handoff.mjs",
     "broker_cleanup_safe_prune": "npm run build && node scripts/broker-cleanup-safe-prune.mjs",
     "terminal_brief_activation_report": "node scripts/terminal-brief-activation-report.mjs",
     "test:terminal_brief_activation_report": "node --test scripts/terminal-brief-activation-report.test.mjs",
