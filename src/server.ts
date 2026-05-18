@@ -145,6 +145,11 @@ import {
   extractTerminalBriefApprovalReceiptEvidence,
 } from "./core/terminal-brief-approval-receipt-ingestor.js";
 import {
+  buildTerminalBriefFinalizerApprovalStatus,
+  extractTerminalBriefFinalizerApprovalReceiptStatus,
+  extractTerminalBriefFinalizerApprovalStatusDispatch,
+} from "./core/terminal-brief-finalizer-approval-status.js";
+import {
   buildBrokerCleanupPlan,
   executeBrokerCleanupPlan,
   validateCleanupExecution,
@@ -1392,6 +1397,27 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
           approvalDispatch,
           extractTerminalBriefApprovalReceiptEvidence(body),
           { maxAgeMs },
+        );
+        return sendJson(res, 200, report, {
+          "cache-control": "no-store",
+        });
+      }
+
+      if (req.method === "POST" && path === "/terminal-brief/closeout/finalizer-approval-status") {
+        if (enforceRequesterIdentity) {
+          assertRequesterHasRole(requesterIdentity, ["hub", "operator"], "terminal_brief.finalizer_approval_status.read");
+        }
+        const body = await readJson<Record<string, unknown>>(req);
+        let approvalDispatch;
+        try {
+          approvalDispatch = extractTerminalBriefFinalizerApprovalStatusDispatch(body);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "invalid finalizer approval status input";
+          throw new BrokerError("bad_request", message);
+        }
+        const report = buildTerminalBriefFinalizerApprovalStatus(
+          approvalDispatch,
+          extractTerminalBriefFinalizerApprovalReceiptStatus(body),
         );
         return sendJson(res, 200, report, {
           "cache-control": "no-store",
