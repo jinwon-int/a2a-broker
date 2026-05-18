@@ -7178,6 +7178,15 @@ test("POST /terminal-brief/sidecar/executor-invocation-rehearsal returns no-live
     assert.equal(body.invocationPlan.commandShape.commandExecutionPermitted, false);
     assert.equal(body.invocationPlan.commandShape.processSpawnPermitted, false);
     assert.equal(body.invocationPlan.commandShape.secretsIncluded, false);
+    assert.equal(body.invocationPlan.adapterContract.version, 1);
+    assert.equal(body.invocationPlan.adapterContract.transport, "json-stdin-stdout");
+    assert.equal(body.invocationPlan.adapterContract.input.envKeysOnly, true);
+    assert.equal(body.invocationPlan.adapterContract.output.mustReportAbortEvidence, true);
+    assert.equal(body.invocationPlan.adapterContract.output.providerAcceptedIsReceiptProof, false);
+    assert.equal(body.invocationPlan.adapterContract.output.terminalAckPermitted, false);
+    assert.equal(body.readiness.adapterContractReady, true);
+    assert.equal(body.integrationContract.adapterContractVersion, 1);
+    assert.equal(body.integrationContract.requiresAbortEvidence, true);
     assert.equal(body.integrationContract.invokesExecutor, false);
     assert.equal(body.integrationContract.spawnsProcess, false);
     assert.equal(body.integrationContract.startsSidecar, false);

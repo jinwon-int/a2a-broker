@@ -75,10 +75,32 @@ export interface TerminalBriefSidecarExecutorInvocationRehearsalPacket {
     abortConditions: string[];
     rollbackInstructions: string[];
     expectedEvidence: string[];
+    adapterContract: {
+      version: 1;
+      adapterName: string;
+      transport: "json-stdin-stdout";
+      input: {
+        packetKind: "a2a-broker.terminal-brief-sidecar-executor-invocation-rehearsal.packet";
+        commandShapeKind: "metadata_only";
+        commandExecutionPermitted: false;
+        processSpawnPermitted: false;
+        envKeysOnly: true;
+        secretsIncluded: false;
+      };
+      output: {
+        statusValues: ("ready" | "aborted" | "blocked")[];
+        mustReportAbortEvidence: true;
+        providerAcceptedIsReceiptProof: false;
+        terminalAckPermitted: false;
+        sidecarStartProofRequiredForLaterRuntime: true;
+      };
+      abortEvidenceRequirements: string[];
+    };
   };
   readiness: {
     sourceCriteriaMet: boolean;
     executorInvocationRehearsalReady: boolean;
+    adapterContractReady: boolean;
     startExecutorDispatchPermitted: false;
     executorInvocationPermitted: false;
     processSpawnPermitted: false;
@@ -104,6 +126,8 @@ export interface TerminalBriefSidecarExecutorInvocationRehearsalPacket {
     hermesAdapterCompatible: true;
     gongyungAdapterCompatible: true;
     consumesStartExecutorGatePacket: true;
+    adapterContractVersion: 1;
+    requiresAbortEvidence: true;
     dispatchesStartExecutor: false;
     invokesExecutor: false;
     spawnsProcess: false;
@@ -117,6 +141,9 @@ export interface TerminalBriefSidecarExecutorInvocationRehearsalPacket {
     rehearsalDoesNotMutateState: true;
     commandShapeIsMetadataOnly: true;
     commandShapeDoesNotContainSecretValues: true;
+    adapterContractOnly: true;
+    adapterOutputDoesNotImplyReceiptProof: true;
+    abortEvidenceRequiredBeforeRuntimeApproval: true;
     startExecutorGateDoesNotPermitInvocation: true;
     providerAcceptedIsVisibilityProof: false;
     terminalAckEligibleDoesNotPermitAck: true;
@@ -148,6 +175,8 @@ export function buildTerminalBriefSidecarExecutorInvocationRehearsal(
   const sourceCriteriaMet = state === "ready_for_executor_invocation_rehearsal";
   const commandShape = buildCommandShape(gate, options);
   const missingEvidence = missingEvidenceFor(gate);
+  const adapterName = optionalString(options.adapterName ?? options.adapter_name) ?? "harness-neutral";
+  const abortEvidence = abortEvidenceRequirements();
   return {
     kind: "a2a-broker.terminal-brief-sidecar-executor-invocation-rehearsal.packet",
     version: 1,
@@ -170,7 +199,7 @@ export function buildTerminalBriefSidecarExecutorInvocationRehearsal(
       rehearsalOnly: true,
       supervisedDryRunOnly: true,
       executorName: optionalString(options.executorName ?? options.executor_name) ?? gate.startPlan.requestedExecutor,
-      adapterName: optionalString(options.adapterName ?? options.adapter_name) ?? "harness-neutral",
+      adapterName,
       executorRuntime: optionalString(options.executorRuntime ?? options.executor_runtime) ?? "metadata-only",
       supervisor: optionalString(options.supervisor) ?? "broker-finalizer-review",
       healthCheckTarget: optionalString(options.healthCheckTarget ?? options.health_check_target),
@@ -197,10 +226,32 @@ export function buildTerminalBriefSidecarExecutorInvocationRehearsal(
         "rerun the start executor gate and rehearsal after any source evidence refresh",
       ],
       expectedEvidence: expectedEvidence(options),
+      adapterContract: {
+        version: 1,
+        adapterName,
+        transport: "json-stdin-stdout",
+        input: {
+          packetKind: "a2a-broker.terminal-brief-sidecar-executor-invocation-rehearsal.packet",
+          commandShapeKind: "metadata_only",
+          commandExecutionPermitted: false,
+          processSpawnPermitted: false,
+          envKeysOnly: true,
+          secretsIncluded: false,
+        },
+        output: {
+          statusValues: ["ready", "aborted", "blocked"],
+          mustReportAbortEvidence: true,
+          providerAcceptedIsReceiptProof: false,
+          terminalAckPermitted: false,
+          sidecarStartProofRequiredForLaterRuntime: true,
+        },
+        abortEvidenceRequirements: abortEvidence,
+      },
     },
     readiness: {
       sourceCriteriaMet,
       executorInvocationRehearsalReady: sourceCriteriaMet,
+      adapterContractReady: sourceCriteriaMet,
       startExecutorDispatchPermitted: false,
       executorInvocationPermitted: false,
       processSpawnPermitted: false,
@@ -242,6 +293,8 @@ export function buildTerminalBriefSidecarExecutorInvocationRehearsal(
       hermesAdapterCompatible: true,
       gongyungAdapterCompatible: true,
       consumesStartExecutorGatePacket: true,
+      adapterContractVersion: 1,
+      requiresAbortEvidence: true,
       dispatchesStartExecutor: false,
       invokesExecutor: false,
       spawnsProcess: false,
@@ -255,6 +308,9 @@ export function buildTerminalBriefSidecarExecutorInvocationRehearsal(
       rehearsalDoesNotMutateState: true,
       commandShapeIsMetadataOnly: true,
       commandShapeDoesNotContainSecretValues: true,
+      adapterContractOnly: true,
+      adapterOutputDoesNotImplyReceiptProof: true,
+      abortEvidenceRequiredBeforeRuntimeApproval: true,
       startExecutorGateDoesNotPermitInvocation: true,
       providerAcceptedIsVisibilityProof: false,
       terminalAckEligibleDoesNotPermitAck: true,
@@ -325,9 +381,14 @@ export function renderTerminalBriefSidecarExecutorInvocationRehearsalMarkdown(
       + " runtime=" + packet.invocationPlan.executorRuntime
       + " commandExecutionPermitted=" + packet.invocationPlan.commandShape.commandExecutionPermitted
       + " processSpawnPermitted=" + packet.invocationPlan.commandShape.processSpawnPermitted,
+    "Adapter contract: version=" + packet.invocationPlan.adapterContract.version
+      + " transport=" + packet.invocationPlan.adapterContract.transport
+      + " abortEvidenceRequirements=" + packet.invocationPlan.adapterContract.abortEvidenceRequirements.length
+      + " terminalAckPermitted=" + packet.invocationPlan.adapterContract.output.terminalAckPermitted,
     "",
     "Readiness: sourceCriteriaMet=" + packet.readiness.sourceCriteriaMet
       + " executorInvocationRehearsalReady=" + packet.readiness.executorInvocationRehearsalReady
+      + " adapterContractReady=" + packet.readiness.adapterContractReady
       + " startExecutorDispatchPermitted=" + packet.readiness.startExecutorDispatchPermitted
       + " executorInvocationPermitted=" + packet.readiness.executorInvocationPermitted
       + " sidecarStartPermitted=" + packet.readiness.sidecarStartPermitted
@@ -338,7 +399,7 @@ export function renderTerminalBriefSidecarExecutorInvocationRehearsalMarkdown(
     "Next actions:",
     ...packet.nextActions.map((action) => "- " + action),
     "",
-    "Safety: executor invocation rehearsal only; command shape is metadata only; does not dispatch executor, spawn a process, start sidecar, enable default-on, send providers, ACK/replay terminal rows, mutate GitHub/DB/TaskFlow state, restart/deploy, replay history, release, publish, or move secrets.",
+    "Safety: executor invocation rehearsal and adapter contract only; command shape is metadata only; adapter output is not receipt proof; does not dispatch executor, spawn a process, start sidecar, enable default-on, send providers, ACK/replay terminal rows, mutate GitHub/DB/TaskFlow state, restart/deploy, replay history, release, publish, or move secrets.",
   ].join("\n");
 }
 
@@ -443,6 +504,17 @@ function expectedEvidence(options: TerminalBriefSidecarExecutorInvocationRehears
     "operator-reviewed metadata-only invocation plan",
     "separate executor runtime evidence if a later approved dry-run start is performed",
     "no provider send, terminal ACK/replay, default-on enablement, deploy/restart, or DB mutation evidence from this rehearsal",
+  ];
+}
+
+function abortEvidenceRequirements(): string[] {
+  return [
+    "abort status must include a stable abortCode",
+    "abort status must include observedAt timestamp",
+    "abort status must identify which preflight or runtime guard failed",
+    "abort evidence must not include raw secrets, tokens, private keys, or session cookies",
+    "provider accepted/send status must remain non-receipt evidence",
+    "terminal ACK/replay evidence is not produced by this adapter contract",
   ];
 }
 

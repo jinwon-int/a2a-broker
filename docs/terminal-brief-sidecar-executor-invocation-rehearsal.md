@@ -59,6 +59,29 @@ The command shape is metadata only. It may describe the command a later
 approved executor would use, but it must not contain secret values and it never
 executes that command.
 
+## Adapter contract
+
+The rehearsal also emits a versioned adapter contract for a future separately
+approved executor runtime. The contract is still source-only/no-live:
+
+- transport=json-stdin-stdout
+- packetKind=a2a-broker.terminal-brief-sidecar-executor-invocation-rehearsal.packet
+- commandShapeKind=metadata_only
+- commandExecutionPermitted=false
+- processSpawnPermitted=false
+- envKeysOnly=true
+- secretsIncluded=false
+- output status values: ready, aborted, blocked
+- mustReportAbortEvidence=true
+- providerAcceptedIsReceiptProof=false
+- terminalAckPermitted=false
+- sidecarStartProofRequiredForLaterRuntime=true
+
+Abort evidence must identify a stable abortCode, observedAt timestamp, failed
+guard/preflight, and sanitized evidence. Provider accepted/send status remains
+non-receipt evidence, and this adapter contract does not produce terminal
+ACK/replay evidence.
+
 ## CLI
 
     npm run terminal_brief_sidecar_executor_invocation_rehearsal -- \
