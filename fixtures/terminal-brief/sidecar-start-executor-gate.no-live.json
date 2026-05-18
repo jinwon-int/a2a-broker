@@ -1,0 +1,119 @@
+{
+  "sidecarActivationReceipt": {
+    "kind": "a2a-broker.terminal-brief-sidecar-activation-receipt-ingestor.packet",
+    "version": 1,
+    "generatedAt": "2026-05-18T16:00:00.000Z",
+    "mode": "read-only/no-live",
+    "parentRoundId": "round-718",
+    "state": "accepted",
+    "dryRunOnly": true,
+    "sourceOnlyNoLive": true,
+    "receiptEvidenceAccepted": true,
+    "approvalEvidenceAccepted": true,
+    "idempotencyKey": "tb-sidecar-activation-receipt:fixture-718",
+    "source": {
+      "activationApprovalState": "approval_request_draft_ready",
+      "activationApprovalIdempotencyKey": "tb-sidecar-activation-approval:fixture-718",
+      "requestedAction": "approve_supervised_terminal_brief_sidecar_dry_run_start",
+      "requestedBy": "broker-finalizer",
+      "operatorTarget": "operator-a",
+      "dispatchRequired": true,
+      "dispatchPermitted": false
+    },
+    "evidence": {
+      "received": 3,
+      "acceptedKinds": [
+        "current_session_visible",
+        "approval_grant"
+      ],
+      "staleKinds": [],
+      "conflictingKinds": [],
+      "rejectedKinds": [],
+      "records": []
+    },
+    "classification": {
+      "providerAccepted": true,
+      "currentSessionVisible": true,
+      "manualOperatorConfirmed": false,
+      "approvalGrantAccepted": true,
+      "receiptProofAccepted": true,
+      "rejected": false,
+      "expired": false,
+      "stale": false,
+      "terminalAckEligible": true,
+      "providerAcceptedIsVisibilityProof": false,
+      "reason": "visibility/manual receipt evidence and matching approval grant evidence accepted as no-live evidence only"
+    },
+    "readiness": {
+      "sourceCriteriaMet": true,
+      "approvalEvidenceAccepted": true,
+      "sidecarStartPermitted": false,
+      "defaultOnPermitted": false,
+      "liveActivationPermitted": false,
+      "approvalGrantPermitted": false,
+      "providerSendPermitted": false,
+      "terminalAckPermitted": false,
+      "executionPermitted": false,
+      "blockers": [
+        "approval grant evidence does not grant approval in this ingestor",
+        "sidecar start still requires a separate approved executor path"
+      ],
+      "nextAction": "feed accepted no-live approval evidence into the supervised dry-run start executor gate"
+    },
+    "blockers": [],
+    "nextActions": [],
+    "approvalSensitiveActionsExcluded": [],
+    "integrationContract": {
+      "transport": "json",
+      "evidenceSchemaVersion": 1,
+      "harnessNeutral": true,
+      "openclawMessageSendRequired": false,
+      "hermesAdapterCompatible": true,
+      "gongyungAdapterCompatible": true,
+      "consumesActivationApprovalPacket": true,
+      "providerAcceptedIsVisibilityProof": false,
+      "terminalAckRequiresVisibilityProof": true,
+      "grantsApproval": false,
+      "startsSidecar": false,
+      "enablesDefaultOn": false,
+      "executesAction": false
+    },
+    "semantics": {
+      "receiptIngestorOnly": true,
+      "sourceOnlyNoLive": true,
+      "evidenceDoesNotMutateState": true,
+      "providerAcceptedIsVisibilityProof": false,
+      "terminalAckEligibleDoesNotPermitAck": true,
+      "approvalGrantEvidenceDoesNotGrantApproval": true,
+      "sidecarStartRequiresSeparateApprovedExecutor": true,
+      "defaultOnNotEnabledByThisPacket": true,
+      "executionNotPermitted": true,
+      "routeIsReadOnly": true,
+      "brokerFinalizerRequired": true,
+      "performsGitHubMutation": false,
+      "performsProviderSend": false,
+      "performsTerminalAck": false,
+      "performsRuntimeRestartOrDeploy": false,
+      "performsDbMutation": false,
+      "createsTaskFlowRecords": false,
+      "performsHistoricalReplay": false,
+      "performsReleaseOrPublish": false,
+      "movesSecretsOrCredentials": false
+    }
+  },
+  "startExecutorGate": {
+    "requestedExecutor": "gongyung-sidecar-dry-run-executor",
+    "operatorApprovalReference": "operator-visible-approval-1",
+    "dryRunReason": "sidecar-gongyung-spool-dry-run",
+    "commandName": "terminal-brief-sidecar",
+    "commandArgs": [
+      "--dry-run",
+      "--poll-ms",
+      "15000"
+    ],
+    "envKeys": [
+      "EDGE_SECRET"
+    ],
+    "abortQueueBacklog": 1000
+  }
+}

@@ -166,6 +166,11 @@ import {
   extractTerminalBriefSidecarActivationReceiptEvidence,
 } from "./core/terminal-brief-sidecar-activation-receipt-ingestor.js";
 import {
+  buildTerminalBriefSidecarStartExecutorGate,
+  extractTerminalBriefSidecarStartExecutorGateOptions,
+  extractTerminalBriefSidecarStartExecutorGateReceipt,
+} from "./core/terminal-brief-sidecar-start-executor-gate.js";
+import {
   buildBrokerCleanupPlan,
   executeBrokerCleanupPlan,
   validateCleanupExecution,
@@ -1498,6 +1503,27 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
         const report = buildTerminalBriefSidecarActivationReceiptIngestor(
           activationApproval,
           extractTerminalBriefSidecarActivationReceiptEvidence(body),
+        );
+        return sendJson(res, 200, report, {
+          "cache-control": "no-store",
+        });
+      }
+
+      if (req.method === "POST" && path === "/terminal-brief/sidecar/start-executor-gate") {
+        if (enforceRequesterIdentity) {
+          assertRequesterHasRole(requesterIdentity, ["hub", "operator"], "terminal_brief.sidecar_start_executor_gate.read");
+        }
+        const body = await readJson<Record<string, unknown>>(req);
+        let activationReceipt;
+        try {
+          activationReceipt = extractTerminalBriefSidecarStartExecutorGateReceipt(body);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "invalid sidecar start executor gate input";
+          throw new BrokerError("bad_request", message);
+        }
+        const report = buildTerminalBriefSidecarStartExecutorGate(
+          activationReceipt,
+          extractTerminalBriefSidecarStartExecutorGateOptions(body),
         );
         return sendJson(res, 200, report, {
           "cache-control": "no-store",
