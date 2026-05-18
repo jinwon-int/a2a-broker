@@ -5145,6 +5145,239 @@ test("decision-dialectic read model returns generic stage rail and dynamic role 
   }
 });
 
+test("decision-dialectic execution advances phase tasks and applies ordered patches", async () => {
+  const server = await startTestServer({
+    edgeSecret: "test-edge-secret",
+    enforceRequesterIdentity: true,
+  });
+  try {
+    for (const workerId of ["sogyo", "nosuk", "bangtong", "yukson"]) {
+      await registerTestWorker(server.baseUrl, workerId, "analyst", "test-edge-secret");
+    }
+
+    const createRes = await fetch(`${server.baseUrl}/tasks`, {
+      method: "POST",
+      headers: jsonHeaders({
+        "x-a2a-edge-secret": "test-edge-secret",
+        "x-a2a-requester-id": "hub-a",
+        "x-a2a-requester-role": "hub",
+      }),
+      body: JSON.stringify({
+        intent: "analyze",
+        requester: { id: "hub-a", kind: "node", role: "hub" },
+        target: { id: "sogyo", kind: "node", role: "analyst" },
+        assignedWorkerId: "sogyo",
+        brokerOfRecord: "seoseo",
+        teamId: "team1",
+        message: "run generic decision dialectic",
+        payload: buildDecisionDialecticPayload(
+          {
+            revision: 0,
+            state: "OPEN",
+            thesis: undefined,
+            antithesis: undefined,
+            rebuttal: undefined,
+            synthesis: undefined,
+            decision: undefined,
+            outcome: undefined,
+          },
+          "thesis",
+        ),
+      }),
+    });
+    assert.equal(createRes.status, 201);
+    const parent = await createRes.json();
+    const fixture = buildDecisionDialecticTaskFixture();
+
+    const advanceThesisRes = await fetch(`${server.baseUrl}/tasks/${parent.id}/decision-dialectic/advance`, {
+      method: "POST",
+      headers: jsonHeaders({
+        "x-a2a-edge-secret": "test-edge-secret",
+        "x-a2a-requester-id": "hub-a",
+        "x-a2a-requester-role": "hub",
+      }),
+      body: JSON.stringify({}),
+    });
+    assert.equal(advanceThesisRes.status, 201);
+    const thesisAdvance = await advanceThesisRes.json();
+    assert.equal(thesisAdvance.phase, "thesis");
+    assert.equal(thesisAdvance.parentTaskId, parent.id);
+    assert.equal(thesisAdvance.childTask.parentTaskId, parent.id);
+    assert.equal(thesisAdvance.childTask.targetNodeId, "sogyo");
+    assert.equal(thesisAdvance.childTask.assignedWorkerId, "sogyo");
+    assert.equal(thesisAdvance.childTask.payload.promptSpec.schemaName, "decisionDialectic.thesis.v1");
+    assert.equal(thesisAdvance.childTask.payload.execution.expectedRevision, 0);
+    assert.equal(thesisAdvance.childTask.brokerOfRecord, "seoseo");
+    assert.equal(thesisAdvance.childTask.teamId, "team1");
+
+    const thesisPatchRes = await fetch(`${server.baseUrl}/tasks/${parent.id}/decision-dialectic/patch`, {
+      method: "POST",
+      headers: jsonHeaders({
+        "x-a2a-edge-secret": "test-edge-secret",
+        "x-a2a-requester-id": "sogyo",
+        "x-a2a-requester-role": "analyst",
+      }),
+      body: JSON.stringify({
+        op: "append.thesis",
+        patchId: "patch-thesis-1",
+        taskId: "dd-task-01",
+        expectedRevision: 0,
+        authorAgent: "sogyo",
+        at: "2026-05-18T00:05:00.000Z",
+        payload: fixture.thesis,
+      }),
+    });
+    assert.equal(thesisPatchRes.status, 200);
+    const thesisReadModel = await thesisPatchRes.json();
+    assert.equal(thesisReadModel.contract.revision, 1);
+    assert.equal(thesisReadModel.contract.state, "THESIS_SUBMITTED");
+    assert.equal(thesisReadModel.contract.phase, "antithesis");
+    assert.equal(thesisReadModel.stages.thesis.present, true);
+
+    const advanceAntithesisRes = await fetch(`${server.baseUrl}/tasks/${parent.id}/decision-dialectic/advance`, {
+      method: "POST",
+      headers: jsonHeaders({
+        "x-a2a-edge-secret": "test-edge-secret",
+        "x-a2a-requester-id": "hub-a",
+        "x-a2a-requester-role": "hub",
+      }),
+      body: JSON.stringify({}),
+    });
+    assert.equal(advanceAntithesisRes.status, 201);
+    const antithesisAdvance = await advanceAntithesisRes.json();
+    assert.equal(antithesisAdvance.phase, "antithesis");
+    assert.equal(antithesisAdvance.childTask.targetNodeId, "nosuk");
+    assert.equal(antithesisAdvance.childTask.payload.execution.expectedRevision, 1);
+
+    for (const patch of [
+      {
+        op: "append.antithesis",
+        patchId: "patch-antithesis-1",
+        expectedRevision: 1,
+        authorAgent: "nosuk",
+        payload: fixture.antithesis,
+      },
+      {
+        op: "append.rebuttal",
+        patchId: "patch-rebuttal-1",
+        expectedRevision: 2,
+        authorAgent: "bangtong",
+        payload: fixture.rebuttal,
+      },
+      {
+        op: "set.synthesis_decision",
+        patchId: "patch-synthesis-1",
+        expectedRevision: 3,
+        authorAgent: "yukson",
+        payload: {
+          author: { agentId: "yukson" },
+          submittedAt: "2026-05-18T00:20:00.000Z",
+          synthesis: fixture.synthesis,
+          decision: fixture.decision,
+        },
+      },
+    ]) {
+      const patchRes = await fetch(`${server.baseUrl}/tasks/${parent.id}/decision-dialectic/patch`, {
+        method: "POST",
+        headers: jsonHeaders({
+          "x-a2a-edge-secret": "test-edge-secret",
+          "x-a2a-requester-id": patch.authorAgent,
+          "x-a2a-requester-role": "analyst",
+        }),
+        body: JSON.stringify({
+          ...patch,
+          taskId: "dd-task-01",
+          at: "2026-05-18T00:20:00.000Z",
+        }),
+      });
+      assert.equal(patchRes.status, 200);
+    }
+
+    const readRes = await fetch(`${server.baseUrl}/tasks/${parent.id}/decision-dialectic`, {
+      headers: {
+        "x-a2a-edge-secret": "test-edge-secret",
+        "x-a2a-requester-id": "hub-a",
+        "x-a2a-requester-role": "hub",
+      },
+    });
+    assert.equal(readRes.status, 200);
+    const readModel = await readRes.json();
+    assert.equal(readModel.contract.revision, 4);
+    assert.equal(readModel.contract.state, "DECISION_ROUTED");
+    assert.equal(readModel.contract.phase, "outcome");
+    assert.equal(readModel.decisionCard.verdict, "PROCEED_WITH_GUARDRAILS");
+    assert.equal(readModel.decisionCard.route, "yukson");
+  } finally {
+    await server.close();
+  }
+});
+
+test("decision-dialectic execution rejects out-of-order patches", async () => {
+  const server = await startTestServer({
+    edgeSecret: "test-edge-secret",
+    enforceRequesterIdentity: true,
+  });
+  try {
+    await registerTestWorker(server.baseUrl, "sogyo", "analyst", "test-edge-secret");
+    await registerTestWorker(server.baseUrl, "nosuk", "analyst", "test-edge-secret");
+    const createRes = await fetch(`${server.baseUrl}/tasks`, {
+      method: "POST",
+      headers: jsonHeaders({
+        "x-a2a-edge-secret": "test-edge-secret",
+        "x-a2a-requester-id": "hub-a",
+        "x-a2a-requester-role": "hub",
+      }),
+      body: JSON.stringify({
+        intent: "analyze",
+        requester: { id: "hub-a", kind: "node", role: "hub" },
+        target: { id: "sogyo", kind: "node", role: "analyst" },
+        assignedWorkerId: "sogyo",
+        message: "run generic decision dialectic",
+        payload: buildDecisionDialecticPayload(
+          {
+            revision: 0,
+            state: "OPEN",
+            thesis: undefined,
+            antithesis: undefined,
+            rebuttal: undefined,
+            synthesis: undefined,
+            decision: undefined,
+            outcome: undefined,
+          },
+          "thesis",
+        ),
+      }),
+    });
+    assert.equal(createRes.status, 201);
+    const parent = await createRes.json();
+    const fixture = buildDecisionDialecticTaskFixture();
+
+    const patchRes = await fetch(`${server.baseUrl}/tasks/${parent.id}/decision-dialectic/patch`, {
+      method: "POST",
+      headers: jsonHeaders({
+        "x-a2a-edge-secret": "test-edge-secret",
+        "x-a2a-requester-id": "nosuk",
+        "x-a2a-requester-role": "analyst",
+      }),
+      body: JSON.stringify({
+        op: "append.antithesis",
+        patchId: "patch-antithesis-early",
+        taskId: "dd-task-01",
+        expectedRevision: 0,
+        authorAgent: "nosuk",
+        at: "2026-05-18T00:10:00.000Z",
+        payload: fixture.antithesis,
+      }),
+    });
+    assert.equal(patchRes.status, 409);
+    const body = await patchRes.json();
+    assert.equal(body.error.code, "invalid_transition");
+    assert.match(body.error.message, /thesis is required/);
+  } finally {
+    await server.close();
+  }
+});
+
 test("decision-dialectic route returns 404 when task is not a decision.dialectic", async () => {
   const server = await startTestServer({
     edgeSecret: "test-edge-secret",

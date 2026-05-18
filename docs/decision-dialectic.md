@@ -56,6 +56,29 @@ Operators can inspect a generic decision dialectic task with:
 
 The response mirrors the trading dialectic projection: contract metadata, dynamic roles, stage rail, decision card, and compact summaries.
 
+## Execution Round
+
+The broker can now drive a decision.dialectic round with two explicit source-only endpoints:
+
+    POST /tasks/:id/decision-dialectic/advance
+    POST /tasks/:id/decision-dialectic/patch
+
+advance is hub/operator-only. It reads the parent task contract, determines the next missing phase, and creates a child broker task assigned to that phase's configured worker. The child task keeps parentTaskId/referenceTaskIds links, inherits broker/team ownership, and carries the phase promptSpec plus expectedRevision in payload.execution.
+
+patch is worker-authored by default, with hub/operator override for broker-finalizer repair. It appends exactly one phase payload at the expected revision, rejects out-of-order or duplicate phases, and keeps the parent task payload as the source of truth. Rebuttal defaults to roles.rebuttalAgent when present, otherwise roles.thesisAgent.
+
+The fail-closed rules are:
+
+- thesis must precede antithesis
+- antithesis must precede rebuttal
+- thesis, antithesis, and rebuttal must precede synthesis/decision
+- synthesis.verdict must match decision.action
+- decisionBasisRevision must match the current revision
+- blocker veto flags require decision.action=VETO and hardVeto=true
+- already routed/abstained/vetoed/settled rounds reject further phase mutation except outcome
+
+These endpoints do not perform provider sends, terminal ACK/replay, deploys, DB cleanup, or live canaries. Those remain separate approval-gated operations.
+
 ## Compatibility
 
 trading.dialectic remains unchanged in v1. Existing trading payloads and GET /tasks/:id/trading-dialectic callers are intentionally not migrated by this first slice.

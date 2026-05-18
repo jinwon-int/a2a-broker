@@ -63,6 +63,7 @@ import type {
   AuditEvent,
   AuditListFilters,
   A2AExchangeIntent,
+  A2APartyRef,
   A2AWorkerEnvironment,
   A2AExchangeMessageRecord,
   A2AExchangeMessageRequest,
@@ -268,6 +269,7 @@ export type TaskUpdateReason =
   | "succeeded"
   | "failed"
   | "canceled"
+  | "updated"
   | "reassigned"
   | "requeued"
   | "dead_lettered"
@@ -1461,6 +1463,32 @@ export class InMemoryA2ABroker {
       sortNewestFirst,
     );
     return applyTaskListLimit(tasks, filters?.limit);
+  }
+
+  updateTaskPayload(
+    taskId: string,
+    payload: Record<string, unknown>,
+    request: { actor: A2APartyRef; note?: string },
+  ): TaskRecord {
+    const task = this.requireTask(taskId);
+    if (!request.actor?.id) {
+      throw new BrokerError("bad_request", "actor.id is required");
+    }
+    const now = isoNow();
+    task.payload = normalizeTaskPayload(payload);
+    task.updatedAt = now;
+    this.setTaskRecord(task);
+    this.appendAuditEvent({
+      actorId: request.actor.id,
+      action: "task.updated",
+      targetType: "task",
+      targetId: task.id,
+      proposalId: task.proposalId,
+      note: request.note ?? "task payload updated",
+    });
+    this.persistState();
+    this.emitTaskUpdate(task, "updated");
+    return task;
   }
 
   reassignTask(taskId: string, request: TaskReassignRequest): TaskRecord {
