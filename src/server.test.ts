@@ -7196,6 +7196,51 @@ test("POST /terminal-brief/sidecar/executor-invocation-rehearsal returns no-live
   }
 });
 
+test("POST /terminal-brief/sidecar/runtime-preflight-approval returns source-only approval packet", async () => {
+  const server = await startTestServer({ edgeSecret: "test-edge-secret" });
+  try {
+    const fixture = JSON.parse(readFileSync("fixtures/terminal-brief/sidecar-runtime-preflight-approval.no-live.json", "utf8"));
+    const res = await fetch(
+      server.baseUrl + "/terminal-brief/sidecar/runtime-preflight-approval",
+      {
+        method: "POST",
+        headers: jsonHeaders({
+          "x-a2a-edge-secret": "test-edge-secret",
+          "x-a2a-requester-id": "operator-a",
+          "x-a2a-requester-role": "operator",
+        }),
+        body: JSON.stringify(fixture),
+      },
+    );
+
+    assert.equal(res.status, 200);
+    assert.equal(res.headers.get("cache-control"), "no-store");
+    const body = await res.json();
+    assert.equal(body.kind, "a2a-broker.terminal-brief-sidecar-runtime-preflight-approval.packet");
+    assert.equal(body.state, "approval_packet_ready");
+    assert.equal(body.source.adapterContractReady, true);
+    assert.equal(body.runtimePreflight.adapterContract.version, 1);
+    assert.equal(body.runtimePreflight.adapterContract.output.providerAcceptedIsReceiptProof, false);
+    assert.equal(body.runtimePreflight.adapterContract.output.terminalAckPermitted, false);
+    assert.equal(body.readiness.approvalRequestDispatchPermitted, false);
+    assert.equal(body.readiness.approvalGrantPermitted, false);
+    assert.equal(body.readiness.executorInvocationPermitted, false);
+    assert.equal(body.readiness.processSpawnPermitted, false);
+    assert.equal(body.readiness.sidecarStartPermitted, false);
+    assert.equal(body.readiness.providerSendPermitted, false);
+    assert.equal(body.readiness.terminalAckPermitted, false);
+    assert.equal(body.readiness.executionPermitted, false);
+    assert.equal(body.readiness.dbMutationPermitted, false);
+    assert.equal(body.integrationContract.sendsApprovalRequest, false);
+    assert.equal(body.integrationContract.invokesExecutor, false);
+    assert.equal(body.integrationContract.spawnsProcess, false);
+    assert.equal(body.integrationContract.startsSidecar, false);
+    assert.equal(body.semantics.runtimePreflightApprovalPacketOnly, true);
+  } finally {
+    await server.close();
+  }
+});
+
 test("POST /terminal-brief/sidecar/dry-run-start-canary-plan returns draft-only no-live canary plan", async () => {
   const server = await startTestServer({ edgeSecret: "test-edge-secret" });
   try {
