@@ -475,6 +475,18 @@ export interface TaskCompleteRequest extends TaskClaimRequest {
   result?: TaskResult;
 }
 
+export type TaskEvidenceOutcome = "done" | "pr" | "blocked" | "failed";
+
+export interface TaskEvidenceRequest extends TaskClaimRequest {
+  /**
+   * Worker-facing terminal evidence summary. "done" and "pr" succeed the task;
+   * "blocked" and "failed" fail it with redacted error evidence.
+   */
+  outcome?: TaskEvidenceOutcome;
+  result?: TaskResult;
+  error?: TaskError;
+}
+
 export interface TaskFailRequest extends TaskClaimRequest {
   error?: TaskError;
 }

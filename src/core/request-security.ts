@@ -206,7 +206,7 @@ export function classifyRateLimitBucket(req: IncomingMessage, url: URL): RateLim
     req.method === "POST" &&
     segments[0] === "tasks" &&
     segments[1] &&
-    ["claim", "start", "complete", "fail"].includes(segments[2] ?? "")
+    ["claim", "start", "complete", "evidence", "fail"].includes(segments[2] ?? "")
   ) {
     return "worker";
   }
@@ -222,7 +222,8 @@ export function classifyRateLimitBucket(req: IncomingMessage, url: URL): RateLim
     return "worker";
   }
 
-  const assignedWorkerId = url.searchParams.get("assignedWorkerId")?.trim();
+  const assignedWorkerId =
+    url.searchParams.get("assignedWorkerId")?.trim() || url.searchParams.get("worker")?.trim();
   const requesterId = headerValue(req, "x-a2a-requester-id");
   if (
     req.method === "GET" &&

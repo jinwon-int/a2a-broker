@@ -133,6 +133,117 @@ async function registerTestWorker(
   }
 }
 
+test("server accepts a broker-agnostic Hermes-style worker poll and evidence flow", async () => {
+  const server = await startTestServer({ enforceRequesterIdentity: false });
+  const workerId = "hermes-agent-reference-worker";
+  try {
+    const registerRes = await fetch(server.baseUrl + "/workers/register", {
+      method: "POST",
+      headers: jsonHeaders(),
+      body: JSON.stringify({
+        nodeId: workerId,
+        role: "analyst",
+        displayName: "Hermes Agent Reference Worker",
+        brokerUrl: "http://127.0.0.1:8787",
+        workerMode: "mobile",
+        capabilities: {
+          canAnalyze: true,
+          canBackfill: false,
+          canPatchWorkspace: true,
+          canPromoteLive: false,
+          workspaceIds: ["public-safe-reference"],
+          environments: ["research"],
+        },
+        metadata: {
+          runtime: "hermes-agent",
+          openClawRequired: "false",
+          transport: "http-poll",
+        },
+      }),
+    });
+    assert.equal(registerRes.status, 201);
+    const registered = await registerRes.json() as WorkerRegistrationResponse;
+    assert.equal(registered.nodeId, workerId);
+    assert.equal(registered.workerMode, "mobile");
+    assert.deepEqual(registered.metadata, {
+      runtime: "hermes-agent",
+      openClawRequired: "false",
+      transport: "http-poll",
+    });
+
+    const heartbeatRes = await fetch(server.baseUrl + "/workers/" + workerId + "/heartbeat", {
+      method: "POST",
+      headers: jsonHeaders(),
+      body: JSON.stringify({ metadata: { runtime: "hermes-agent", heartbeat: "ok" } }),
+    });
+    assert.equal(heartbeatRes.status, 200);
+    const heartbeat = await heartbeatRes.json() as WorkerRegistrationResponse;
+    assert.deepEqual(heartbeat.metadata, { runtime: "hermes-agent", heartbeat: "ok" });
+
+    const createRes = await fetch(server.baseUrl + "/tasks", {
+      method: "POST",
+      headers: jsonHeaders(),
+      body: JSON.stringify({
+        id: "task-hermes-reference-worker",
+        requester: { id: "hermes-requester", kind: "service", role: "hub" },
+        target: { id: workerId, kind: "node", role: "analyst" },
+        targetNodeId: workerId,
+        intent: "analyze",
+        message: "Broker-agnostic worker contract smoke task",
+        payload: { source: "hermes-worker-integration-test" },
+        taskOrigin: "api",
+      }),
+    });
+    assert.equal(createRes.status, 201);
+
+    const pollRes = await fetch(
+      server.baseUrl + "/tasks?worker=" + encodeURIComponent(workerId) + "&status=pending&detail=full",
+    );
+    assert.equal(pollRes.status, 200);
+    const polled = await pollRes.json() as { items: Array<{ id: string; status: string; assignedWorkerId?: string }> };
+    assert.deepEqual(polled.items.map((task) => [task.id, task.status, task.assignedWorkerId]), [
+      ["task-hermes-reference-worker", "queued", workerId],
+    ]);
+
+    const claimRes = await fetch(server.baseUrl + "/tasks/task-hermes-reference-worker/claim", {
+      method: "POST",
+      headers: jsonHeaders(),
+      body: JSON.stringify({ workerId }),
+    });
+    assert.equal(claimRes.status, 200);
+
+    const startRes = await fetch(server.baseUrl + "/tasks/task-hermes-reference-worker/start", {
+      method: "POST",
+      headers: jsonHeaders(),
+      body: JSON.stringify({ workerId }),
+    });
+    assert.equal(startRes.status, 200);
+
+    const evidenceRes = await fetch(server.baseUrl + "/tasks/task-hermes-reference-worker/evidence", {
+      method: "POST",
+      headers: jsonHeaders(),
+      body: JSON.stringify({
+        workerId,
+        outcome: "done",
+        result: {
+          summary: "Hermes-style worker produced redacted terminal evidence",
+          output: { referenceWorker: "hermes-agent", openClawRequired: false },
+        },
+      }),
+    });
+    assert.equal(evidenceRes.status, 200);
+    const evidenced = await evidenceRes.json() as {
+      status: string;
+      result?: { summary?: string; output?: Record<string, unknown> };
+    };
+    assert.equal(evidenced.status, "succeeded");
+    assert.equal(evidenced.result?.summary, "Hermes-style worker produced redacted terminal evidence");
+    assert.deepEqual(evidenced.result?.output, { referenceWorker: "hermes-agent", openClawRequired: false });
+  } finally {
+    await server.close();
+  }
+});
+
 test("server requires a real PUBLIC_BASE_URL", () => {
   assert.throws(
     () =>

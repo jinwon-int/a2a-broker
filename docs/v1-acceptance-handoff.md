@@ -29,7 +29,7 @@ without a schema bump:
 - `POST /workers/register`, `POST /workers/:id/heartbeat`,
   `GET /workers/:id`.
 - `POST /tasks`, `GET /tasks`, `GET /tasks/:id`,
-  `POST /tasks/:id/claim|start|complete|fail|reassign|cancel`,
+  `POST /tasks/:id/claim|start|complete|evidence|fail|reassign|cancel`,
   `POST /tasks/requeue_stale`.
 - `POST /exchanges`, `GET /exchanges`, `GET /exchanges/:id`,
   `GET /exchanges/:id/messages`, `POST /exchanges/:id/messages`.
