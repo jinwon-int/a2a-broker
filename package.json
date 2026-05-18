@@ -36,6 +36,7 @@
     "terminal_brief_finalizer_handoff": "npm run build && node scripts/terminal-brief-finalizer-handoff.mjs",
     "terminal_brief_finalizer_workflow": "npm run build && node scripts/terminal-brief-finalizer-workflow.mjs",
     "terminal_brief_closeout_gate": "npm run build && node scripts/terminal-brief-closeout-gate.mjs",
+    "terminal_brief_approval_request": "npm run build && node scripts/terminal-brief-approval-request.mjs",
     "broker_cleanup_safe_prune": "npm run build && node scripts/broker-cleanup-safe-prune.mjs",
     "terminal_brief_activation_report": "node scripts/terminal-brief-activation-report.mjs",
     "test:terminal_brief_activation_report": "node --test scripts/terminal-brief-activation-report.test.mjs",

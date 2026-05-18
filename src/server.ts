@@ -128,6 +128,10 @@ import {
   extractTerminalBriefFinalizerWorkflowPacket,
 } from "./core/terminal-brief-closeout-gate.js";
 import {
+  buildTerminalBriefApprovalRequest,
+  extractTerminalBriefCloseoutGatePacket,
+} from "./core/terminal-brief-approval-request.js";
+import {
   buildBrokerCleanupPlan,
   executeBrokerCleanupPlan,
   validateCleanupExecution,
@@ -1285,6 +1289,24 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
           issueUrl: optionalString(url.searchParams.get("issueUrl") ?? url.searchParams.get("issue_url")),
           prUrl: optionalString(url.searchParams.get("prUrl") ?? url.searchParams.get("pr_url")),
         });
+        return sendJson(res, 200, report, {
+          "cache-control": "no-store",
+        });
+      }
+
+      if (req.method === "POST" && path === "/terminal-brief/closeout/approval-request") {
+        if (enforceRequesterIdentity) {
+          assertRequesterHasRole(requesterIdentity, ["hub", "operator"], "terminal_brief.approval_request.read");
+        }
+        const body = await readJson<Record<string, unknown>>(req);
+        let gate;
+        try {
+          gate = extractTerminalBriefCloseoutGatePacket(body);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "invalid approval request input";
+          throw new BrokerError("bad_request", message);
+        }
+        const report = buildTerminalBriefApprovalRequest(gate);
         return sendJson(res, 200, report, {
           "cache-control": "no-store",
         });
