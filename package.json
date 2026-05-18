@@ -50,6 +50,7 @@
     "terminal_brief_sidecar_adapter_handoff_approval": "npm run build && node scripts/terminal-brief-sidecar-adapter-handoff-approval.mjs",
     "terminal_brief_sidecar_operator_review_table": "npm run build && node scripts/terminal-brief-sidecar-operator-review-table.mjs",
     "terminal_brief_sidecar_review_decision_ingestor": "npm run build && node scripts/terminal-brief-sidecar-review-decision-ingestor.mjs",
+    "terminal_brief_sidecar_approval_grant_proposal": "npm run build && node scripts/terminal-brief-sidecar-approval-grant-proposal.mjs",
     "terminal_brief_sidecar_dry_run_start_canary_plan": "npm run build && node scripts/terminal-brief-sidecar-dry-run-start-canary-plan.mjs",
     "terminal_brief_sidecar_preflight_evidence_collector": "npm run build && node scripts/terminal-brief-sidecar-preflight-evidence-collector.mjs",
     "terminal_brief_sidecar_preflight_chain_review": "npm run build && node scripts/terminal-brief-sidecar-preflight-chain-review.mjs",

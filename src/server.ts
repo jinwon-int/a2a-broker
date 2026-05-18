@@ -197,6 +197,11 @@ import {
   extractTerminalBriefSidecarReviewDecisionIngestorTable,
 } from "./core/terminal-brief-sidecar-review-decision-ingestor.js";
 import {
+  buildTerminalBriefSidecarApprovalGrantProposal,
+  extractTerminalBriefSidecarApprovalGrantProposalOptions,
+  extractTerminalBriefSidecarApprovalGrantProposalReviewDecision,
+} from "./core/terminal-brief-sidecar-approval-grant-proposal.js";
+import {
   buildTerminalBriefSidecarDryRunStartCanaryPlan,
   extractTerminalBriefSidecarDryRunStartCanaryPlanOptions,
   extractTerminalBriefSidecarDryRunStartCanaryPlanRehearsal,
@@ -1682,6 +1687,27 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
           reviewTable,
           extractTerminalBriefSidecarReviewDecisionEvidence(body),
           extractTerminalBriefSidecarReviewDecisionIngestorOptions(body),
+        );
+        return sendJson(res, 200, report, {
+          "cache-control": "no-store",
+        });
+      }
+
+      if (req.method === "POST" && path === "/terminal-brief/sidecar/approval-grant-proposal") {
+        if (enforceRequesterIdentity) {
+          assertRequesterHasRole(requesterIdentity, ["hub", "operator"], "terminal_brief.sidecar_approval_grant_proposal.read");
+        }
+        const body = await readJson<Record<string, unknown>>(req);
+        let reviewDecision;
+        try {
+          reviewDecision = extractTerminalBriefSidecarApprovalGrantProposalReviewDecision(body);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "invalid sidecar approval grant proposal input";
+          throw new BrokerError("bad_request", message);
+        }
+        const report = buildTerminalBriefSidecarApprovalGrantProposal(
+          reviewDecision,
+          extractTerminalBriefSidecarApprovalGrantProposalOptions(body),
         );
         return sendJson(res, 200, report, {
           "cache-control": "no-store",
