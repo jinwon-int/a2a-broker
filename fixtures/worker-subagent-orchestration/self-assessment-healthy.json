@@ -1,0 +1,29 @@
+{
+  "workerId": "bangtong",
+  "task": {
+    "taskId": "task-large-independent",
+    "size": "large",
+    "coupling": "low",
+    "sensitive": false,
+    "urgent": false,
+    "hasIndependentSubtasks": true,
+    "writeSets": ["src/core/planner.ts", "docs/planner.md", "test/planner.test.ts"],
+    "requiresSingleDesignDecision": false
+  },
+  "host": {
+    "cpuLoadPct": 42,
+    "memoryUsedPct": 55,
+    "ioPressure": "low",
+    "eventLoopDegraded": false,
+    "gatewayPressure": "low",
+    "activeSubagents": 0,
+    "workerSubagentCap": 3,
+    "brokerActiveSubagents": 4,
+    "brokerSubagentCap": 12
+  },
+  "source": {
+    "collector": "worker-runtime-supplied",
+    "observedAt": "2026-05-19T01:55:00.000Z",
+    "note": "fixture only; no live probing"
+  }
+}
