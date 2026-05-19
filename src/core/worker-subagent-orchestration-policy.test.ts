@@ -4,6 +4,7 @@ import test from "node:test";
 
 import {
   buildA2AWorkerSubagentOrchestrationPolicy,
+  extractA2AWorkerSubagentPolicyInput,
   renderA2AWorkerSubagentOrchestrationPolicyMarkdown,
 } from "./worker-subagent-orchestration-policy.js";
 
@@ -65,4 +66,37 @@ test("markdown renders policy without implying runtime rollout", () => {
   assert.equal(packet.decision.parallelismHint, 2);
   assert.equal(markdown.includes("source-only policy"), true);
   assert.equal(markdown.includes("no mandatory production spawn"), true);
+});
+
+test("extractor accepts route envelopes and snake_case capacity fields", () => {
+  const input = extractA2AWorkerSubagentPolicyInput({
+    workerSubagentPolicy: {
+      now: NOW,
+      task: {
+        task_id: "task-route",
+        size: "medium",
+        coupling: "low",
+        has_independent_subtasks: true,
+        write_sets: ["src/a.ts", "test/a.test.ts"],
+      },
+      host: {
+        worker_id: "worker-route",
+        cpu_load_pct: 20,
+        memory_used_pct: 35,
+        io_pressure: "low",
+        gateway_pressure: "low",
+        active_subagents: 0,
+        worker_subagent_cap: 2,
+        broker_active_subagents: 1,
+        broker_subagent_cap: 12,
+      },
+    },
+  });
+
+  const packet = buildA2AWorkerSubagentOrchestrationPolicy(input);
+
+  assert.equal(packet.generatedAt, NOW);
+  assert.equal(packet.task.taskId, "task-route");
+  assert.equal(packet.host.workerId, "worker-route");
+  assert.equal(packet.decision.parallelismHint, 2);
 });

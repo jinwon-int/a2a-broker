@@ -7970,3 +7970,62 @@ test("POST /terminal-brief/sidecar/dry-run-start-approval-receipt returns source
     await server.close();
   }
 });
+
+test("POST /workers/subagent-orchestration/plan returns read-only capacity planner packet", async () => {
+  const server = await startTestServer({ edgeSecret: "test-edge-secret" });
+  try {
+    const res = await fetch(
+      server.baseUrl + "/workers/subagent-orchestration/plan",
+      {
+        method: "POST",
+        headers: jsonHeaders({
+          "x-a2a-edge-secret": "test-edge-secret",
+          "x-a2a-requester-id": "worker-a",
+          "x-a2a-requester-role": "analyst",
+        }),
+        body: JSON.stringify({
+          now: "2026-05-19T01:40:00.000Z",
+          task: {
+            taskId: "task-large-independent",
+            size: "large",
+            coupling: "low",
+            hasIndependentSubtasks: true,
+            writeSets: ["src/feature.ts", "docs/feature.md", "test/feature.test.ts"],
+          },
+          host: {
+            workerId: "worker-a",
+            cpuLoadPct: 35,
+            memoryUsedPct: 45,
+            ioPressure: "low",
+            eventLoopDegraded: false,
+            gatewayPressure: "low",
+            activeSubagents: 0,
+            workerSubagentCap: 3,
+            brokerActiveSubagents: 2,
+            brokerSubagentCap: 12,
+          },
+        }),
+      },
+    );
+
+    assert.equal(res.status, 200);
+    assert.equal(res.headers.get("cache-control"), "no-store");
+    const body = await res.json();
+    assert.equal(body.kind, "a2a-broker.worker-subagent-orchestration-policy.packet");
+    assert.equal(body.generatedAt, "2026-05-19T01:40:00.000Z");
+    assert.equal(body.decision.parallelismHint, 3);
+    assert.deepEqual(body.decision.recommendedSubagents.map((agent: Record<string, unknown>) => agent.role), ["explorer", "implementer", "verifier"]);
+    assert.equal(body.decision.oneFinalizerRequired, true);
+    assert.equal(body.decision.evidenceOnlySubagents, true);
+    assert.equal(body.decision.writeSetIsolationRequired, true);
+    assert.equal(body.boundaries.runtimeBehaviorChanged, false);
+    assert.equal(body.boundaries.mandatoryProductionSpawn, false);
+    assert.equal(body.boundaries.brokerDispatchSemanticsChanged, false);
+    assert.equal(body.boundaries.taskFlowMutation, false);
+    assert.equal(body.boundaries.dbMutation, false);
+    assert.equal(body.boundaries.deployOrRestart, false);
+    assert.equal(body.boundaries.secretMovement, false);
+  } finally {
+    await server.close();
+  }
+});

@@ -74,6 +74,25 @@ export interface A2AWorkerSubagentPolicyPacket {
   nextAction: string;
 }
 
+export function extractA2AWorkerSubagentPolicyInput(input: unknown): A2AWorkerSubagentPolicyInput {
+  const envelope = isRecord(input) ? input : {};
+  const candidate = isRecord(envelope.workerSubagentPolicy)
+    ? envelope.workerSubagentPolicy
+    : isRecord(envelope.workerSubagentOrchestrationPolicy)
+      ? envelope.workerSubagentOrchestrationPolicy
+      : envelope;
+  if (!isRecord(candidate)) {
+    throw new Error("worker subagent orchestration policy input must be an object");
+  }
+  const task = extractTaskProfile(candidate.task);
+  const host = extractHostSnapshot(candidate.host);
+  return {
+    now: optionalString(candidate.now),
+    task,
+    host,
+  };
+}
+
 export function buildA2AWorkerSubagentOrchestrationPolicy(input: A2AWorkerSubagentPolicyInput): A2AWorkerSubagentPolicyPacket {
   const generatedAt = input.now ?? new Date().toISOString();
   const resourceGate = buildResourceGate(input.host);
@@ -139,6 +158,42 @@ function taskParallelismCeiling(task: A2AWorkerSubagentTaskProfile): number {
   return hasOverlappingWriteSets(task.writeSets ?? []) ? 2 : 3;
 }
 
+function extractTaskProfile(value: unknown): A2AWorkerSubagentTaskProfile {
+  if (!isRecord(value)) throw new Error("worker subagent policy input requires task");
+  const size = enumValue(value.size, ["trivial", "small", "medium", "large"]);
+  const coupling = enumValue(value.coupling, ["low", "medium", "high"]);
+  if (!size) throw new Error("worker subagent policy task.size must be trivial, small, medium, or large");
+  if (!coupling) throw new Error("worker subagent policy task.coupling must be low, medium, or high");
+  return {
+    taskId: optionalString(value.taskId ?? value.task_id),
+    size,
+    coupling,
+    sensitive: optionalBoolean(value.sensitive),
+    urgent: optionalBoolean(value.urgent),
+    hasIndependentSubtasks: optionalBoolean(value.hasIndependentSubtasks ?? value.has_independent_subtasks),
+    writeSets: stringList(value.writeSets ?? value.write_sets),
+    requiresSingleDesignDecision: optionalBoolean(value.requiresSingleDesignDecision ?? value.requires_single_design_decision),
+  };
+}
+
+function extractHostSnapshot(value: unknown): A2AWorkerSubagentHostSnapshot {
+  if (!isRecord(value)) throw new Error("worker subagent policy input requires host");
+  const workerId = optionalString(value.workerId ?? value.worker_id);
+  if (!workerId) throw new Error("worker subagent policy host.workerId is required");
+  return {
+    workerId,
+    cpuLoadPct: numberValue(value.cpuLoadPct ?? value.cpu_load_pct),
+    memoryUsedPct: numberValue(value.memoryUsedPct ?? value.memory_used_pct),
+    ioPressure: enumValue(value.ioPressure ?? value.io_pressure, ["low", "medium", "high"]),
+    eventLoopDegraded: optionalBoolean(value.eventLoopDegraded ?? value.event_loop_degraded),
+    gatewayPressure: enumValue(value.gatewayPressure ?? value.gateway_pressure, ["low", "medium", "high"]),
+    activeSubagents: numberValue(value.activeSubagents ?? value.active_subagents),
+    workerSubagentCap: numberValue(value.workerSubagentCap ?? value.worker_subagent_cap),
+    brokerActiveSubagents: numberValue(value.brokerActiveSubagents ?? value.broker_active_subagents),
+    brokerSubagentCap: numberValue(value.brokerSubagentCap ?? value.broker_subagent_cap),
+  };
+}
+
 function buildResourceGate(host: A2AWorkerSubagentHostSnapshot): A2AWorkerSubagentPolicyPacket["resourceGate"] {
   const cpuOk = (host.cpuLoadPct ?? 0) < 75;
   const memoryOk = (host.memoryUsedPct ?? 0) < 80;
@@ -200,4 +255,30 @@ function nextActionFor(parallelismHint: number, reducedBy: string[]): string {
 function buildPolicyId(input: A2AWorkerSubagentPolicyInput, generatedAt: string, parallelismHint: number): string {
   const base = JSON.stringify({ input, generatedAt, parallelismHint });
   return "a2a-worker-subagent-policy:" + createHash("sha256").update(base).digest("hex").slice(0, 24);
+}
+
+function optionalString(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function optionalBoolean(value: unknown): boolean | undefined {
+  return typeof value === "boolean" ? value : undefined;
+}
+
+function numberValue(value: unknown): number | undefined {
+  if (typeof value !== "number" || !Number.isFinite(value)) return undefined;
+  return value;
+}
+
+function stringList(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  return value.filter((item): item is string => typeof item === "string" && item.trim().length > 0).map((item) => item.trim());
+}
+
+function enumValue<T extends string>(value: unknown, allowed: readonly T[]): T | undefined {
+  return typeof value === "string" && (allowed as readonly string[]).includes(value) ? value as T : undefined;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }

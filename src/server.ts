@@ -251,6 +251,10 @@ import {
   extractTerminalBriefSidecarDryRunStartApprovalRequestPacket,
 } from "./core/terminal-brief-sidecar-dry-run-start-approval-receipt-ingestor.js";
 import {
+  buildA2AWorkerSubagentOrchestrationPolicy,
+  extractA2AWorkerSubagentPolicyInput,
+} from "./core/worker-subagent-orchestration-policy.js";
+import {
   buildBrokerCleanupPlan,
   executeBrokerCleanupPlan,
   validateCleanupExecution,
@@ -1161,6 +1165,24 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
           peerStatusService,
         });
         return sendJson(res, 200, response);
+      }
+
+      if (req.method === "POST" && path === "/workers/subagent-orchestration/plan") {
+        if (enforceRequesterIdentity) {
+          assertRequesterHasRole(requesterIdentity, ["hub", "operator", "analyst", "researcher", "live-trader"], "worker_subagent_orchestration.plan");
+        }
+        const body = await readJson<Record<string, unknown>>(req);
+        let input;
+        try {
+          input = extractA2AWorkerSubagentPolicyInput(body);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "invalid worker subagent orchestration policy input";
+          throw new BrokerError("bad_request", message);
+        }
+        const packet = buildA2AWorkerSubagentOrchestrationPolicy(input);
+        return sendJson(res, 200, packet, {
+          "cache-control": "no-store",
+        });
       }
 
       if (
