@@ -1,0 +1,143 @@
+{
+  "approvalGrantEvidenceIngestorPacket": {
+    "kind": "a2a-broker.terminal-brief-sidecar-approval-grant-evidence-ingestor.packet",
+    "version": 1,
+    "generatedAt": "2026-05-19T02:45:00.000Z",
+    "mode": "read-only/no-live",
+    "parentRoundId": "round-739",
+    "state": "grant_evidence_accepted",
+    "dryRunOnly": true,
+    "sourceOnlyNoLive": true,
+    "idempotencyKey": "tb-sidecar-grant-evidence-ingestor:fixture751",
+    "source": {
+      "grantProposalState": "ready_for_grant_proposal_review",
+      "grantProposalIdempotencyKey": "tb-sidecar-approval-grant-proposal:fixture749",
+      "grantProposalReady": true,
+      "grantReference": "grant-proposal-747",
+      "operatorTarget": "round-739",
+      "reviewReference": "operator-review-745",
+      "requiredGrant": "approve_supervised_terminal_brief_sidecar_dry_run_start"
+    },
+    "grantEvidence": {
+      "evidenceCount": 1,
+      "acceptedTypes": [
+        "grant_approved",
+        "grant_rejected",
+        "request_more_evidence",
+        "provider_accepted",
+        "conflict",
+        "expired"
+      ],
+      "normalized": [
+        {
+          "type": "grant_approved",
+          "grantReference": "grant-proposal-747",
+          "operatorTarget": "round-739",
+          "reviewReference": "operator-review-745",
+          "finalizerId": "seoseo",
+          "operatorVisibleConfirmation": true,
+          "observedAt": "2026-05-19T02:45:00.000Z",
+          "source": "manual_operator_confirmation",
+          "classification": "accepted",
+          "reasons": []
+        }
+      ],
+      "acceptedGrantEvidence": true,
+      "rejectedGrantEvidence": false,
+      "moreEvidenceRequested": false,
+      "providerAcceptedOnly": false,
+      "conflictEvidence": false,
+      "expiredEvidence": false
+    },
+    "readiness": {
+      "sourceCriteriaMet": true,
+      "grantEvidenceAccepted": true,
+      "approvalRequestDispatchPermitted": false,
+      "approvalGrantPermitted": false,
+      "approvalGrantExecutionPermitted": false,
+      "startExecutorDispatchPermitted": false,
+      "executorInvocationPermitted": false,
+      "processSpawnPermitted": false,
+      "sidecarStartPermitted": false,
+      "defaultOnPermitted": false,
+      "liveActivationPermitted": false,
+      "providerSendPermitted": false,
+      "terminalAckPermitted": false,
+      "executionPermitted": false,
+      "dbMutationPermitted": false,
+      "missingEvidence": [],
+      "blockers": [
+        "approval grant evidence is classification only and does not execute a grant",
+        "runtime execution requires later separate approved paths"
+      ],
+      "nextAction": "broker finalizer may prepare a later execution gate review, but this packet executes nothing"
+    },
+    "blockers": [],
+    "nextActions": [
+      "broker finalizer may prepare a later execution gate review, but this packet executes nothing",
+      "do not send approval, grant approval, start sidecar, ACK terminal rows, or mutate state from this packet"
+    ],
+    "approvalSensitiveActionsExcluded": [
+      "sending the approval request",
+      "granting approval or executing an approval grant",
+      "dispatching or invoking a start executor",
+      "spawning a process or starting/stopping the sidecar",
+      "Terminal Brief default-on enablement",
+      "live provider/Hermes/Gongyung/Telegram/OpenClaw send",
+      "terminal ACK/replay or terminal receipt DB mutation",
+      "GitHub PR merge, issue close, or comment post from the packet/route",
+      "TaskFlow record creation or broker DB mutation",
+      "production deploy/restart, historical replay, release, publish, or secret movement"
+    ],
+    "integrationContract": {
+      "transport": "json",
+      "approvalGrantEvidenceIngestorVersion": 1,
+      "harnessNeutral": true,
+      "openclawMessageSendRequired": false,
+      "hermesAdapterCompatible": true,
+      "gongyungAdapterCompatible": true,
+      "externalHarnessCompatible": true,
+      "consumesApprovalGrantProposalPacket": true,
+      "classifiesGrantEvidence": true,
+      "sendsApprovalRequest": false,
+      "grantsApproval": false,
+      "executesApprovalGrant": false,
+      "dispatchesStartExecutor": false,
+      "invokesExecutor": false,
+      "spawnsProcess": false,
+      "startsSidecar": false,
+      "enablesDefaultOn": false,
+      "executesAction": false
+    },
+    "semantics": {
+      "approvalGrantEvidenceIngestorOnly": true,
+      "sourceOnlyNoLive": true,
+      "evidenceClassificationOnly": true,
+      "acceptedGrantEvidenceDoesNotExecuteGrant": true,
+      "acceptedGrantEvidenceDoesNotAuthorizeRuntime": true,
+      "providerAcceptedIsVisibilityProof": false,
+      "providerAcceptedIsApprovalEvidence": false,
+      "terminalAckEligibleDoesNotPermitAck": true,
+      "executionNotPermitted": true,
+      "processSpawnNotPermitted": true,
+      "sidecarStartNotPermitted": true,
+      "defaultOnNotEnabledByThisPacket": true,
+      "routeIsReadOnly": true,
+      "brokerFinalizerRequired": true,
+      "performsGitHubMutation": false,
+      "performsProviderSend": false,
+      "performsTerminalAck": false,
+      "performsRuntimeRestartOrDeploy": false,
+      "performsDbMutation": false,
+      "createsTaskFlowRecords": false,
+      "performsHistoricalReplay": false,
+      "performsReleaseOrPublish": false,
+      "movesSecretsOrCredentials": false
+    }
+  },
+  "executionGateFinalReview": {
+    "now": "2026-05-19T03:05:00.000Z",
+    "reviewOwner": "broker-finalizer",
+    "executionGateReference": "execution-gate-751"
+  }
+}
