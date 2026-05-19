@@ -7527,6 +7527,49 @@ test("POST /terminal-brief/sidecar/execution-gate-final-review returns source-on
   }
 });
 
+test("POST /terminal-brief/sidecar/executor-dispatch-request-draft returns source-only dispatch draft", async () => {
+  const server = await startTestServer({ edgeSecret: "test-edge-secret" });
+  try {
+    const fixture = JSON.parse(readFileSync("fixtures/terminal-brief/sidecar-executor-dispatch-request-draft.no-live.json", "utf8"));
+    const res = await fetch(
+      server.baseUrl + "/terminal-brief/sidecar/executor-dispatch-request-draft",
+      {
+        method: "POST",
+        headers: jsonHeaders({
+          "x-a2a-edge-secret": "test-edge-secret",
+          "x-a2a-requester-id": "operator-a",
+          "x-a2a-requester-role": "operator",
+        }),
+        body: JSON.stringify(fixture),
+      },
+    );
+
+    assert.equal(res.status, 200);
+    assert.equal(res.headers.get("cache-control"), "no-store");
+    const body = await res.json();
+    assert.equal(body.kind, "a2a-broker.terminal-brief-sidecar-executor-dispatch-request-draft.packet");
+    assert.equal(body.state, "dispatch_request_draft_ready");
+    assert.equal(body.readiness.dispatchRequestDraftReady, true);
+    assert.equal(body.dispatchRequestDraft.draftOnly, true);
+    assert.equal(body.dispatchRequestDraft.commandMetadata.secretValuesIncluded, false);
+    assert.equal(body.readiness.startExecutorDispatchPermitted, false);
+    assert.equal(body.readiness.executorInvocationPermitted, false);
+    assert.equal(body.readiness.processSpawnPermitted, false);
+    assert.equal(body.readiness.sidecarStartPermitted, false);
+    assert.equal(body.readiness.defaultOnPermitted, false);
+    assert.equal(body.readiness.providerSendPermitted, false);
+    assert.equal(body.readiness.terminalAckPermitted, false);
+    assert.equal(body.readiness.executionPermitted, false);
+    assert.equal(body.integrationContract.rendersExecutorDispatchRequestDraft, true);
+    assert.equal(body.integrationContract.dispatchesStartExecutor, false);
+    assert.equal(body.integrationContract.invokesExecutor, false);
+    assert.equal(body.integrationContract.startsSidecar, false);
+    assert.equal(body.semantics.draftDoesNotDispatchExecutor, true);
+  } finally {
+    await server.close();
+  }
+});
+
 test("POST /terminal-brief/sidecar/dry-run-start-canary-plan returns draft-only no-live canary plan", async () => {
   const server = await startTestServer({ edgeSecret: "test-edge-secret" });
   try {
