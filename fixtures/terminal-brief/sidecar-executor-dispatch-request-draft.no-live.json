@@ -1,0 +1,143 @@
+{
+  "executionGateFinalReviewPacket": {
+    "kind": "a2a-broker.terminal-brief-sidecar-execution-gate-final-review.packet",
+    "version": 1,
+    "generatedAt": "2026-05-19T03:05:00.000Z",
+    "mode": "read-only/no-live",
+    "parentRoundId": "round-739",
+    "state": "ready_for_execution_gate_final_review",
+    "dryRunOnly": true,
+    "sourceOnlyNoLive": true,
+    "idempotencyKey": "tb-sidecar-execution-gate-final-review:fixture753",
+    "source": {
+      "grantEvidenceState": "grant_evidence_accepted",
+      "grantEvidenceIdempotencyKey": "tb-sidecar-grant-evidence-ingestor:fixture751",
+      "grantEvidenceAccepted": true,
+      "grantReference": "grant-proposal-747",
+      "operatorTarget": "round-739",
+      "reviewReference": "operator-review-745",
+      "requiredGrant": "approve_supervised_terminal_brief_sidecar_dry_run_start"
+    },
+    "finalReview": {
+      "reviewOnly": true,
+      "reviewOwner": "broker-finalizer",
+      "executionGateReference": "execution-gate-751",
+      "checklist": [
+        {
+          "id": "grant_evidence",
+          "label": "Accepted grant evidence",
+          "status": "ready",
+          "evidence": ["tb-sidecar-grant-evidence-ingestor:fixture751", "grantEvidenceAccepted=true"],
+          "permitted": false
+        }
+      ],
+      "abortConditions": [
+        "gateway readiness is degraded",
+        "event loop is degraded",
+        "queue backlog exceeds approved limit",
+        "sidecar dry-run-only mode cannot be proven",
+        "cursor persistence cannot be proven",
+        "secret boundary cannot be proven",
+        "operatorEvents scope cannot be proven",
+        "terminal evidence path cannot be proven",
+        "any live provider send or terminal ACK is requested by this packet"
+      ],
+      "rollbackChecklist": [
+        "do not dispatch or invoke executor from this packet",
+        "do not spawn a process or start sidecar from this packet",
+        "keep default-on disabled",
+        "collect fresh finalizer approval before any later runtime path",
+        "record sanitized evidence only"
+      ]
+    },
+    "readiness": {
+      "sourceCriteriaMet": true,
+      "finalReviewReady": true,
+      "approvalRequestDispatchPermitted": false,
+      "approvalGrantPermitted": false,
+      "approvalGrantExecutionPermitted": false,
+      "startExecutorDispatchPermitted": false,
+      "executorInvocationPermitted": false,
+      "processSpawnPermitted": false,
+      "sidecarStartPermitted": false,
+      "defaultOnPermitted": false,
+      "liveActivationPermitted": false,
+      "providerSendPermitted": false,
+      "terminalAckPermitted": false,
+      "executionPermitted": false,
+      "dbMutationPermitted": false,
+      "missingEvidence": [],
+      "blockers": [
+        "execution gate final review is not executor dispatch",
+        "runtime execution requires later separate approved path"
+      ],
+      "nextAction": "broker finalizer may review this final gate before any later separately approved executor path; this packet dispatches nothing"
+    },
+    "blockers": [],
+    "nextActions": [
+      "broker finalizer may review this final gate before any later separately approved executor path; this packet dispatches nothing",
+      "do not dispatch executor, invoke executor, spawn process, start sidecar, ACK terminal rows, or mutate state from this packet"
+    ],
+    "approvalSensitiveActionsExcluded": [
+      "sending the approval request",
+      "granting approval or executing an approval grant",
+      "dispatching or invoking a start executor",
+      "spawning a process or starting/stopping the sidecar",
+      "Terminal Brief default-on enablement",
+      "live provider/Hermes/Gongyung/Telegram/OpenClaw send",
+      "terminal ACK/replay or terminal receipt DB mutation",
+      "GitHub PR merge, issue close, or comment post from the packet/route",
+      "TaskFlow record creation or broker DB mutation",
+      "production deploy/restart, historical replay, release, publish, or secret movement"
+    ],
+    "integrationContract": {
+      "transport": "json",
+      "executionGateFinalReviewVersion": 1,
+      "harnessNeutral": true,
+      "openclawMessageSendRequired": false,
+      "hermesAdapterCompatible": true,
+      "gongyungAdapterCompatible": true,
+      "externalHarnessCompatible": true,
+      "consumesApprovalGrantEvidenceIngestorPacket": true,
+      "rendersExecutionGateFinalReview": true,
+      "sendsApprovalRequest": false,
+      "grantsApproval": false,
+      "executesApprovalGrant": false,
+      "dispatchesStartExecutor": false,
+      "invokesExecutor": false,
+      "spawnsProcess": false,
+      "startsSidecar": false,
+      "enablesDefaultOn": false,
+      "executesAction": false
+    },
+    "semantics": {
+      "executionGateFinalReviewOnly": true,
+      "sourceOnlyNoLive": true,
+      "reviewDoesNotDispatchExecutor": true,
+      "acceptedGrantEvidenceDoesNotAuthorizeRuntime": true,
+      "providerAcceptedIsVisibilityProof": false,
+      "terminalAckEligibleDoesNotPermitAck": true,
+      "executionNotPermitted": true,
+      "processSpawnNotPermitted": true,
+      "sidecarStartNotPermitted": true,
+      "defaultOnNotEnabledByThisPacket": true,
+      "routeIsReadOnly": true,
+      "brokerFinalizerRequired": true,
+      "performsGitHubMutation": false,
+      "performsProviderSend": false,
+      "performsTerminalAck": false,
+      "performsRuntimeRestartOrDeploy": false,
+      "performsDbMutation": false,
+      "createsTaskFlowRecords": false,
+      "performsHistoricalReplay": false,
+      "performsReleaseOrPublish": false,
+      "movesSecretsOrCredentials": false
+    }
+  },
+  "executorDispatchRequestDraft": {
+    "now": "2026-05-19T03:25:00.000Z",
+    "draftOwner": "broker-finalizer",
+    "dispatchRequestReference": "dispatch-request-753",
+    "executorAdapterId": "terminal-brief-sidecar-supervised-dry-run-start"
+  }
+}
