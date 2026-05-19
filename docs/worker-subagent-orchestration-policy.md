@@ -51,6 +51,14 @@ The packet can include task profile, CPU load, memory usage, IO pressure, event-
 
 The self-assessment packet does not probe the live host or Gateway, call the planner route, spawn subagents, dispatch broker work, claim tasks, invoke executors, create TaskFlow records, mutate DB state, deploy/restart services, send providers, ACK/replay terminal rows, publish releases, or move secrets.
 
+## Planner Handoff Packet
+
+`a2a-broker.worker-subagent-planner-handoff.packet` bundles a worker self-assessment packet and a planner policy packet for finalizer review.
+
+The handoff validates worker/task alignment, planner input alignment, source-only boundaries, finalizer requirement, evidence-only helper semantics, write-set isolation, and the direct-execution escape hatch. It is the review artifact before any future runtime gate.
+
+The handoff does not probe live host or Gateway state, call the planner route, spawn subagents, dispatch broker work, claim tasks, invoke executors, create TaskFlow records, mutate DB state, deploy/restart services, send providers, ACK/replay terminal rows, publish releases, or move secrets.
+
 Example input:
 
 ```json
