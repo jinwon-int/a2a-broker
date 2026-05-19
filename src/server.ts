@@ -208,6 +208,11 @@ import {
   extractTerminalBriefSidecarApprovalGrantEvidenceIngestorProposal,
 } from "./core/terminal-brief-sidecar-approval-grant-evidence-ingestor.js";
 import {
+  buildTerminalBriefSidecarExecutionGateFinalReview,
+  extractTerminalBriefSidecarExecutionGateFinalReviewGrantEvidence,
+  extractTerminalBriefSidecarExecutionGateFinalReviewOptions,
+} from "./core/terminal-brief-sidecar-execution-gate-final-review.js";
+import {
   buildTerminalBriefSidecarDryRunStartCanaryPlan,
   extractTerminalBriefSidecarDryRunStartCanaryPlanOptions,
   extractTerminalBriefSidecarDryRunStartCanaryPlanRehearsal,
@@ -1736,6 +1741,27 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
           proposal,
           extractTerminalBriefSidecarApprovalGrantEvidence(body),
           extractTerminalBriefSidecarApprovalGrantEvidenceIngestorOptions(body),
+        );
+        return sendJson(res, 200, report, {
+          "cache-control": "no-store",
+        });
+      }
+
+      if (req.method === "POST" && path === "/terminal-brief/sidecar/execution-gate-final-review") {
+        if (enforceRequesterIdentity) {
+          assertRequesterHasRole(requesterIdentity, ["hub", "operator"], "terminal_brief.sidecar_execution_gate_final_review.read");
+        }
+        const body = await readJson<Record<string, unknown>>(req);
+        let grantEvidence;
+        try {
+          grantEvidence = extractTerminalBriefSidecarExecutionGateFinalReviewGrantEvidence(body);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "invalid sidecar execution gate final review input";
+          throw new BrokerError("bad_request", message);
+        }
+        const report = buildTerminalBriefSidecarExecutionGateFinalReview(
+          grantEvidence,
+          extractTerminalBriefSidecarExecutionGateFinalReviewOptions(body),
         );
         return sendJson(res, 200, report, {
           "cache-control": "no-store",

@@ -7484,6 +7484,49 @@ test("POST /terminal-brief/sidecar/approval-grant-evidence returns source-only g
   }
 });
 
+test("POST /terminal-brief/sidecar/execution-gate-final-review returns source-only final review", async () => {
+  const server = await startTestServer({ edgeSecret: "test-edge-secret" });
+  try {
+    const fixture = JSON.parse(readFileSync("fixtures/terminal-brief/sidecar-execution-gate-final-review.no-live.json", "utf8"));
+    const res = await fetch(
+      server.baseUrl + "/terminal-brief/sidecar/execution-gate-final-review",
+      {
+        method: "POST",
+        headers: jsonHeaders({
+          "x-a2a-edge-secret": "test-edge-secret",
+          "x-a2a-requester-id": "operator-a",
+          "x-a2a-requester-role": "operator",
+        }),
+        body: JSON.stringify(fixture),
+      },
+    );
+
+    assert.equal(res.status, 200);
+    assert.equal(res.headers.get("cache-control"), "no-store");
+    const body = await res.json();
+    assert.equal(body.kind, "a2a-broker.terminal-brief-sidecar-execution-gate-final-review.packet");
+    assert.equal(body.state, "ready_for_execution_gate_final_review");
+    assert.equal(body.readiness.finalReviewReady, true);
+    assert.equal(body.finalReview.reviewOnly, true);
+    assert.equal(body.readiness.startExecutorDispatchPermitted, false);
+    assert.equal(body.readiness.executorInvocationPermitted, false);
+    assert.equal(body.readiness.processSpawnPermitted, false);
+    assert.equal(body.readiness.sidecarStartPermitted, false);
+    assert.equal(body.readiness.defaultOnPermitted, false);
+    assert.equal(body.readiness.providerSendPermitted, false);
+    assert.equal(body.readiness.terminalAckPermitted, false);
+    assert.equal(body.readiness.executionPermitted, false);
+    assert.equal(body.integrationContract.rendersExecutionGateFinalReview, true);
+    assert.equal(body.integrationContract.dispatchesStartExecutor, false);
+    assert.equal(body.integrationContract.invokesExecutor, false);
+    assert.equal(body.integrationContract.startsSidecar, false);
+    assert.equal(body.semantics.reviewDoesNotDispatchExecutor, true);
+    assert.equal(body.semantics.acceptedGrantEvidenceDoesNotAuthorizeRuntime, true);
+  } finally {
+    await server.close();
+  }
+});
+
 test("POST /terminal-brief/sidecar/dry-run-start-canary-plan returns draft-only no-live canary plan", async () => {
   const server = await startTestServer({ edgeSecret: "test-edge-secret" });
   try {
