@@ -218,6 +218,12 @@ import {
   extractTerminalBriefSidecarExecutorDispatchRequestDraftOptions,
 } from "./core/terminal-brief-sidecar-executor-dispatch-request-draft.js";
 import {
+  buildTerminalBriefSidecarDispatcherPreflightSeal,
+  extractTerminalBriefSidecarDispatcherPreflightSealDraft,
+  extractTerminalBriefSidecarDispatcherPreflightSealOptions,
+  extractTerminalBriefSidecarDispatcherRuntimeEvidence,
+} from "./core/terminal-brief-sidecar-dispatcher-preflight-seal.js";
+import {
   buildTerminalBriefSidecarDryRunStartCanaryPlan,
   extractTerminalBriefSidecarDryRunStartCanaryPlanOptions,
   extractTerminalBriefSidecarDryRunStartCanaryPlanRehearsal,
@@ -1788,6 +1794,28 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
         const report = buildTerminalBriefSidecarExecutorDispatchRequestDraft(
           finalReview,
           extractTerminalBriefSidecarExecutorDispatchRequestDraftOptions(body),
+        );
+        return sendJson(res, 200, report, {
+          "cache-control": "no-store",
+        });
+      }
+
+      if (req.method === "POST" && path === "/terminal-brief/sidecar/dispatcher-preflight-seal") {
+        if (enforceRequesterIdentity) {
+          assertRequesterHasRole(requesterIdentity, ["hub", "operator"], "terminal_brief.sidecar_dispatcher_preflight_seal.read");
+        }
+        const body = await readJson<Record<string, unknown>>(req);
+        let dispatchDraft;
+        try {
+          dispatchDraft = extractTerminalBriefSidecarDispatcherPreflightSealDraft(body);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "invalid sidecar dispatcher preflight seal input";
+          throw new BrokerError("bad_request", message);
+        }
+        const report = buildTerminalBriefSidecarDispatcherPreflightSeal(
+          dispatchDraft,
+          extractTerminalBriefSidecarDispatcherRuntimeEvidence(body),
+          extractTerminalBriefSidecarDispatcherPreflightSealOptions(body),
         );
         return sendJson(res, 200, report, {
           "cache-control": "no-store",
