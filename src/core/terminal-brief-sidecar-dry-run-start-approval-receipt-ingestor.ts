@@ -287,6 +287,24 @@ export function extractTerminalBriefSidecarDryRunStartApprovalRequestPacket(
 export const extractTerminalBriefSidecarDryRunStartApprovalReceiptEvidence =
   extractTerminalBriefSidecarActivationReceiptEvidence;
 
+export function extractTerminalBriefSidecarDryRunStartApprovalReceiptIngestorOptions(
+  input: unknown,
+): TerminalBriefSidecarDryRunStartApprovalReceiptIngestorOptions {
+  const envelope = isRecord(input) ? input : {};
+  const options = isRecord(envelope.dryRunStartApprovalReceiptIngestor)
+    ? envelope.dryRunStartApprovalReceiptIngestor
+    : isRecord(envelope.receiptIngestor)
+      ? envelope.receiptIngestor
+      : isRecord(envelope.options)
+        ? envelope.options
+        : {};
+  return {
+    now: optionalString(options.now),
+    mode: optionalString(options.mode),
+    maxAgeMs: numberValue(options.maxAgeMs ?? options.max_age_ms),
+  };
+}
+
 export function renderTerminalBriefSidecarDryRunStartApprovalReceiptIngestorMarkdown(
   packet: TerminalBriefSidecarDryRunStartApprovalReceiptIngestorPacket,
 ): string {
@@ -549,6 +567,15 @@ function unique<T>(items: T[]): T[] {
 
 function list(items: unknown[]): string {
   return items.length ? items.join(",") : "none";
+}
+
+function optionalString(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function numberValue(value: unknown): number | undefined {
+  if (typeof value !== "number" || !Number.isFinite(value)) return undefined;
+  return value;
 }
 
 function isTerminalBriefSidecarDryRunStartApprovalRequestPacket(
