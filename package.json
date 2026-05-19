@@ -55,6 +55,7 @@
     "terminal_brief_sidecar_execution_gate_final_review": "npm run build && node scripts/terminal-brief-sidecar-execution-gate-final-review.mjs",
     "terminal_brief_sidecar_executor_dispatch_request_draft": "npm run build && node scripts/terminal-brief-sidecar-executor-dispatch-request-draft.mjs",
     "terminal_brief_sidecar_dispatcher_preflight_seal": "npm run build && node scripts/terminal-brief-sidecar-dispatcher-preflight-seal.mjs",
+    "worker_subagent_orchestration_policy": "npm run build && node scripts/worker-subagent-orchestration-policy.mjs",
     "terminal_brief_sidecar_dry_run_start_canary_plan": "npm run build && node scripts/terminal-brief-sidecar-dry-run-start-canary-plan.mjs",
     "terminal_brief_sidecar_preflight_evidence_collector": "npm run build && node scripts/terminal-brief-sidecar-preflight-evidence-collector.mjs",
     "terminal_brief_sidecar_preflight_chain_review": "npm run build && node scripts/terminal-brief-sidecar-preflight-chain-review.mjs",

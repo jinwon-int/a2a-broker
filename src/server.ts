@@ -247,6 +247,7 @@ import {
 import {
   buildTerminalBriefSidecarDryRunStartApprovalReceiptIngestor,
   extractTerminalBriefSidecarDryRunStartApprovalReceiptEvidence,
+  extractTerminalBriefSidecarDryRunStartApprovalReceiptIngestorOptions,
   extractTerminalBriefSidecarDryRunStartApprovalRequestPacket,
 } from "./core/terminal-brief-sidecar-dry-run-start-approval-receipt-ingestor.js";
 import {
@@ -1922,6 +1923,7 @@ export function createBrokerServer(options: BrokerServerOptions = {}): BrokerSer
         const report = buildTerminalBriefSidecarDryRunStartApprovalReceiptIngestor(
           approvalRequest,
           extractTerminalBriefSidecarDryRunStartApprovalReceiptEvidence(body),
+          extractTerminalBriefSidecarDryRunStartApprovalReceiptIngestorOptions(body),
         );
         return sendJson(res, 200, report, {
           "cache-control": "no-store",
