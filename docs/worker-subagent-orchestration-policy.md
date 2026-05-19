@@ -36,3 +36,35 @@ Implementation subagents require disjoint file or module ownership. If write set
 ## Escape Hatch
 
 Direct execution with zero subagents is always allowed when the task is too small, too risky, too coupled, urgent, sensitive, or the host lacks capacity.
+
+## Read-only Planner Route
+
+`POST /workers/subagent-orchestration/plan` accepts a supplied task profile and host capacity snapshot, then returns the same source-only policy packet.
+
+The route is a planner/classifier only. It does not inspect live host state, spawn subagents, dispatch broker work, claim tasks, invoke executors, create TaskFlow records, mutate DB state, deploy/restart services, send providers, ACK/replay terminal rows, publish releases, or move secrets.
+
+Example input:
+
+```json
+{
+  "task": {
+    "taskId": "task-large-independent",
+    "size": "large",
+    "coupling": "low",
+    "hasIndependentSubtasks": true,
+    "writeSets": ["src/core/planner.ts", "docs/planner.md", "test/planner.test.ts"]
+  },
+  "host": {
+    "workerId": "bangtong",
+    "cpuLoadPct": 42,
+    "memoryUsedPct": 55,
+    "ioPressure": "low",
+    "eventLoopDegraded": false,
+    "gatewayPressure": "low",
+    "activeSubagents": 0,
+    "workerSubagentCap": 3,
+    "brokerActiveSubagents": 4,
+    "brokerSubagentCap": 12
+  }
+}
+```
